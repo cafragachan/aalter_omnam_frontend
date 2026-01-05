@@ -296,7 +296,7 @@ export default function MetaversePage() {
                   }}
                   className="w-full"
                 >
-                  <TabsList className="grid w-full grid-cols-2">
+                  <TabsList className="grid w-full grid-cols-2 gap-2">
                     <TabsTrigger
                       value="interior"
                       className="border border-transparent transition hover:border-white"
@@ -326,7 +326,7 @@ export default function MetaversePage() {
                 )}
 
                 <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full">
-                  <TabsList className="grid w-full grid-cols-3">
+                  <TabsList className="grid w-full grid-cols-3 gap-2">
                     <TabsTrigger
                       value="location"
                       className="border border-transparent transition hover:border-white"
