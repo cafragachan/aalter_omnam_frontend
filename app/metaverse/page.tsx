@@ -4,12 +4,20 @@ import { useRouter } from "next/navigation"
 import { ArrowLeft } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { GlassPanel } from "@/components/glass-panel"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useApp } from "@/lib/store"
 import { getAmenitiesByHotelId, getHotelBySlug, getRoomsByHotelId } from "@/lib/hotel-data"
 import { HotelRoomCard } from "@/components/HotelRoomCard"
 import { HotelAmenityCard } from "@/components/HotelAmenityCard"
 import { useEffect, useRef, useState } from "react"
+
+type UnitSelectionMessage = {
+  type: "unit"
+  roomName: string
+  description?: string
+  price?: string
+  level?: string
+}
 
 export default function MetaversePage() {
   const router = useRouter()
@@ -21,10 +29,42 @@ export default function MetaversePage() {
   const [activeTab, setActiveTab] = useState<string>("")
   const [showRoomsPanel, setShowRoomsPanel] = useState(false)
   const [showAmenitiesPanel, setShowAmenitiesPanel] = useState(false)
+  const [selectedUnit, setSelectedUnit] = useState<UnitSelectionMessage | null>(null)
+  const [unitViewTab, setUnitViewTab] = useState<"" | "interior" | "exterior">("")
+  const [previousTab, setPreviousTab] = useState<string>("")
+  const activeTabRef = useRef(activeTab)
 
   const hotel = selectedHotel ? getHotelBySlug(selectedHotel) : getHotelBySlug("edition-lake-como")
   const rooms = hotel ? getRoomsByHotelId(hotel.id) : []
   const amenities = hotel ? getAmenitiesByHotelId(hotel.id) : []
+
+  const normalizeIncomingMessages = (data: unknown): unknown[] => {
+    if (typeof data === "string") {
+      const trimmed = data.trim()
+      if (!trimmed) return []
+
+      try {
+        const parsed = JSON.parse(trimmed)
+        return Array.isArray(parsed) ? parsed : [parsed]
+      } catch (error) {
+        console.warn("Failed to parse UE5 message as JSON:", { error, data })
+        return []
+      }
+    }
+
+    return [data]
+  }
+
+  const isUnitSelectionMessage = (value: unknown): value is UnitSelectionMessage => {
+    if (!value || typeof value !== "object") return false
+    const payload = value as Record<string, unknown>
+
+    return payload.type === "unit" && typeof payload.roomName === "string"
+  }
+
+  useEffect(() => {
+    activeTabRef.current = activeTab
+  }, [activeTab])
 
   useEffect(() => {
     // Connect to the UE5 WebSocket server
@@ -37,22 +77,30 @@ export default function MetaversePage() {
     }
 
     ws.onmessage = async (event) => {
-      let messageData = event.data
+      let messageData: unknown = event.data
 
-      // Check if the received data is a Blob
       if (event.data instanceof Blob) {
         console.log("Received a Blob from UE5, converting to text...")
-        // Asynchronously read the Blob's content as a string
         messageData = await event.data.text()
       }
 
       console.log("Message from UE5:", messageData)
 
-      try {
-        JSON.parse(messageData)
-      } catch (e) {
-        // It wasn't JSON, just a plain string.
+      const messages = normalizeIncomingMessages(messageData)
+
+      if (!messages.length) {
+        console.warn("No parsable messages received from UE5.")
+        return
       }
+
+      messages.forEach((payload) => {
+        if (isUnitSelectionMessage(payload)) {
+          handleUnitSelected(payload)
+          return
+        }
+
+        console.warn("Received unhandled UE5 message:", payload)
+      })
     }
 
     ws.onclose = () => {
@@ -83,6 +131,32 @@ export default function MetaversePage() {
     sendMessageToUE5({ type, value })
   }
 
+  const handleUnitSelected = (unit: UnitSelectionMessage) => {
+    setSelectedUnit(unit)
+    setUnitViewTab("")
+    setPreviousTab(activeTabRef.current)
+    setActiveTab("")
+    setShowRoomsPanel(false)
+    setShowAmenitiesPanel(false)
+  }
+
+  const handleUnitViewChange = (value: "interior" | "exterior") => {
+    setUnitViewTab(value)
+    handleSendMessage("unitView", value)
+  }
+
+  const handleUnitBack = () => {
+    setSelectedUnit(null)
+    setUnitViewTab("")
+    handleSendMessage("gameEstate", "default")
+
+    if (previousTab) {
+      handleTabChange(previousTab)
+    } else {
+      resetTabSelection(true)
+    }
+  }
+
   const resetTabSelection = (sendDefaultMessage: boolean) => {
     setActiveTab("")
     if (sendDefaultMessage) {
@@ -101,8 +175,8 @@ export default function MetaversePage() {
 
     if (value === "location") {
       handleSendMessage("gameEstate", "location")
-      closeRoomsPanel()
-      closeAmenitiesPanel()
+      setShowRoomsPanel(false)
+      setShowAmenitiesPanel(false)
     }
 
     if (value === "rooms") {
@@ -120,18 +194,33 @@ export default function MetaversePage() {
     setShowAmenitiesPanel(false)
   }
 
-  const closeRoomsPanel = () => {
+  const closeRoomsPanel = (sendDefault = true) => {
     setShowRoomsPanel(false)
-    resetTabSelection(true)
+    if (sendDefault) {
+      resetTabSelection(true)
+    }
   }
   const handleAmenitiesTab = () => {
     handleSendMessage("gameEstate", "amenities")
     setShowAmenitiesPanel(true)
     setShowRoomsPanel(false)
   }
-  const closeAmenitiesPanel = () => {
+  const closeAmenitiesPanel = (sendDefault = true) => {
     setShowAmenitiesPanel(false)
-    resetTabSelection(true)
+    if (sendDefault) {
+      resetTabSelection(true)
+    }
+  }
+
+  const formatUnitPrice = (price?: string) => {
+    if (!price) return "N/A"
+
+    const parsed = Number(price)
+    if (Number.isFinite(parsed)) {
+      return `$${parsed.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
+    }
+
+    return price
   }
 
   return (
@@ -164,42 +253,102 @@ export default function MetaversePage() {
         </div>
       )}
 
+      {selectedUnit && (
+        <div className="pointer-events-none fixed right-6 top-1/2 z-20 -translate-y-1/2">
+          <GlassPanel className="pointer-events-auto w-[360px] space-y-4 border border-white/15 bg-white/12 px-7 py-6 text-white shadow-2xl shadow-black/40 backdrop-blur-2xl">
+            <div className="flex items-center justify-between">
+              <div className="text-xs font-semibold uppercase tracking-[0.2em] text-white/70">Unit Selected</div>
+              <div className="rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs text-white/80">
+                Level {selectedUnit.level ?? "N/A"}
+              </div>
+            </div>
+            <div>
+              <h3 className="text-2xl font-semibold">{selectedUnit.roomName}</h3>
+              <p className="mt-1 text-lg font-semibold text-white/80">{formatUnitPrice(selectedUnit.price)}</p>
+            </div>
+            <p className="text-sm leading-relaxed text-white/70">
+              {selectedUnit.description?.trim() || "No description provided for this unit."}
+            </p>
+          </GlassPanel>
+        </div>
+      )}
+
       <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex justify-center px-4 pb-8">
         <div className="pointer-events-auto w-full max-w-5xl">
           <div className="relative flex items-center justify-center">
-            {activeTab && (
-              <Button
-                variant="ghost"
-                size="icon"
-                className="absolute -left-16 top-1/2 h-12 w-12 -translate-y-1/2 rounded-full border border-white/25 bg-white/15 text-white shadow-lg shadow-black/30 backdrop-blur-xl transition hover:bg-white/25"
-                onClick={handleResetTabs}
-              >
-                <ArrowLeft className="h-5 w-5" />
-              </Button>
-            )}
+            {selectedUnit ? (
+              <>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="absolute -left-16 top-1/2 h-12 w-12 -translate-y-1/2 rounded-full border border-white/25 bg-white/15 text-white shadow-lg shadow-black/30 backdrop-blur-xl transition hover:bg-white/25"
+                  onClick={handleUnitBack}
+                >
+                  <ArrowLeft className="h-5 w-5" />
+                </Button>
 
-            <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full">
-              <TabsList className="grid w-full grid-cols-3">
-                <TabsTrigger
-                  value="location"
-                  className="border border-transparent transition hover:border-white"
+                <Tabs
+                  value={unitViewTab || undefined}
+                  onValueChange={(value) => {
+                    if (value === "interior" || value === "exterior") {
+                      handleUnitViewChange(value)
+                    }
+                  }}
+                  className="w-full"
                 >
-                  Location
-                </TabsTrigger>
-                <TabsTrigger
-                  value="rooms"
-                  className="border border-transparent transition hover:border-white"
-                >
-                  Rooms
-                </TabsTrigger>
-                <TabsTrigger
-                  value="amenities"
-                  className="border border-transparent transition hover:border-white"
-                >
-                  Amenities
-                </TabsTrigger>
-              </TabsList>
-            </Tabs>
+                  <TabsList className="grid w-full grid-cols-2">
+                    <TabsTrigger
+                      value="interior"
+                      className="border border-transparent transition hover:border-white"
+                    >
+                      Inside View
+                    </TabsTrigger>
+                    <TabsTrigger
+                      value="exterior"
+                      className="border border-transparent transition hover:border-white"
+                    >
+                      Exterior View
+                    </TabsTrigger>
+                  </TabsList>
+                </Tabs>
+              </>
+            ) : (
+              <>
+                {activeTab && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="absolute -left-16 top-1/2 h-12 w-12 -translate-y-1/2 rounded-full border border-white/25 bg-white/15 text-white shadow-lg shadow-black/30 backdrop-blur-xl transition hover:bg-white/25"
+                    onClick={handleResetTabs}
+                  >
+                    <ArrowLeft className="h-5 w-5" />
+                  </Button>
+                )}
+
+                <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full">
+                  <TabsList className="grid w-full grid-cols-3">
+                    <TabsTrigger
+                      value="location"
+                      className="border border-transparent transition hover:border-white"
+                    >
+                      Location
+                    </TabsTrigger>
+                    <TabsTrigger
+                      value="rooms"
+                      className="border border-transparent transition hover:border-white"
+                    >
+                      Rooms
+                    </TabsTrigger>
+                    <TabsTrigger
+                      value="amenities"
+                      className="border border-transparent transition hover:border-white"
+                    >
+                      Amenities
+                    </TabsTrigger>
+                  </TabsList>
+                </Tabs>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -207,12 +356,17 @@ export default function MetaversePage() {
       {showRoomsPanel && (
         <div
           className="fixed inset-0 z-20 flex items-center justify-center bg-black/60 backdrop-blur-sm"
-          onClick={closeRoomsPanel}
+          onClick={() => closeRoomsPanel(true)}
         >
           <div className="w-full max-w-6xl px-4" onClick={(event) => event.stopPropagation()}>
             <GlassPanel className="bg-white/12 px-8 py-10 backdrop-blur-2xl">
               <div className="mb-6 flex items-center gap-3">
-                <Button variant="ghost" size="icon" className="text-white hover:bg-white/10" onClick={closeRoomsPanel}>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="text-white hover:bg-white/10"
+                  onClick={() => closeRoomsPanel(true)}
+                >
                   <ArrowLeft className="h-5 w-5" />
                 </Button>
                 <div>
@@ -228,7 +382,7 @@ export default function MetaversePage() {
                       room={room}
                       onClick={() => {
                         handleSendMessage("selectedRoom", room.id)
-                        closeRoomsPanel()
+                        closeRoomsPanel(false)
                       }}
                     />
                   ))
@@ -244,7 +398,7 @@ export default function MetaversePage() {
       {showAmenitiesPanel && (
         <div
           className="fixed inset-0 z-20 flex items-center justify-center bg-black/60 backdrop-blur-sm"
-          onClick={closeAmenitiesPanel}
+          onClick={() => closeAmenitiesPanel(true)}
         >
           <div className="w-full max-w-5xl px-4" onClick={(event) => event.stopPropagation()}>
             <GlassPanel className="bg-white/12 px-8 py-10 backdrop-blur-2xl">
@@ -253,7 +407,7 @@ export default function MetaversePage() {
                   variant="ghost"
                   size="icon"
                   className="text-white hover:bg-white/10"
-                  onClick={closeAmenitiesPanel}
+                  onClick={() => closeAmenitiesPanel(true)}
                 >
                   <ArrowLeft className="h-5 w-5" />
                 </Button>
@@ -270,7 +424,7 @@ export default function MetaversePage() {
                       amenity={amenity}
                       onClick={() => {
                         handleSendMessage("selectedAmenity", amenity.id)
-                        closeAmenitiesPanel()
+                        closeAmenitiesPanel(false)
                       }}
                     />
                   ))
