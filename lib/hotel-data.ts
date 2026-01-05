@@ -15,6 +15,7 @@ export interface Room {
   occupancy: string
   price: number
   hotelId: string
+  image: string
 }
 
 export interface Amenity {
@@ -22,6 +23,7 @@ export interface Amenity {
   name: string
   hotelId: string
   scene: string
+  image: string
 }
 
 export const hotels: Hotel[] = [
@@ -64,6 +66,7 @@ export const rooms: Room[] = [
     occupancy: "x2",
     price: 249,
     hotelId: "1",
+    image: "/images/edition-como.jpg",
   },
   {
     id: "r2",
@@ -71,6 +74,7 @@ export const rooms: Room[] = [
     occupancy: "x4",
     price: 399,
     hotelId: "1",
+    image: "/images/edition-como.jpg",
   },
   {
     id: "r3",
@@ -78,6 +82,7 @@ export const rooms: Room[] = [
     occupancy: "x6",
     price: 599,
     hotelId: "1",
+    image: "/images/edition-como.jpg",
   },
 ]
 
@@ -87,12 +92,14 @@ export const amenities: Amenity[] = [
     name: "Lobby",
     hotelId: "1",
     scene: "lobby",
+    image: "/images/edition-como.jpg",
   },
   {
     id: "a2",
     name: "Conference Room",
     hotelId: "1",
     scene: "conference",
+    image: "/images/edition-como.jpg",
   },
 ]
 

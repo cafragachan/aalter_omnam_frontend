@@ -26,7 +26,7 @@ export default function DestinationsPage() {
       className="ios-screen flex min-h-screen items-center justify-center bg-cover bg-center p-4"
       style={{ backgroundImage: 'url("/images/login-bg.jpg")' }}
     >
-      <GlassPanel className="relative z-10 w-full max-w-4xl space-y-6 px-8 py-10">
+      <GlassPanel className="relative z-10 w-full max-w-4hotel cards in \destination page. xl space-y-6 px-8 py-10">
           <div className="flex items-center gap-4">
             <Button variant="ghost" size="icon" className="text-white hover:bg-white/10" onClick={() => router.back()}>
               <ArrowLeft className="h-5 w-5" />

@@ -42,7 +42,7 @@ export default function RootLayout({
         <AppProvider>
           {children}
           <Toaster />
-          <div className="pointer-events-none fixed bottom-4 right-4 z-50">
+          <div className="pointer-events-none fixed bottom-8 right-8 z-50">
             <img
               src="/omnam-logo-white.png"
               alt="Omnam"

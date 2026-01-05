@@ -3,6 +3,8 @@
 import { useRouter } from "next/navigation"
 import { ArrowLeft } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { GlassPanel } from "@/components/glass-panel"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useEffect, useRef } from "react"
 
 export default function MetaversePage() {
@@ -71,16 +73,12 @@ export default function MetaversePage() {
   }
 
   // Example of sending a message
-  const handleSendMessage = () => {
-    const message = {
-      type: "gameEstate",
-      value: "messag",
-    }
-    sendMessageToUE5(message)
+  const handleSendMessage = (type: string, value: string) => {
+    sendMessageToUE5({ type, value })
   }
 
   return (
-    <div className="relative min-h-screen w-full bg-black">
+    <div className="relative min-h-screen w-full bg-black pb-32">
       {hasStream && (
         <iframe
           title="Vagon UE5 Stream"
@@ -90,17 +88,13 @@ export default function MetaversePage() {
         />
       )}
 
-      <div className="relative z-10 flex items-center justify-between p-4">
+      <div className="relative z-10 flex items-center gap-3 p-4">
         <Button variant="ghost" size="icon" className="text-white hover:bg-white/10" onClick={() => router.back()}>
           <ArrowLeft className="h-5 w-5" />
         </Button>
         <div className="text-xs font-semibold uppercase tracking-[0.3em] text-white/70">
           PIE Stream
         </div>
-        {/* Example button to send a message to UE5 */}
-        <Button onClick={handleSendMessage} className="text-white">
-          Send Message to UE5
-        </Button>
       </div>
 
       {!hasStream && (
@@ -114,6 +108,26 @@ export default function MetaversePage() {
           </div>
         </div>
       )}
+
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex justify-center px-4 pb-8">
+        <div className="pointer-events-auto w-full max-w-5xl">
+        
+            <Tabs defaultValue="location" className="w-full">
+              <TabsList className="grid w-full grid-cols-3">
+                <TabsTrigger value="location" onClick={() => handleSendMessage("gameEstate", "location")}>
+                  Location
+                </TabsTrigger>
+                <TabsTrigger value="rooms" onClick={() => handleSendMessage("gameEstate", "rooms")}>
+                  Rooms
+                </TabsTrigger>
+                <TabsTrigger value="amenities" onClick={() => handleSendMessage("gameEstate", "amenities")}>
+                  Amenities
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
+   
+        </div>
+      </div>
     </div>
   )
 }
