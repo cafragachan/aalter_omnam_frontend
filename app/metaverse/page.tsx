@@ -5,45 +5,51 @@ import { ArrowLeft } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { GlassPanel } from "@/components/glass-panel"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { useEffect, useRef } from "react"
+import { useApp } from "@/lib/store"
+import { getHotelBySlug, getRoomsByHotelId } from "@/lib/hotel-data"
+import { HotelRoomCard } from "@/components/HotelRoomCard"
+import { useEffect, useRef, useState } from "react"
 
 export default function MetaversePage() {
   const router = useRouter()
+  const { selectedHotel } = useApp()
   // For local development, point this to your local Pixel Stream
   const streamUrl = process.env.NEXT_PUBLIC_VAGON_STREAM_URL || "http://127.0.0.1"
   const hasStream = streamUrl !== "about:blank"
   const websocket = useRef<WebSocket | null>(null)
+  const [showRoomsPanel, setShowRoomsPanel] = useState(false)
+
+  const hotel = selectedHotel ? getHotelBySlug(selectedHotel) : getHotelBySlug("edition-lake-como")
+  const rooms = hotel ? getRoomsByHotelId(hotel.id) : []
 
   useEffect(() => {
     // Connect to the UE5 WebSocket server
     const ws = new WebSocket("ws://localhost:7788")
-    websocket.current = ws; // Set the ref immediately
+    websocket.current = ws // Set the ref immediately
 
     ws.onopen = () => {
       console.log("Connected to UE5 WebSocket server")
       websocket.current = ws
     }
 
-    ws.onmessage = async (event) => { // Make the function async
-      let messageData = event.data;
+    ws.onmessage = async (event) => {
+      let messageData = event.data
 
       // Check if the received data is a Blob
       if (event.data instanceof Blob) {
-        console.log("Received a Blob from UE5, converting to text...");
+        console.log("Received a Blob from UE5, converting to text...")
         // Asynchronously read the Blob's content as a string
-        messageData = await event.data.text();
+        messageData = await event.data.text()
       }
 
-      console.log("Message from UE5:", messageData);
+      console.log("Message from UE5:", messageData)
 
-      // Now you can try to parse it if it's JSON, etc.
       try {
-        const parsedData = JSON.parse(messageData);
-        // Do something with the parsed JSON
+        JSON.parse(messageData)
       } catch (e) {
         // It wasn't JSON, just a plain string.
       }
-    };
+    }
 
     ws.onclose = () => {
       console.log("Disconnected from UE5 WebSocket server")
@@ -53,15 +59,12 @@ export default function MetaversePage() {
       console.error("WebSocket error:", error)
     }
 
-    // Clean up the connection when the component unmounts
     return () => {
-      console.log("Component unmounting, closing WebSocket.");
-      // We directly tell the WebSocket instance to close, no matter its state.
-      // The browser handles the check internally.
+      console.log("Component unmounting, closing WebSocket.")
       if (websocket.current) {
-        websocket.current.close();
+        websocket.current.close()
       }
-    };
+    }
   }, [])
 
   const sendMessageToUE5 = (message: object) => {
@@ -72,10 +75,16 @@ export default function MetaversePage() {
     }
   }
 
-  // Example of sending a message
   const handleSendMessage = (type: string, value: string) => {
     sendMessageToUE5({ type, value })
   }
+
+  const handleRoomsTab = () => {
+    handleSendMessage("gameEstate", "rooms")
+    setShowRoomsPanel(true)
+  }
+
+  const closeRoomsPanel = () => setShowRoomsPanel(false)
 
   return (
     <div className="relative min-h-screen w-full bg-black pb-32">
@@ -92,9 +101,7 @@ export default function MetaversePage() {
         <Button variant="ghost" size="icon" className="text-white hover:bg-white/10" onClick={() => router.back()}>
           <ArrowLeft className="h-5 w-5" />
         </Button>
-        <div className="text-xs font-semibold uppercase tracking-[0.3em] text-white/70">
-          PIE Stream
-        </div>
+        <div className="text-xs font-semibold uppercase tracking-[0.3em] text-white/70">PIE Stream</div>
       </div>
 
       {!hasStream && (
@@ -102,8 +109,8 @@ export default function MetaversePage() {
           <div className="max-w-lg rounded-2xl border border-white/20 bg-white/10 px-6 py-8 text-center text-white backdrop-blur-xl">
             <h1 className="text-2xl font-semibold">Stream Placeholder</h1>
             <p className="mt-3 text-sm text-white/70">
-              Set <span className="font-semibold">NEXT_PUBLIC_VAGON_STREAM_URL</span> to your local PIE stream
-              or Vagon session URL to render the iframe here.
+              Set <span className="font-semibold">NEXT_PUBLIC_VAGON_STREAM_URL</span> to your local PIE stream or Vagon
+              session URL to render the iframe here.
             </p>
           </div>
         </div>
@@ -111,23 +118,63 @@ export default function MetaversePage() {
 
       <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex justify-center px-4 pb-8">
         <div className="pointer-events-auto w-full max-w-5xl">
-        
+
             <Tabs defaultValue="location" className="w-full">
               <TabsList className="grid w-full grid-cols-3">
-                <TabsTrigger value="location" onClick={() => handleSendMessage("gameEstate", "location")}>
+                <TabsTrigger
+                  value="location"
+                  onClick={() => {
+                    handleSendMessage("gameEstate", "location")
+                    closeRoomsPanel()
+                  }}
+                >
                   Location
                 </TabsTrigger>
-                <TabsTrigger value="rooms" onClick={() => handleSendMessage("gameEstate", "rooms")}>
+                <TabsTrigger value="rooms" onClick={handleRoomsTab}>
                   Rooms
                 </TabsTrigger>
-                <TabsTrigger value="amenities" onClick={() => handleSendMessage("gameEstate", "amenities")}>
+                <TabsTrigger
+                  value="amenities"
+                  onClick={() => {
+                    handleSendMessage("gameEstate", "amenities")
+                    closeRoomsPanel()
+                  }}
+                >
                   Amenities
                 </TabsTrigger>
               </TabsList>
             </Tabs>
-   
+
         </div>
       </div>
+
+      {showRoomsPanel && (
+        <div
+          className="fixed inset-0 z-20 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+          onClick={closeRoomsPanel}
+        >
+          <div className="w-full max-w-5xl px-4" onClick={(event) => event.stopPropagation()}>
+            <GlassPanel className="bg-white/12 px-8 py-10 backdrop-blur-2xl">
+              <div className="mb-6 flex items-center gap-3">
+                <Button variant="ghost" size="icon" className="text-white hover:bg-white/10" onClick={closeRoomsPanel}>
+                  <ArrowLeft className="h-5 w-5" />
+                </Button>
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-white/60">Rooms</p>
+                  <h2 className="text-2xl font-semibold text-white">{hotel?.name || "Rooms"}</h2>
+                </div>
+              </div>
+              <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+                {rooms.length > 0 ? (
+                  rooms.map((room) => <HotelRoomCard key={room.id} room={room} />)
+                ) : (
+                  <p className="text-white/70">No rooms available for this property.</p>
+                )}
+              </div>
+            </GlassPanel>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
