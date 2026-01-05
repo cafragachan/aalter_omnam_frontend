@@ -263,10 +263,10 @@ export default function MetaversePage() {
               </div>
             </div>
             <div>
-              <h3 className="text-2xl font-semibold">{selectedUnit.roomName}</h3>
-              <p className="mt-1 text-lg font-semibold text-white/80">{formatUnitPrice(selectedUnit.price)}</p>
+              <h3 className="text-xl font-semibold uppercase tracking-[0.2em]">{selectedUnit.roomName}</h3>
+              <p className="mt-1 text-lg font-semibold text-white/80">{formatUnitPrice(selectedUnit.price)} /night</p>
             </div>
-            <p className="text-sm leading-relaxed text-white/70">
+            <p className="text-xs leading-relaxed text-white/70">
               {selectedUnit.description?.trim() || "No description provided for this unit."}
             </p>
           </GlassPanel>
