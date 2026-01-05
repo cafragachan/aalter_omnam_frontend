@@ -3,11 +3,15 @@ import type { Room } from "@/lib/hotel-data"
 
 interface HotelRoomCardProps {
   room: Room
+  onClick?: () => void
 }
 
-export function HotelRoomCard({ room }: HotelRoomCardProps) {
+export function HotelRoomCard({ room, onClick }: HotelRoomCardProps) {
   return (
-    <Card className="group h-full overflow-hidden border-white/20 bg-white/12 backdrop-blur-xl transition-all hover:bg-white/18 hover:shadow-[0_30px_70px_-40px_rgba(0,0,0,0.9)]">
+    <Card
+      className="group h-full cursor-pointer overflow-hidden border-white/20 bg-white/12 backdrop-blur-xl transition-all hover:bg-white/18 hover:shadow-[0_30px_70px_-40px_rgba(0,0,0,0.9)]"
+      onClick={onClick}
+    >
       <div className="relative aspect-video overflow-hidden bg-gradient-to-br from-primary/20 to-accent/20">
         <img
           src={room.image}

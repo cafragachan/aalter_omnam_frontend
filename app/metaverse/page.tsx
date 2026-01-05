@@ -6,8 +6,9 @@ import { Button } from "@/components/ui/button"
 import { GlassPanel } from "@/components/glass-panel"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useApp } from "@/lib/store"
-import { getHotelBySlug, getRoomsByHotelId } from "@/lib/hotel-data"
+import { getAmenitiesByHotelId, getHotelBySlug, getRoomsByHotelId } from "@/lib/hotel-data"
 import { HotelRoomCard } from "@/components/HotelRoomCard"
+import { HotelAmenityCard } from "@/components/HotelAmenityCard"
 import { useEffect, useRef, useState } from "react"
 
 export default function MetaversePage() {
@@ -18,9 +19,11 @@ export default function MetaversePage() {
   const hasStream = streamUrl !== "about:blank"
   const websocket = useRef<WebSocket | null>(null)
   const [showRoomsPanel, setShowRoomsPanel] = useState(false)
+  const [showAmenitiesPanel, setShowAmenitiesPanel] = useState(false)
 
   const hotel = selectedHotel ? getHotelBySlug(selectedHotel) : getHotelBySlug("edition-lake-como")
   const rooms = hotel ? getRoomsByHotelId(hotel.id) : []
+  const amenities = hotel ? getAmenitiesByHotelId(hotel.id) : []
 
   useEffect(() => {
     // Connect to the UE5 WebSocket server
@@ -75,16 +78,23 @@ export default function MetaversePage() {
     }
   }
 
-  const handleSendMessage = (type: string, value: string) => {
+  const handleSendMessage = (type: string, value: unknown) => {
     sendMessageToUE5({ type, value })
   }
 
   const handleRoomsTab = () => {
     handleSendMessage("gameEstate", "rooms")
     setShowRoomsPanel(true)
+    setShowAmenitiesPanel(false)
   }
 
   const closeRoomsPanel = () => setShowRoomsPanel(false)
+  const handleAmenitiesTab = () => {
+    handleSendMessage("gameEstate", "amenities")
+    setShowAmenitiesPanel(true)
+    setShowRoomsPanel(false)
+  }
+  const closeAmenitiesPanel = () => setShowAmenitiesPanel(false)
 
   return (
     <div className="relative min-h-screen w-full bg-black pb-32">
@@ -135,10 +145,7 @@ export default function MetaversePage() {
                 </TabsTrigger>
                 <TabsTrigger
                   value="amenities"
-                  onClick={() => {
-                    handleSendMessage("gameEstate", "amenities")
-                    closeRoomsPanel()
-                  }}
+                  onClick={handleAmenitiesTab}
                 >
                   Amenities
                 </TabsTrigger>
@@ -166,9 +173,60 @@ export default function MetaversePage() {
               </div>
               <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
                 {rooms.length > 0 ? (
-                  rooms.map((room) => <HotelRoomCard key={room.id} room={room} />)
+                  rooms.map((room) => (
+                    <HotelRoomCard
+                      key={room.id}
+                      room={room}
+                      onClick={() => {
+                        handleSendMessage("selectedRoom", room.id)
+                        closeRoomsPanel()
+                      }}
+                    />
+                  ))
                 ) : (
                   <p className="text-white/70">No rooms available for this property.</p>
+                )}
+              </div>
+            </GlassPanel>
+          </div>
+        </div>
+      )}
+
+      {showAmenitiesPanel && (
+        <div
+          className="fixed inset-0 z-20 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+          onClick={closeAmenitiesPanel}
+        >
+          <div className="w-full max-w-5xl px-4" onClick={(event) => event.stopPropagation()}>
+            <GlassPanel className="bg-white/12 px-8 py-10 backdrop-blur-2xl">
+              <div className="mb-6 flex items-center gap-3">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="text-white hover:bg-white/10"
+                  onClick={closeAmenitiesPanel}
+                >
+                  <ArrowLeft className="h-5 w-5" />
+                </Button>
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-white/60">Amenities</p>
+                  <h2 className="text-2xl font-semibold text-white">{hotel?.name || "Amenities"}</h2>
+                </div>
+              </div>
+              <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+                {amenities.length > 0 ? (
+                  amenities.map((amenity) => (
+                    <HotelAmenityCard
+                      key={amenity.id}
+                      amenity={amenity}
+                      onClick={() => {
+                        handleSendMessage("selectedAmenity", amenity.id)
+                        closeAmenitiesPanel()
+                      }}
+                    />
+                  ))
+                ) : (
+                  <p className="text-white/70">No amenities available for this property.</p>
                 )}
               </div>
             </GlassPanel>
