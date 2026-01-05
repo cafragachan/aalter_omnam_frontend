@@ -160,7 +160,7 @@ export default function MetaversePage() {
           className="fixed inset-0 z-20 flex items-center justify-center bg-black/60 backdrop-blur-sm"
           onClick={closeRoomsPanel}
         >
-          <div className="w-full max-w-5xl px-4" onClick={(event) => event.stopPropagation()}>
+          <div className="w-full max-w-6xl px-4" onClick={(event) => event.stopPropagation()}>
             <GlassPanel className="bg-white/12 px-8 py-10 backdrop-blur-2xl">
               <div className="mb-6 flex items-center gap-3">
                 <Button variant="ghost" size="icon" className="text-white hover:bg-white/10" onClick={closeRoomsPanel}>
@@ -171,7 +171,7 @@ export default function MetaversePage() {
                   <h2 className="text-2xl font-semibold text-white">{hotel?.name || "Rooms"}</h2>
                 </div>
               </div>
-              <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+              <div className="grid grid-cols-[repeat(auto-fit,minmax(240px,320px))] justify-center gap-6">
                 {rooms.length > 0 ? (
                   rooms.map((room) => (
                     <HotelRoomCard
@@ -213,7 +213,7 @@ export default function MetaversePage() {
                   <h2 className="text-2xl font-semibold text-white">{hotel?.name || "Amenities"}</h2>
                 </div>
               </div>
-              <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+              <div className="grid grid-cols-[repeat(auto-fit,minmax(240px,320px))] justify-center gap-6">
                 {amenities.length > 0 ? (
                   amenities.map((amenity) => (
                     <HotelAmenityCard

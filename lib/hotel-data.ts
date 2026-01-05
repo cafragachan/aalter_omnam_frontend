@@ -92,14 +92,14 @@ export const amenities: Amenity[] = [
     name: "Lobby",
     hotelId: "1",
     scene: "lobby",
-    image: "/images/edition-como.jpg",
+    image: "/images/amenity-lobby.jpg",
   },
   {
     id: "a2",
     name: "Conference Room",
     hotelId: "1",
     scene: "conference",
-    image: "/images/edition-como.jpg",
+    image: "/images/amenity-conference.jpg",
   },
 ]
 
