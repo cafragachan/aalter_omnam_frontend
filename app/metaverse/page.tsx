@@ -18,6 +18,7 @@ export default function MetaversePage() {
   const streamUrl = process.env.NEXT_PUBLIC_VAGON_STREAM_URL || "http://127.0.0.1"
   const hasStream = streamUrl !== "about:blank"
   const websocket = useRef<WebSocket | null>(null)
+  const [activeTab, setActiveTab] = useState<string>("")
   const [showRoomsPanel, setShowRoomsPanel] = useState(false)
   const [showAmenitiesPanel, setShowAmenitiesPanel] = useState(false)
 
@@ -82,19 +83,56 @@ export default function MetaversePage() {
     sendMessageToUE5({ type, value })
   }
 
+  const resetTabSelection = (sendDefaultMessage: boolean) => {
+    setActiveTab("")
+    if (sendDefaultMessage) {
+      handleSendMessage("gameEstate", "default")
+    }
+  }
+
+  const handleResetTabs = () => {
+    setShowRoomsPanel(false)
+    setShowAmenitiesPanel(false)
+    resetTabSelection(true)
+  }
+
+  const handleTabChange = (value: string) => {
+    setActiveTab(value)
+
+    if (value === "location") {
+      handleSendMessage("gameEstate", "location")
+      closeRoomsPanel()
+      closeAmenitiesPanel()
+    }
+
+    if (value === "rooms") {
+      handleRoomsTab()
+    }
+
+    if (value === "amenities") {
+      handleAmenitiesTab()
+    }
+  }
+
   const handleRoomsTab = () => {
     handleSendMessage("gameEstate", "rooms")
     setShowRoomsPanel(true)
     setShowAmenitiesPanel(false)
   }
 
-  const closeRoomsPanel = () => setShowRoomsPanel(false)
+  const closeRoomsPanel = () => {
+    setShowRoomsPanel(false)
+    resetTabSelection(true)
+  }
   const handleAmenitiesTab = () => {
     handleSendMessage("gameEstate", "amenities")
     setShowAmenitiesPanel(true)
     setShowRoomsPanel(false)
   }
-  const closeAmenitiesPanel = () => setShowAmenitiesPanel(false)
+  const closeAmenitiesPanel = () => {
+    setShowAmenitiesPanel(false)
+    resetTabSelection(true)
+  }
 
   return (
     <div className="relative min-h-screen w-full bg-black pb-32">
@@ -128,30 +166,41 @@ export default function MetaversePage() {
 
       <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex justify-center px-4 pb-8">
         <div className="pointer-events-auto w-full max-w-5xl">
+          <div className="relative flex items-center justify-center">
+            {activeTab && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="absolute -left-16 top-1/2 h-12 w-12 -translate-y-1/2 rounded-full border border-white/25 bg-white/15 text-white shadow-lg shadow-black/30 backdrop-blur-xl transition hover:bg-white/25"
+                onClick={handleResetTabs}
+              >
+                <ArrowLeft className="h-5 w-5" />
+              </Button>
+            )}
 
-            <Tabs defaultValue="location" className="w-full">
+            <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full">
               <TabsList className="grid w-full grid-cols-3">
                 <TabsTrigger
                   value="location"
-                  onClick={() => {
-                    handleSendMessage("gameEstate", "location")
-                    closeRoomsPanel()
-                  }}
+                  className="border border-transparent transition hover:border-white"
                 >
                   Location
                 </TabsTrigger>
-                <TabsTrigger value="rooms" onClick={handleRoomsTab}>
+                <TabsTrigger
+                  value="rooms"
+                  className="border border-transparent transition hover:border-white"
+                >
                   Rooms
                 </TabsTrigger>
                 <TabsTrigger
                   value="amenities"
-                  onClick={handleAmenitiesTab}
+                  className="border border-transparent transition hover:border-white"
                 >
                   Amenities
                 </TabsTrigger>
               </TabsList>
             </Tabs>
-
+          </div>
         </div>
       </div>
 
