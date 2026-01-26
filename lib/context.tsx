@@ -6,38 +6,49 @@ export type UserProfile = {
   firstName?: string
   lastName?: string
   email?: string
+  startDate?: Date | null
+  endDate?: Date | null
   age?: number
   familySize?: number
   interests: string[]
-  destinationPreferences: string[]
+  destination?: string
   travelPurpose?: string
   budgetRange?: string
   loyaltyTier?: string
   notes?: string
 }
 
+export type JourneyStage =
+  | "PROFILE_COLLECTION"
+  | "DESTINATION_SELECT"
+  | "HOTEL_EXPLORATION"
+  | "ROOM_BOOKING"
+
 type UserProfileContextValue = {
   profile: UserProfile
+  journeyStage: JourneyStage
+  setJourneyStage: (stage: JourneyStage) => void
   updateProfile: (updates: Partial<UserProfile>) => void
   resetProfile: () => void
 }
 
 const createEmptyProfile = (): UserProfile => ({
   interests: [],
-  destinationPreferences: [],
+  startDate: null,
+  endDate: null,
 })
 
 const UserProfileContext = createContext<UserProfileContextValue | null>(null)
 
 export function UserProfileProvider({ children }: { children: ReactNode }) {
   const [profile, setProfile] = useState<UserProfile>(createEmptyProfile())
+  const [journeyStage, setJourneyStage] = useState<JourneyStage>("PROFILE_COLLECTION")
 
   const updateProfile = useCallback((updates: Partial<UserProfile>) => {
     setProfile((prev) => ({
       ...prev,
       ...updates,
       interests: mergeUnique(prev.interests, updates.interests),
-      destinationPreferences: mergeUnique(prev.destinationPreferences, updates.destinationPreferences),
     }))
   }, [])
 
@@ -46,10 +57,12 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
   const value = useMemo(
     () => ({
       profile,
+      journeyStage,
+      setJourneyStage,
       updateProfile,
       resetProfile,
     }),
-    [profile, resetProfile, updateProfile],
+    [journeyStage, profile, resetProfile, setJourneyStage, updateProfile],
   )
 
   return <UserProfileContext.Provider value={value}>{children}</UserProfileContext.Provider>

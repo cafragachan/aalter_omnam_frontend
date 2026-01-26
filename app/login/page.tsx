@@ -18,7 +18,7 @@ export default function LoginPage() {
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const { login } = useApp()
-  const { updateProfile } = useUserProfileContext()
+  const { updateProfile, setJourneyStage } = useUserProfileContext()
   const router = useRouter()
   const { toast } = useToast()
 
@@ -41,6 +41,7 @@ export default function LoginPage() {
         email,
         familySize: 1,
       })
+      setJourneyStage("PROFILE_COLLECTION")
       toast({
         title: "Welcome",
         description: "Successfully logged in",

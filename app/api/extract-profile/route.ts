@@ -1,0 +1,130 @@
+import { z } from "zod"
+
+const ExtractedProfileSchema = z.object({
+  name: z.string().nullable().optional(),
+  partySize: z.number().nullable().optional(),
+  destination: z.string().nullable().optional(),
+  startDate: z.string().nullable().optional(),
+  endDate: z.string().nullable().optional(),
+  interests: z.array(z.string()).optional(),
+  travelPurpose: z.string().nullable().optional(),
+  budgetRange: z.string().nullable().optional(),
+})
+
+type ExtractedProfile = z.infer<typeof ExtractedProfileSchema>
+
+const SYSTEM_PROMPT = `You are a profile data extraction assistant for a hotel booking AI agent.
+Your job is to extract structured information from user utterances in a conversation.
+
+Extract the following fields when mentioned:
+- name: The user's name (first name or full name)
+- partySize: Number of guests/travelers (as a number)
+- destination: Where they want to travel (city, country, or region)
+- startDate: Travel start date in ISO format (YYYY-MM-DD) if mentioned
+- endDate: Travel end date in ISO format (YYYY-MM-DD) if mentioned
+- interests: Array of interests/activities they mentioned (e.g., ["relaxation", "spa", "hiking"])
+- travelPurpose: Purpose of travel (business, leisure, honeymoon, family vacation, etc.)
+- budgetRange: Budget indication if mentioned (e.g., "luxury", "mid-range", "$500-1000/night")
+
+Rules:
+- Only extract information that is explicitly stated or clearly implied
+- Return null for fields not mentioned
+- For dates, use the current year if not specified
+- For party size, include the speaker (e.g., "me and my wife" = 2)
+- Be conservative - don't infer information that isn't clearly stated
+
+Respond ONLY with valid JSON matching this schema, no other text.`
+
+export async function POST(request: Request) {
+  const openaiKey = process.env.NEXT_PUBLIC_OPENAI_API_KEY
+
+  if (!openaiKey) {
+    // Return 501 Not Implemented to signal that AI extraction is not available
+    // This allows the client to gracefully fall back to regex-only extraction
+    return new Response(
+      JSON.stringify({ error: "AI extraction not configured", code: "NOT_CONFIGURED" }),
+      { status: 501, headers: { "Content-Type": "application/json" } }
+    )
+  }
+
+  try {
+    const body = await request.json()
+    const { utterances, currentProfile } = body as {
+      utterances: string[]
+      currentProfile?: Partial<ExtractedProfile>
+    }
+
+    if (!utterances || !Array.isArray(utterances) || utterances.length === 0) {
+      return new Response(
+        JSON.stringify({ error: "utterances array is required" }),
+        { status: 400, headers: { "Content-Type": "application/json" } }
+      )
+    }
+
+    const userMessage = `Current profile state:
+${JSON.stringify(currentProfile ?? {}, null, 2)}
+
+Recent user utterances to extract from:
+${utterances.map((u, i) => `${i + 1}. "${u}"`).join("\n")}
+
+Extract any new profile information from these utterances. Only include fields where you found new information.`
+
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${openaiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: userMessage },
+        ],
+        temperature: 0.1,
+        response_format: { type: "json_object" },
+      }),
+    })
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}))
+      console.error("OpenAI API error:", errorData)
+      return new Response(
+        JSON.stringify({ error: "Failed to extract profile data" }),
+        { status: 500, headers: { "Content-Type": "application/json" } }
+      )
+    }
+
+    const data = await response.json()
+    const content = data.choices?.[0]?.message?.content
+
+    if (!content) {
+      return new Response(
+        JSON.stringify({ error: "No content in AI response" }),
+        { status: 500, headers: { "Content-Type": "application/json" } }
+      )
+    }
+
+    const parsed = JSON.parse(content)
+    const validated = ExtractedProfileSchema.safeParse(parsed)
+
+    if (!validated.success) {
+      console.error("Schema validation failed:", validated.error)
+      return new Response(
+        JSON.stringify({ error: "Invalid profile data structure" }),
+        { status: 500, headers: { "Content-Type": "application/json" } }
+      )
+    }
+
+    return new Response(JSON.stringify({ profile: validated.data }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    })
+  } catch (error) {
+    console.error("Profile extraction error:", error)
+    return new Response(
+      JSON.stringify({ error: (error as Error).message }),
+      { status: 500, headers: { "Content-Type": "application/json" } }
+    )
+  }
+}

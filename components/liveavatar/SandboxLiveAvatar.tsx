@@ -1,26 +1,55 @@
 ﻿"use client"
 
 import { useEffect, useRef, useState, type ReactNode } from "react"
-import { SessionState } from "@heygen/liveavatar-web-sdk"
-import { LiveAvatarContextProvider, useSession, useUserProfile } from "@/lib/liveavatar"
+import { AgentEventsEnum, SessionState } from "@heygen/liveavatar-web-sdk"
+import { LiveAvatarContextProvider, useLiveAvatarContext, useSession, useUserProfile } from "@/lib/liveavatar"
 import { useAvatarActions } from "@/lib/liveavatar/useAvatarActions"
+import { useUserProfileContext } from "@/lib/context"
 
 export const DebugHud = () => {
-  const { profile, userMessages } = useUserProfile()
+  const { profile: derivedProfile, userMessages, isExtracting } = useUserProfile()
+  const { profile, journeyStage } = useUserProfileContext()
 
   return (
     <div className="bg-white/12 text-white text-xs sm:text-sm p-3 rounded-xl space-y-1 max-w-sm pointer-events-none border border-white/15 backdrop-blur-md shadow-lg">
-      <div className="font-semibold text-white">User Profile (live)</div>
-      <div>Name: {profile.name ?? "—"}</div>
-      <div>Party size: {profile.partySize ?? "—"}</div>
-      <div>Destination: {profile.destination ?? "—"}</div>
+      <div className="flex items-center justify-between">
+        <div className="font-semibold text-white">User Profile (context)</div>
+        <div className="text-[10px] px-2 py-0.5 rounded bg-white/10">{journeyStage}</div>
+      </div>
+      <div>Name: {[profile.firstName, profile.lastName].filter(Boolean).join(" ") || "—"}</div>
+      <div>Email: {profile.email || "—"}</div>
+      <div>Start date: {profile.startDate ? new Date(profile.startDate).toLocaleDateString() : "—"}</div>
+      <div>End date: {profile.endDate ? new Date(profile.endDate).toLocaleDateString() : "—"}</div>
+      <div>Family size: {profile.familySize ?? "—"}</div>
+      <div>Destination: {profile.destination || "—"}</div>
       <div>Interests: {profile.interests.length ? profile.interests.join(", ") : "—"}</div>
+      <div>Travel purpose: {profile.travelPurpose || "—"}</div>
+      <div>Budget: {profile.budgetRange || "—"}</div>
+      <div className="pt-1 border-t border-white/20">
+        <div className="flex items-center gap-2">
+          <span className="font-semibold text-white">Avatar Derived</span>
+          {isExtracting && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/30 text-blue-200 animate-pulse">
+              AI extracting...
+            </span>
+          )}
+        </div>
+      </div>
+      <div>Name: {derivedProfile.name ?? "—"}</div>
+      <div>Party size: {derivedProfile.partySize ?? "—"}</div>
+      <div>Destination: {derivedProfile.destination ?? "—"}</div>
+      <div>Dates: {derivedProfile.startDate && derivedProfile.endDate
+        ? `${derivedProfile.startDate.toLocaleDateString()} - ${derivedProfile.endDate.toLocaleDateString()}`
+        : "—"}</div>
+      <div>Interests: {derivedProfile.interests.length ? derivedProfile.interests.join(", ") : "—"}</div>
+      {derivedProfile.travelPurpose && <div>Purpose: {derivedProfile.travelPurpose}</div>}
+      {derivedProfile.budgetRange && <div>Budget: {derivedProfile.budgetRange}</div>}
       {userMessages.length > 0 && (
         <div className="pt-1 border-t border-white/20">
-          <div className="font-semibold text-white">Recent user utterances</div>
+          <div className="font-semibold text-white">Recent utterances ({userMessages.length})</div>
           <ul className="space-y-1 text-white/80">
             {userMessages.slice(-3).map((m, idx) => (
-              <li key={`${m.timestamp}-${idx}`}>
+              <li key={`${m.timestamp}-${idx}`} className="truncate max-w-[280px]">
                 "{m.message}"
               </li>
             ))}
@@ -34,9 +63,31 @@ export const DebugHud = () => {
 const SandboxSessionPlayer = ({ fit }: { fit: "contain" | "cover" }) => {
   const [muted, setMuted] = useState(true)
   const { sessionState, isStreamReady, startSession, attachElement, stopSession } = useSession()
-  const { repeat } = useAvatarActions("FULL")
+  const { repeat, interrupt } = useAvatarActions("FULL")
+  const { profile } = useUserProfileContext()
+  const { sessionRef } = useLiveAvatarContext()
   const videoRef = useRef<HTMLVideoElement>(null)
   const hasWelcomedRef = useRef(false)
+  const removeFirstSpeakGuardRef = useRef<(() => void) | null>(null)
+
+  // Guard to kill any default first utterance from the avatar (HeyGen welcome, etc.)
+  useEffect(() => {
+    const session = sessionRef.current
+    if (!session) return
+
+    const handleFirstSpeak = () => {
+      session.interrupt()
+      if (removeFirstSpeakGuardRef.current) {
+        removeFirstSpeakGuardRef.current()
+        removeFirstSpeakGuardRef.current = null
+      }
+    }
+
+    session.on(AgentEventsEnum.AVATAR_SPEAK_STARTED, handleFirstSpeak)
+    removeFirstSpeakGuardRef.current = () => session.removeListener(AgentEventsEnum.AVATAR_SPEAK_STARTED, handleFirstSpeak)
+
+    return () => removeFirstSpeakGuardRef.current?.()
+  }, [sessionRef])
 
   useEffect(() => {
     if (sessionState === SessionState.INACTIVE) {
@@ -47,9 +98,16 @@ const SandboxSessionPlayer = ({ fit }: { fit: "contain" | "cover" }) => {
   useEffect(() => {
     if (sessionState === SessionState.CONNECTED && !hasWelcomedRef.current) {
       hasWelcomedRef.current = true
-      repeat("Welcome to the Omnam Digital Twin Booking Experience, how can I help you today?").catch(() => undefined)
+      const firstName = profile.firstName?.trim() || "there"
+      // Drop the guard so our own greeting isn't interrupted
+      removeFirstSpeakGuardRef.current?.()
+      removeFirstSpeakGuardRef.current = null
+      // interrupt()?.catch(() => undefined)
+      repeat(
+        `Hello ${firstName}, I'm Ava from the Omnam Group. I'll be your AI assistant inside this digital twin experience. I'll collect a few details and guide you to the best property and room for your stay. Can you briefly tell me where would you like to travel, in which dates and how many guests will be travelling with you?`,
+      ).catch(() => undefined)
     }
-  }, [repeat, sessionState])
+  }, [interrupt, profile.firstName, repeat, sessionState])
 
   useEffect(() => {
     if (isStreamReady && videoRef.current) {
