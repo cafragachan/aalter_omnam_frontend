@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type ReactNode } from "react"
 import { AgentEventsEnum, SessionState } from "@heygen/liveavatar-web-sdk"
+import { ChevronDown } from "lucide-react"
 import { LiveAvatarContextProvider, useLiveAvatarContext, useSession, useUserProfile } from "@/lib/liveavatar"
 import { useAvatarActions } from "@/lib/liveavatar/useAvatarActions"
 import { useUserProfileContext } from "@/lib/context"
@@ -9,52 +10,78 @@ import { useUserProfileContext } from "@/lib/context"
 export const DebugHud = () => {
   const { profile: derivedProfile, userMessages, isExtracting } = useUserProfile()
   const { profile, journeyStage } = useUserProfileContext()
+  const [expanded, setExpanded] = useState(false)
 
   return (
-    <div className="bg-white/12 text-white text-xs sm:text-sm p-3 rounded-xl space-y-1 max-w-sm pointer-events-none border border-white/15 backdrop-blur-md shadow-lg">
-      <div className="flex items-center justify-between">
-        <div className="font-semibold text-white">User Profile (context)</div>
-        <div className="text-[10px] px-2 py-0.5 rounded bg-white/10">{journeyStage}</div>
-      </div>
-      <div>Name: {[profile.firstName, profile.lastName].filter(Boolean).join(" ") || "—"}</div>
-      <div>Email: {profile.email || "—"}</div>
-      <div>Start date: {profile.startDate ? new Date(profile.startDate).toLocaleDateString() : "—"}</div>
-      <div>End date: {profile.endDate ? new Date(profile.endDate).toLocaleDateString() : "—"}</div>
-      <div>Family size: {profile.familySize ?? "—"}</div>
-      <div>Destination: {profile.destination || "—"}</div>
-      <div>Interests: {profile.interests.length ? profile.interests.join(", ") : "—"}</div>
-      <div>Travel purpose: {profile.travelPurpose || "—"}</div>
-      <div>Budget: {profile.budgetRange || "—"}</div>
-      <div className="pt-1 border-t border-white/20">
+    <div className="bg-white/12 text-white text-xs sm:text-sm p-3 rounded-xl space-y-2 max-w-sm pointer-events-auto border border-white/15 backdrop-blur-md shadow-lg select-none">
+      <button
+        type="button"
+        className="w-full flex items-center justify-between gap-2 text-left"
+        onClick={() => setExpanded((v) => !v)}
+      >
         <div className="flex items-center gap-2">
-          <span className="font-semibold text-white">Avatar Derived</span>
-          {isExtracting && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/30 text-blue-200 animate-pulse">
-              AI extracting...
-            </span>
+          <div className="font-semibold text-white">User Profile (context)</div>
+          <div className="text-[10px] px-2 py-0.5 rounded bg-white/10">{journeyStage}</div>
+        </div>
+        <ChevronDown
+          className={`h-4 w-4 transition-transform duration-150 ${expanded ? "rotate-180" : ""}`}
+        />
+      </button>
+
+      {!expanded ? (
+        <div className="flex flex-wrap gap-x-3 gap-y-1 text-white/80">
+          <span>Name: {[profile.firstName, profile.lastName].filter(Boolean).join(" ") || "—"}</span>
+          <span>Dest: {profile.destination || derivedProfile.destination || "—"}</span>
+          <span>
+            Dates: {derivedProfile.startDate && derivedProfile.endDate
+              ? `${derivedProfile.startDate.toLocaleDateString()}–${derivedProfile.endDate.toLocaleDateString()}`
+              : "—"}
+          </span>
+          <span>Guests: {derivedProfile.partySize ?? profile.familySize ?? "—"}</span>
+        </div>
+      ) : (
+        <>
+          <div>Name: {[profile.firstName, profile.lastName].filter(Boolean).join(" ") || "—"}</div>
+          <div>Email: {profile.email || "—"}</div>
+          <div>Start date: {profile.startDate ? new Date(profile.startDate).toLocaleDateString() : "—"}</div>
+          <div>End date: {profile.endDate ? new Date(profile.endDate).toLocaleDateString() : "—"}</div>
+          <div>Family size: {profile.familySize ?? "—"}</div>
+          <div>Destination: {profile.destination || "—"}</div>
+          <div>Interests: {profile.interests.length ? profile.interests.join(", ") : "—"}</div>
+          <div>Travel purpose: {profile.travelPurpose || "—"}</div>
+          <div>Budget: {profile.budgetRange || "—"}</div>
+          <div className="pt-1 border-t border-white/20">
+            <div className="flex items-center gap-2">
+              <span className="font-semibold text-white">Avatar Derived</span>
+              {isExtracting && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/30 text-blue-200 animate-pulse">
+                  AI extracting...
+                </span>
+              )}
+            </div>
+          </div>
+          <div>Name: {derivedProfile.name ?? "—"}</div>
+          <div>Party size: {derivedProfile.partySize ?? "—"}</div>
+          <div>Destination: {derivedProfile.destination ?? "—"}</div>
+          <div>Dates: {derivedProfile.startDate && derivedProfile.endDate
+            ? `${derivedProfile.startDate.toLocaleDateString()} - ${derivedProfile.endDate.toLocaleDateString()}`
+            : "—"}</div>
+          <div>Interests: {derivedProfile.interests.length ? derivedProfile.interests.join(", ") : "—"}</div>
+          {derivedProfile.travelPurpose && <div>Purpose: {derivedProfile.travelPurpose}</div>}
+          {derivedProfile.budgetRange && <div>Budget: {derivedProfile.budgetRange}</div>}
+          {userMessages.length > 0 && (
+            <div className="pt-1 border-t border-white/20">
+              <div className="font-semibold text-white">Recent utterances ({userMessages.length})</div>
+              <ul className="space-y-1 text-white/80">
+                {userMessages.slice(-3).map((m, idx) => (
+                  <li key={`${m.timestamp}-${idx}`} className="truncate max-w-[280px]">
+                    "{m.message}"
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
-        </div>
-      </div>
-      <div>Name: {derivedProfile.name ?? "—"}</div>
-      <div>Party size: {derivedProfile.partySize ?? "—"}</div>
-      <div>Destination: {derivedProfile.destination ?? "—"}</div>
-      <div>Dates: {derivedProfile.startDate && derivedProfile.endDate
-        ? `${derivedProfile.startDate.toLocaleDateString()} - ${derivedProfile.endDate.toLocaleDateString()}`
-        : "—"}</div>
-      <div>Interests: {derivedProfile.interests.length ? derivedProfile.interests.join(", ") : "—"}</div>
-      {derivedProfile.travelPurpose && <div>Purpose: {derivedProfile.travelPurpose}</div>}
-      {derivedProfile.budgetRange && <div>Budget: {derivedProfile.budgetRange}</div>}
-      {userMessages.length > 0 && (
-        <div className="pt-1 border-t border-white/20">
-          <div className="font-semibold text-white">Recent utterances ({userMessages.length})</div>
-          <ul className="space-y-1 text-white/80">
-            {userMessages.slice(-3).map((m, idx) => (
-              <li key={`${m.timestamp}-${idx}`} className="truncate max-w-[280px]">
-                "{m.message}"
-              </li>
-            ))}
-          </ul>
-        </div>
+        </>
       )}
     </div>
   )
