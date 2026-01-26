@@ -4,6 +4,7 @@ import { JetBrains_Mono, Manrope } from "next/font/google"
 import "./globals.css"
 import { AppProvider } from "@/lib/store"
 import { Toaster } from "@/components/ui/toaster"
+import { UserProfileProvider } from "@/lib/context"
 
 const manrope = Manrope({ subsets: ["latin"], variable: "--font-sans-custom" })
 const jetbrainsMono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-mono-custom" })
@@ -39,17 +40,19 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={`${manrope.variable} ${jetbrainsMono.variable} font-sans antialiased`}>
-        <AppProvider>
-          {children}
-          <Toaster />
-          <div className="pointer-events-none fixed bottom-8 right-8 z-50">
-            <img
-              src="/omnam-logo-white.png"
-              alt="Omnam"
-              className="h-10 w-auto opacity-75"
-            />
-          </div>
-        </AppProvider>
+        <UserProfileProvider>
+          <AppProvider>
+            {children}
+            <Toaster />
+            <div className="pointer-events-none fixed bottom-8 right-8 z-50">
+              <img
+                src="/omnam-logo-white.png"
+                alt="Omnam"
+                className="h-10 w-auto opacity-75"
+              />
+            </div>
+          </AppProvider>
+        </UserProfileProvider>
       </body>
     </html>
   )

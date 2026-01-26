@@ -10,7 +10,7 @@ export default function HomePage() {
 
   useEffect(() => {
     if (isAuthenticated) {
-      router.push("/search")
+      router.push("/home")
     } else {
       router.push("/login")
     }
