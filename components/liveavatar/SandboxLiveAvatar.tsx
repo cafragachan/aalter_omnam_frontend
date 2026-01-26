@@ -103,6 +103,9 @@ const SandboxSessionPlayer = ({ fit }: { fit: "contain" | "cover" }) => {
       removeFirstSpeakGuardRef.current?.()
       removeFirstSpeakGuardRef.current = null
       // interrupt()?.catch(() => undefined)
+
+      interrupt()
+      enableAudio()
       repeat(
         `Hello ${firstName}, I'm Ava from the Omnam Group. I'll be your AI assistant inside this digital twin experience. I'll collect a few details and guide you to the best property and room for your stay. Can you briefly tell me where would you like to travel, in which dates and how many guests will be travelling with you?`,
       ).catch(() => undefined)
@@ -135,7 +138,7 @@ const SandboxSessionPlayer = ({ fit }: { fit: "contain" | "cover" }) => {
       autoPlay
       muted={muted}
       playsInline
-      onClick={enableAudio}
+      // onClick={enableAudio}
       className={`w-full h-full ${fit === "cover" ? "object-cover" : "object-contain"} bg-black`}
     />
   )
