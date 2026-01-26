@@ -15,7 +15,7 @@ import { useAvatarActions } from "@/lib/liveavatar/useAvatarActions"
 import { useUE5WebSocket } from "@/lib/useUE5WebSocket"
 
 const ProfileSync = () => {
-  const { profile, isExtracting } = useUserProfile()
+  const { profile, isExtractionPending } = useUserProfile()
   const { updateProfile } = useUserProfileContext()
   const lastSyncRef = useRef<string>("")
 
@@ -73,7 +73,7 @@ const ProfileSync = () => {
   ])
 
   // Visual indicator when AI extraction is happening
-  if (isExtracting) {
+  if (isExtractionPending) {
     return (
       <div className="fixed bottom-4 left-4 z-30 rounded-full bg-white/10 px-3 py-1 text-xs text-white/70 backdrop-blur">
         Analyzing...
@@ -94,32 +94,36 @@ const stageLabels: Record<JourneyStage, string> = {
 const JourneyOrchestrator = () => {
   const { journeyStage, setJourneyStage, profile } = useUserProfileContext()
   const { repeat, interrupt } = useAvatarActions("FULL")
-  const { isExtracting } = useUserProfile()
+  // Use derived profile directly to avoid lag between AI extraction and context sync
+  const { profile: derivedProfile, isExtractionPending } = useUserProfile()
   const lastPromptKey = useRef<string>("")
 
   // Ready to show destinations when we have: dates, guests, and interests
   // Note: destination is NOT required here - the overlay helps them pick one
   const readyForDestinations =
-    Boolean(profile.familySize) &&
-    Boolean(profile.startDate && profile.endDate) &&
-    profile.interests.length > 0
+    Boolean(derivedProfile.partySize) &&
+    Boolean(derivedProfile.startDate && derivedProfile.endDate) &&
+    derivedProfile.interests.length > 0
 
   // Drive prompts for missing data during profile collection
   useEffect(() => {
     if (journeyStage !== "PROFILE_COLLECTION") return
     // Wait for AI extraction to complete before prompting - prevents choppy interruptions
     // when user answers multiple questions at once
-    if (isExtracting) return
+    if (isExtractionPending) return
 
-    const missingDates = !profile.startDate || !profile.endDate
-    const missingGuests = !profile.familySize
-    const missingInterests = profile.interests.length === 0
+    const missingDates = !derivedProfile.startDate || !derivedProfile.endDate
+    const missingGuests = !derivedProfile.partySize
+    const missingInterests = derivedProfile.interests.length === 0
 
     const key = `profile-${missingDates}-${missingGuests}-${missingInterests}`
     if (lastPromptKey.current === key) return
     lastPromptKey.current = key
 
-    const firstName = profile.firstName?.trim() || "there"
+    const firstName =
+      profile.firstName?.trim() ||
+      (derivedProfile.name ? derivedProfile.name.split(" ")[0] : "") ||
+      "there"
 
     // First, ask for travel dates and party size
     if (missingDates && missingGuests) {
@@ -154,20 +158,21 @@ const JourneyOrchestrator = () => {
     }
   }, [
     interrupt,
-    isExtracting,
+    isExtractionPending,
     journeyStage,
-    profile.endDate,
-    profile.familySize,
+    derivedProfile.endDate,
+    derivedProfile.partySize,
     profile.firstName,
-    profile.interests.length,
-    profile.startDate,
+    derivedProfile.interests.length,
+    derivedProfile.startDate,
+    derivedProfile.name,
     repeat,
   ])
 
   // Advance to destination selection when we have enough context
   useEffect(() => {
     // Wait for extraction to complete before advancing stage
-    if (isExtracting) return
+    if (isExtractionPending) return
     if (journeyStage === "PROFILE_COLLECTION" && readyForDestinations) {
       setJourneyStage("DESTINATION_SELECT")
       // interrupt()?.catch(() => undefined)
@@ -175,7 +180,7 @@ const JourneyOrchestrator = () => {
         "Wonderful! Based on your preferences, let me show you some destinations I think you'll love.",
       ).catch(() => undefined)
     }
-  }, [readyForDestinations, journeyStage, isExtracting, interrupt, repeat, setJourneyStage])
+  }, [readyForDestinations, journeyStage, isExtractionPending, interrupt, repeat, setJourneyStage])
 
   // Prompt when destinations overlay is shown
   useEffect(() => {
@@ -202,98 +207,13 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null)
   const streamUrl = process.env.NEXT_PUBLIC_VAGON_STREAM_URL || "http://127.0.0.1"
   const hasStream = streamUrl !== "about:blank"
-    const websocket = useRef<WebSocket | null>(null)
 
-      const normalizeIncomingMessages = (data: unknown): unknown[] => {
-    if (typeof data === "string") {
-      const trimmed = data.trim()
-      if (!trimmed) return []
-
-      try {
-        const parsed = JSON.parse(trimmed)
-        return Array.isArray(parsed) ? parsed : [parsed]
-      } catch (error) {
-        console.warn("Failed to parse UE5 message as JSON:", { error, data })
-        return []
-      }
-    }
-
-    return [data]
-  }
-
-
-    useEffect(() => {
-    // Connect to the UE5 WebSocket server
-    const ws = new WebSocket("ws://localhost:7788")
-    websocket.current = ws // Set the ref immediately
-
-    ws.onopen = () => {
-      console.log("Connected to UE5 WebSocket server")
-      websocket.current = ws
-    }
-
-    ws.onmessage = async (event) => {
-      let messageData: unknown = event.data
-
-      if (event.data instanceof Blob) {
-        console.log("Received a Blob from UE5, converting to text...")
-        messageData = await event.data.text()
-      }
-
-      console.log("Message from UE5:", messageData)
-
-      const messages = normalizeIncomingMessages(messageData)
-
-      if (!messages.length) {
-        console.warn("No parsable messages received from UE5.")
-        return
-      }
-
-      // messages.forEach((payload) => {
-      //   if (isUnitSelectionMessage(payload)) {
-      //     handleUnitSelected(payload)
-      //     return
-      //   }
-
-      //   console.warn("Received unhandled UE5 message:", payload)
-      // })
-    }
-
-    ws.onclose = () => {
-      console.log("Disconnected from UE5 WebSocket server")
-    }
-
-    ws.onerror = (error) => {
-      console.error("WebSocket error:", error)
-    }
-
-    return () => {
-      console.log("Component unmounting, closing WebSocket.")
-      if (websocket.current) {
-        websocket.current.close()
-      }
-    }
-  }, [])
-
-  // UE5 WebSocket connection
+  // UE5 WebSocket connection (single instance via hook to avoid multiple sockets)
   const { isConnected, sendStartTest } = useUE5WebSocket({
     onMessage: (msg) => {
       console.log("UE5 message received:", msg)
     },
   })
-
-  const sendMessageToUE5 = (message: object) => {
-    if (websocket.current && websocket.current.readyState === WebSocket.OPEN) {
-      websocket.current.send(JSON.stringify(message))
-    } else {
-      console.error("WebSocket is not connected.")
-    }
-  }
-
-  const handleSendMessage = (type: string, value: unknown) => {
-    sendMessageToUE5({ type, value })
-  }
-
 
   // Ready for destination selection when we have basic info + travel context
   // Note: destination is selected via the overlay, not collected beforehand
@@ -353,7 +273,7 @@ export default function HomePage() {
 
     setJourneyStage("HOTEL_EXPLORATION")
 
-    handleSendMessage("startTEST", "startTEST")
+    sendStartTest(slug)
 
     // if (slug === "edition-lake-como") {
     //   router.push("/metaverse")

@@ -251,6 +251,7 @@ export const useUserProfile = (): {
   userMessages: { message: string; timestamp: number }[]
   triggerAIExtraction: () => Promise<void>
   isExtracting: boolean
+  isExtractionPending: boolean
   aiAvailable: boolean
 } => {
   const { messages } = useLiveAvatarContext()
@@ -310,6 +311,7 @@ export const useUserProfile = (): {
       // 501 means AI extraction is not configured - stop trying
       if (response.status === 501) {
         console.info("AI extraction not configured, using regex-only extraction")
+        lastExtractedCount.current = userMessages.length
         setAiAvailable(false)
         return
       }
@@ -327,6 +329,8 @@ export const useUserProfile = (): {
     } catch (error) {
       console.error("AI extraction failed:", error)
     } finally {
+      // Even if extraction fails, mark current batch as processed so the UI doesn't stay blocked
+      lastExtractedCount.current = userMessages.length
       setIsExtracting(false)
     }
   }, [userMessages, regexProfile, isExtracting, aiAvailable])
@@ -344,6 +348,7 @@ export const useUserProfile = (): {
     return () => clearTimeout(timer)
   }, [userMessages.length, triggerAIExtraction, aiAvailable])
 
-  return { profile, userMessages, triggerAIExtraction, isExtracting, aiAvailable }
-}
+  const isExtractionPending = isExtracting || userMessages.length > lastExtractedCount.current
 
+  return { profile, userMessages, triggerAIExtraction, isExtracting, isExtractionPending, aiAvailable }
+}
