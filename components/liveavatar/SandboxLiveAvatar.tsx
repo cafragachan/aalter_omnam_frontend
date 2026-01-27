@@ -88,7 +88,7 @@ export const DebugHud = () => {
 }
 
 const SandboxSessionPlayer = ({ fit }: { fit: "contain" | "cover" }) => {
-  const [muted, setMuted] = useState(true)
+  const [muted, setMuted] = useState(false)
   const { sessionState, isStreamReady, startSession, attachElement, stopSession } = useSession()
   const { repeat, interrupt } = useAvatarActions("FULL")
   const { profile } = useUserProfileContext()
@@ -97,24 +97,24 @@ const SandboxSessionPlayer = ({ fit }: { fit: "contain" | "cover" }) => {
   const hasWelcomedRef = useRef(false)
   const removeFirstSpeakGuardRef = useRef<(() => void) | null>(null)
 
-  // Guard to kill any default first utterance from the avatar (HeyGen welcome, etc.)
-  useEffect(() => {
-    const session = sessionRef.current
-    if (!session) return
+  // // Guard to kill any default first utterance from the avatar (HeyGen welcome, etc.)
+  // useEffect(() => {
+  //   const session = sessionRef.current
+  //   if (!session) return
 
-    const handleFirstSpeak = () => {
-      session.interrupt()
-      if (removeFirstSpeakGuardRef.current) {
-        removeFirstSpeakGuardRef.current()
-        removeFirstSpeakGuardRef.current = null
-      }
-    }
+  //   const handleFirstSpeak = () => {
+  //     session.interrupt()
+  //     if (removeFirstSpeakGuardRef.current) {
+  //       removeFirstSpeakGuardRef.current()
+  //       removeFirstSpeakGuardRef.current = null
+  //     }
+  //   }
 
-    session.on(AgentEventsEnum.AVATAR_SPEAK_STARTED, handleFirstSpeak)
-    removeFirstSpeakGuardRef.current = () => session.removeListener(AgentEventsEnum.AVATAR_SPEAK_STARTED, handleFirstSpeak)
+  //   session.on(AgentEventsEnum.AVATAR_SPEAK_STARTED, handleFirstSpeak)
+  //   removeFirstSpeakGuardRef.current = () => session.removeListener(AgentEventsEnum.AVATAR_SPEAK_STARTED, handleFirstSpeak)
 
-    return () => removeFirstSpeakGuardRef.current?.()
-  }, [sessionRef])
+  //   return () => removeFirstSpeakGuardRef.current?.()
+  // }, [sessionRef])
 
   useEffect(() => {
     if (sessionState === SessionState.INACTIVE) {
@@ -122,22 +122,22 @@ const SandboxSessionPlayer = ({ fit }: { fit: "contain" | "cover" }) => {
     }
   }, [sessionState, startSession])
 
-  useEffect(() => {
-    if (sessionState === SessionState.CONNECTED && !hasWelcomedRef.current) {
-      hasWelcomedRef.current = true
-      const firstName = profile.firstName?.trim() || "there"
-      // Drop the guard so our own greeting isn't interrupted
-      removeFirstSpeakGuardRef.current?.()
-      removeFirstSpeakGuardRef.current = null
-      // interrupt()?.catch(() => undefined)
+  // useEffect(() => {
+  //   if (sessionState === SessionState.CONNECTED && !hasWelcomedRef.current) {
+  //     hasWelcomedRef.current = true
+  //     const firstName = profile.firstName?.trim() || "there"
+  //     // Drop the guard so our own greeting isn't interrupted
+  //     removeFirstSpeakGuardRef.current?.()
+  //     removeFirstSpeakGuardRef.current = null
+  //     // interrupt()?.catch(() => undefined)
 
-      interrupt()
-      enableAudio()
-      repeat(
-        `Hello ${firstName}, I'm Ava from the Omnam Group. I'll be your AI assistant today. I'll collect a few details and guide you to the best property and room for your stay. Can you briefly tell me where would you like to travel, in which dates and how many guests will be travelling with you?`,
-      ).catch(() => undefined)
-    }
-  }, [interrupt, profile.firstName, repeat, sessionState])
+  //     interrupt()
+  //     enableAudio()
+  //     repeat(
+  //       `Hello ${firstName}, I'm Ava from the Omnam Group. I'll be your AI assistant today. I'll collect a few details and guide you to the best property and room for your stay. Can you briefly tell me where would you like to travel, in which dates and how many guests will be travelling with you?`,
+  //     ).catch(() => undefined)
+  //   }
+  // }, [interrupt, profile.firstName, repeat, sessionState])
 
   useEffect(() => {
     if (isStreamReady && videoRef.current) {
@@ -152,12 +152,6 @@ const SandboxSessionPlayer = ({ fit }: { fit: "contain" | "cover" }) => {
     }
   }, [stopSession])
 
-  const enableAudio = () => {
-    if (!videoRef.current) return
-    videoRef.current.muted = false
-    setMuted(false)
-    videoRef.current.play().catch(() => undefined)
-  }
 
   return (
     <video
