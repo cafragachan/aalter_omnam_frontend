@@ -93,6 +93,7 @@ const stageLabels: Record<JourneyStage, string> = {
 
 const JourneyOrchestrator = () => {
   const { journeyStage, setJourneyStage, profile } = useUserProfileContext()
+  const { selectedHotel } = useApp()
   const { repeat, interrupt } = useAvatarActions("FULL")
   // Use derived profile directly to avoid lag between AI extraction and context sync
   const { profile: derivedProfile, isExtractionPending } = useUserProfile()
@@ -195,6 +196,28 @@ const JourneyOrchestrator = () => {
     }, 500)
     return () => clearTimeout(timer)
   }, [journeyStage, repeat])
+
+  // Congratulatory prompt when a hotel is picked
+  useEffect(() => {
+    if (journeyStage !== "HOTEL_EXPLORATION") return
+    if (!selectedHotel) return
+
+    const hotel = hotels.find((h) => h.slug === selectedHotel)
+    const key = `hotel-${selectedHotel}`
+    if (lastPromptKey.current === key) return
+    lastPromptKey.current = key
+
+    const hotelName = hotel?.name ?? "this property"
+    const locationText = hotel?.location ? ` in ${hotel.location}` : ""
+    const description =
+      hotel?.description ?? "delivers a memorable stay with thoughtful design and service"
+    const narrative = `${description.charAt(0).toLowerCase()}${description.slice(1)}`
+
+    interrupt()
+    repeat(`Great choice—the ${hotelName}${locationText} is a fantastic hotel that ${narrative}.`).catch(
+      () => undefined,
+    )
+  }, [journeyStage, selectedHotel, interrupt, repeat])
 
   return null
 }
