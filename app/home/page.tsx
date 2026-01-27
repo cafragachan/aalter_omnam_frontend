@@ -1,7 +1,6 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { useRouter } from "next/navigation"
 import { ArrowLeft, MapPin, X } from "lucide-react"
 import { SandboxLiveAvatar, DebugHud } from "@/components/liveavatar/SandboxLiveAvatar"
 import { GlassPanel } from "@/components/glass-panel"
@@ -9,10 +8,12 @@ import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { useUserProfile } from "@/lib/liveavatar"
 import { JourneyStage, useUserProfileContext } from "@/lib/context"
-import { hotels } from "@/lib/hotel-data"
+import { hotels, getHotelBySlug, getRoomsByHotelId, getAmenitiesByHotelId } from "@/lib/hotel-data"
 import { useApp } from "@/lib/store"
 import { useAvatarActions } from "@/lib/liveavatar/useAvatarActions"
 import { useUE5WebSocket } from "@/lib/useUE5WebSocket"
+import { HotelRoomCard } from "@/components/HotelRoomCard"
+import { HotelAmenityCard } from "@/components/HotelAmenityCard"
 
 const ProfileSync = () => {
   const { profile, isExtractionPending } = useUserProfile()
@@ -93,11 +94,13 @@ const stageLabels: Record<JourneyStage, string> = {
 
 const JourneyOrchestrator = () => {
   const { journeyStage, setJourneyStage, profile } = useUserProfileContext()
-  const { selectedHotel } = useApp()
+  const { selectedHotel, setPreferredPanel } = useApp()
   const { repeat, interrupt } = useAvatarActions("FULL")
   // Use derived profile directly to avoid lag between AI extraction and context sync
-  const { profile: derivedProfile, isExtractionPending } = useUserProfile()
+  const { profile: derivedProfile, isExtractionPending, userMessages } = useUserProfile()
   const lastPromptKey = useRef<string>("")
+  const awaitingHotelIntent = useRef(false)
+  const lastHandledMessageCount = useRef(0)
 
   // Ready to show destinations when we have: dates, guests, and interests
   // Note: destination is NOT required here - the overlay helps them pick one
@@ -214,22 +217,58 @@ const JourneyOrchestrator = () => {
     const narrative = `${description.charAt(0).toLowerCase()}${description.slice(1)}`
 
     interrupt()
-    repeat(`Great choice—the ${hotelName}${locationText} is a fantastic hotel that ${narrative}.`).catch(
-      () => undefined,
-    )
-  }, [journeyStage, selectedHotel, interrupt, repeat])
+    repeat(
+      `Great choice—the ${hotelName}${locationText} is a fantastic hotel that ${narrative}. Would you like to explore available rooms or the hotel amenities?`,
+    ).catch(() => undefined)
+
+    awaitingHotelIntent.current = true
+    lastHandledMessageCount.current = userMessages.length
+  }, [journeyStage, selectedHotel, interrupt, repeat, userMessages.length])
+
+  // Listen for the user's intent (rooms vs amenities) after the question
+  useEffect(() => {
+    if (!awaitingHotelIntent.current) return
+    if (userMessages.length <= lastHandledMessageCount.current) return
+
+    const latestMessage = userMessages[userMessages.length - 1]?.message?.toLowerCase() ?? ""
+    lastHandledMessageCount.current = userMessages.length
+
+    const wantsRooms = /\b(room|rooms|suite|suites|book|stay|bed|accommodation)\b/.test(latestMessage)
+    const wantsAmenities = /\b(amenity|amenities|spa|pool|gym|restaurant|bar|facility|facilities)\b/.test(latestMessage)
+
+    if (wantsRooms && !wantsAmenities) {
+      awaitingHotelIntent.current = false
+      interrupt()
+      repeat("Perfect, I'll pull up the available rooms for you now.").catch(() => undefined)
+      setPreferredPanel("rooms")
+      return
+    }
+
+    if (wantsAmenities && !wantsRooms) {
+      awaitingHotelIntent.current = false
+      interrupt()
+      repeat("Great choice. Let me show you the amenities available at this property.").catch(() => undefined)
+      setPreferredPanel("amenities")
+      return
+    }
+
+    // Ambiguous response: acknowledge and gently re-ask
+    interrupt()
+    repeat("Got it. Would you like to explore rooms or check out the hotel amenities?").catch(() => undefined)
+  }, [userMessages, repeat, interrupt, setPreferredPanel])
 
   return null
 }
 
 export default function HomePage() {
-  const router = useRouter()
-  const { selectHotel } = useApp()
+  const { selectHotel, selectedHotel, preferredPanel, setPreferredPanel } = useApp()
   const { profile, journeyStage, setJourneyStage, updateProfile } = useUserProfileContext()
   const [sessionToken, setSessionToken] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const streamUrl = process.env.NEXT_PUBLIC_VAGON_STREAM_URL || "http://127.0.0.1"
   const hasStream = streamUrl !== "about:blank"
+  const [showRoomsPanel, setShowRoomsPanel] = useState(false)
+  const [showAmenitiesPanel, setShowAmenitiesPanel] = useState(false)
 
   // UE5 WebSocket message handler - memoized to prevent reconnection loops
   const handleUE5Message = useCallback((msg: import("@/lib/useUE5WebSocket").UE5IncomingMessage) => {
@@ -244,6 +283,58 @@ export default function HomePage() {
   const handleSendMessage = useCallback((type: string, value: unknown) => {
     sendRawMessage({ type, value })
   }, [sendRawMessage])
+
+  const selectedHotelData = useMemo(
+    () => (selectedHotel ? getHotelBySlug(selectedHotel) : undefined),
+    [selectedHotel],
+  )
+
+  const rooms = useMemo(
+    () => (selectedHotelData ? getRoomsByHotelId(selectedHotelData.id) : []),
+    [selectedHotelData],
+  )
+
+  const amenities = useMemo(
+    () => (selectedHotelData ? getAmenitiesByHotelId(selectedHotelData.id) : []),
+    [selectedHotelData],
+  )
+
+  const handleRoomsPanel = useCallback(() => {
+    handleSendMessage("gameEstate", "rooms")
+    setShowRoomsPanel(true)
+    setShowAmenitiesPanel(false)
+  }, [handleSendMessage])
+
+  const handleAmenitiesPanel = useCallback(() => {
+    handleSendMessage("gameEstate", "amenities")
+    setShowAmenitiesPanel(true)
+    setShowRoomsPanel(false)
+  }, [handleSendMessage])
+
+  const closeRoomsPanel = useCallback((sendDefault = true) => {
+    setShowRoomsPanel(false)
+    if (sendDefault) {
+      handleSendMessage("gameEstate", "default")
+    }
+  }, [handleSendMessage])
+
+  const closeAmenitiesPanel = useCallback((sendDefault = true) => {
+    setShowAmenitiesPanel(false)
+    if (sendDefault) {
+      handleSendMessage("gameEstate", "default")
+    }
+  }, [handleSendMessage])
+
+  // Open the requested panel when set by the journey orchestrator
+  useEffect(() => {
+    if (!preferredPanel) return
+    if (preferredPanel === "rooms") {
+      handleRoomsPanel()
+    } else if (preferredPanel === "amenities") {
+      handleAmenitiesPanel()
+    }
+    setPreferredPanel(null)
+  }, [preferredPanel, handleRoomsPanel, handleAmenitiesPanel, setPreferredPanel])
 
   // Ready for destination selection when we have basic info + travel context
   // Note: destination is selected via the overlay, not collected beforehand
@@ -300,7 +391,7 @@ export default function HomePage() {
     }
 
     selectHotel(slug)
-
+    setPreferredPanel(null)
     setJourneyStage("HOTEL_EXPLORATION")
 
     //sendStartTest(slug)
@@ -446,6 +537,90 @@ export default function HomePage() {
               ))}
             </div>
           </GlassPanel>
+        </div>
+      )}
+
+      {showRoomsPanel && (
+        <div
+          className="fixed inset-0 z-30 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+          onClick={() => closeRoomsPanel(true)}
+        >
+          <div className="w-full max-w-6xl px-4" onClick={(event) => event.stopPropagation()}>
+            <GlassPanel className="bg-white/12 px-8 py-10 backdrop-blur-2xl">
+              <div className="mb-6 flex items-center gap-3">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="text-white hover:bg-white/10"
+                  onClick={() => closeRoomsPanel(true)}
+                >
+                  <ArrowLeft className="h-5 w-5" />
+                </Button>
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-white/60">Rooms</p>
+                  <h2 className="text-2xl font-semibold text-white">{selectedHotelData?.name || "Rooms"}</h2>
+                </div>
+              </div>
+              <div className="grid grid-cols-[repeat(auto-fit,minmax(240px,320px))] justify-center gap-6">
+                {rooms.length > 0 ? (
+                  rooms.map((room) => (
+                    <HotelRoomCard
+                      key={room.id}
+                      room={room}
+                      onClick={() => {
+                        handleSendMessage("selectedRoom", room.id)
+                        closeRoomsPanel(false)
+                      }}
+                    />
+                  ))
+                ) : (
+                  <p className="text-white/70">No rooms available for this property.</p>
+                )}
+              </div>
+            </GlassPanel>
+          </div>
+        </div>
+      )}
+
+      {showAmenitiesPanel && (
+        <div
+          className="fixed inset-0 z-30 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+          onClick={() => closeAmenitiesPanel(true)}
+        >
+          <div className="w-full max-w-5xl px-4" onClick={(event) => event.stopPropagation()}>
+            <GlassPanel className="bg-white/12 px-8 py-10 backdrop-blur-2xl">
+              <div className="mb-6 flex items-center gap-3">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="text-white hover:bg-white/10"
+                  onClick={() => closeAmenitiesPanel(true)}
+                >
+                  <ArrowLeft className="h-5 w-5" />
+                </Button>
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-white/60">Amenities</p>
+                  <h2 className="text-2xl font-semibold text-white">{selectedHotelData?.name || "Amenities"}</h2>
+                </div>
+              </div>
+              <div className="grid grid-cols-[repeat(auto-fit,minmax(240px,320px))] justify-center gap-6">
+                {amenities.length > 0 ? (
+                  amenities.map((amenity) => (
+                    <HotelAmenityCard
+                      key={amenity.id}
+                      amenity={amenity}
+                      onClick={() => {
+                        handleSendMessage("selectedAmenity", amenity.id)
+                        closeAmenitiesPanel(false)
+                      }}
+                    />
+                  ))
+                ) : (
+                  <p className="text-white/70">No amenities available for this property.</p>
+                )}
+              </div>
+            </GlassPanel>
+          </div>
         </div>
       )}
     </div>

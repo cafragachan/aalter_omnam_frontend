@@ -9,7 +9,7 @@ import { useApp } from "@/lib/store"
 import { getAmenitiesByHotelId, getHotelBySlug, getRoomsByHotelId } from "@/lib/hotel-data"
 import { HotelRoomCard } from "@/components/HotelRoomCard"
 import { HotelAmenityCard } from "@/components/HotelAmenityCard"
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 
 type UnitSelectionMessage = {
   type: "unit"
@@ -21,7 +21,7 @@ type UnitSelectionMessage = {
 
 export default function MetaversePage() {
   const router = useRouter()
-  const { selectedHotel } = useApp()
+  const { selectedHotel, preferredPanel, setPreferredPanel } = useApp()
   // For local development, point this to your local Pixel Stream
   const streamUrl = process.env.NEXT_PUBLIC_VAGON_STREAM_URL || "http://127.0.0.1"
   const hasStream = streamUrl !== "about:blank"
@@ -119,17 +119,20 @@ export default function MetaversePage() {
     }
   }, [])
 
-  const sendMessageToUE5 = (message: object) => {
+  const sendMessageToUE5 = useCallback((message: object) => {
     if (websocket.current && websocket.current.readyState === WebSocket.OPEN) {
       websocket.current.send(JSON.stringify(message))
     } else {
       console.error("WebSocket is not connected.")
     }
-  }
+  }, [])
 
-  const handleSendMessage = (type: string, value: unknown) => {
-    sendMessageToUE5({ type, value })
-  }
+  const handleSendMessage = useCallback(
+    (type: string, value: unknown) => {
+      sendMessageToUE5({ type, value })
+    },
+    [sendMessageToUE5],
+  )
 
   const handleUnitSelected = (unit: UnitSelectionMessage) => {
     setSelectedUnit(unit)
@@ -188,11 +191,11 @@ export default function MetaversePage() {
     }
   }
 
-  const handleRoomsTab = () => {
+  const handleRoomsTab = useCallback(() => {
     handleSendMessage("gameEstate", "rooms")
     setShowRoomsPanel(true)
     setShowAmenitiesPanel(false)
-  }
+  }, [handleSendMessage])
 
   const closeRoomsPanel = (sendDefault = true) => {
     setShowRoomsPanel(false)
@@ -200,17 +203,30 @@ export default function MetaversePage() {
       resetTabSelection(true)
     }
   }
-  const handleAmenitiesTab = () => {
+  const handleAmenitiesTab = useCallback(() => {
     handleSendMessage("gameEstate", "amenities")
     setShowAmenitiesPanel(true)
     setShowRoomsPanel(false)
-  }
+  }, [handleSendMessage])
   const closeAmenitiesPanel = (sendDefault = true) => {
     setShowAmenitiesPanel(false)
     if (sendDefault) {
       resetTabSelection(true)
     }
   }
+
+  // Auto-open the requested panel if set from the journey orchestrator
+  useEffect(() => {
+    if (!preferredPanel) return
+
+    if (preferredPanel === "rooms") {
+      handleRoomsTab()
+    } else if (preferredPanel === "amenities") {
+      handleAmenitiesTab()
+    }
+
+    setPreferredPanel(null)
+  }, [preferredPanel, setPreferredPanel, handleRoomsTab, handleAmenitiesTab])
 
   const formatUnitPrice = (price?: string) => {
     if (!price) return "N/A"

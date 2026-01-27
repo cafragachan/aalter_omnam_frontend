@@ -27,6 +27,7 @@ interface AppState {
   user: { email: string } | null
   searchCriteria: SearchCriteria
   selectedHotel: string | null
+  preferredPanel: "rooms" | "amenities" | null
   bookings: Booking[]
   isLoading: boolean
 }
@@ -36,6 +37,7 @@ interface AppContextType extends AppState {
   logout: () => void
   updateSearchCriteria: (criteria: Partial<SearchCriteria>) => void
   selectHotel: (slug: string) => void
+  setPreferredPanel: (panel: "rooms" | "amenities" | null) => void
   addBooking: (booking: Omit<Booking, "id" | "createdAt">) => void
   setLoading: (loading: boolean) => void
 }
@@ -55,6 +57,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       rooms: 1,
     },
     selectedHotel: null,
+    preferredPanel: null,
     bookings: [],
     isLoading: false,
   })
@@ -90,6 +93,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setState((prev) => ({ ...prev, selectedHotel: slug }))
   }
 
+  const setPreferredPanel = (panel: "rooms" | "amenities" | null) => {
+    setState((prev) => ({ ...prev, preferredPanel: panel }))
+  }
+
   const addBooking = (booking: Omit<Booking, "id" | "createdAt">) => {
     const newBooking: Booking = {
       ...booking,
@@ -111,13 +118,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
       value={{
         ...state,
         login,
-        logout,
-        updateSearchCriteria,
-        selectHotel,
-        addBooking,
-        setLoading,
-      }}
-    >
+      logout,
+      updateSearchCriteria,
+      selectHotel,
+      setPreferredPanel,
+      addBooking,
+      setLoading,
+    }}
+  >
       {children}
     </AppContext.Provider>
   )
