@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import { ArrowLeft, MapPin, X } from "lucide-react"
 import { SandboxLiveAvatar, DebugHud } from "@/components/liveavatar/SandboxLiveAvatar"
@@ -208,12 +208,19 @@ export default function HomePage() {
   const streamUrl = process.env.NEXT_PUBLIC_VAGON_STREAM_URL || "http://127.0.0.1"
   const hasStream = streamUrl !== "about:blank"
 
+  // UE5 WebSocket message handler - memoized to prevent reconnection loops
+  const handleUE5Message = useCallback((msg: import("@/lib/useUE5WebSocket").UE5IncomingMessage) => {
+    console.log("UE5 message received:", msg)
+  }, [])
+
   // UE5 WebSocket connection (single instance via hook to avoid multiple sockets)
-  const { isConnected, sendStartTest } = useUE5WebSocket({
-    onMessage: (msg) => {
-      console.log("UE5 message received:", msg)
-    },
+  const { isConnected, sendStartTest, sendRawMessage } = useUE5WebSocket({
+    onMessage: handleUE5Message,
   })
+
+  const handleSendMessage = useCallback((type: string, value: unknown) => {
+    sendRawMessage({ type, value })
+  }, [sendRawMessage])
 
   // Ready for destination selection when we have basic info + travel context
   // Note: destination is selected via the overlay, not collected beforehand
@@ -273,7 +280,9 @@ export default function HomePage() {
 
     setJourneyStage("HOTEL_EXPLORATION")
 
-    sendStartTest(slug)
+    //sendStartTest(slug)
+
+    handleSendMessage("startTEST", "startTEST")
 
     // if (slug === "edition-lake-como") {
     //   router.push("/metaverse")
@@ -350,8 +359,8 @@ export default function HomePage() {
       </div>
 
       {showDestinationsOverlay && (
-        <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/70 backdrop-blur-sm px-4 py-10">
-          <GlassPanel className="relative z-10 w-full max-w-5xl space-y-6 px-8 py-10">
+        <div className="fixed inset-0 z-20 flex items-center justify-center px-4 py-10 pointer-events-none">
+          <GlassPanel className="relative z-10 w-full max-w-5xl space-y-6 px-8 py-10 pointer-events-auto">
             <div className="flex items-center gap-4">
               <Button
                 variant="ghost"
