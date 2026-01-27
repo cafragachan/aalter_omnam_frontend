@@ -152,7 +152,7 @@ const JourneyOrchestrator = () => {
     if (missingInterests) {
       interrupt()
       repeat(
-        `Perfect! Now tell me, what kind of experiences are you looking for and places to visit? Are you interested in relaxation, adventure, culture, gastronomy, or something else?`,
+        `Perfect! Now tell me, what kind of experiences are you looking for?`,
       ).catch(() => undefined)
       return
     }
@@ -175,10 +175,10 @@ const JourneyOrchestrator = () => {
     if (isExtractionPending) return
     if (journeyStage === "PROFILE_COLLECTION" && readyForDestinations) {
       setJourneyStage("DESTINATION_SELECT")
-      // interrupt()?.catch(() => undefined)
-      repeat(
-        "Wonderful! Based on your preferences, let me show you some destinations I think you'll love.",
-      ).catch(() => undefined)
+      // // interrupt()?.catch(() => undefined)
+      // repeat(
+      //   "Wonderful! Based on your preferences, let me show you some available options I think you'll love.",
+      // ).catch(() => undefined)
     }
   }, [readyForDestinations, journeyStage, isExtractionPending, interrupt, repeat, setJourneyStage])
 
@@ -189,7 +189,7 @@ const JourneyOrchestrator = () => {
     lastPromptKey.current = "destinations-shown"
     // Small delay to let the overlay render
     const timer = setTimeout(() => {
-      repeat("Take a look at these properties. Tap any card to explore the digital twin.").catch(
+      repeat("Wonderful! Based on your preferences, let me show you some available options I think you'll love. Take a look at these properties. Tap any card to explore the digital twin.").catch(
         () => undefined,
       )
     }, 500)
