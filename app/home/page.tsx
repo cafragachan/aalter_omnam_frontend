@@ -85,6 +85,14 @@ const ProfileSync = () => {
   return null
 }
 
+type UnitSelectionMessage = {
+  type: "unit"
+  roomName: string
+  description?: string
+  price?: string
+  level?: string
+}
+
 const stageLabels: Record<JourneyStage, string> = {
   PROFILE_COLLECTION: "Profile",
   DESTINATION_SELECT: "Destinations",
@@ -94,7 +102,7 @@ const stageLabels: Record<JourneyStage, string> = {
 
 const JourneyOrchestrator = () => {
   const { journeyStage, setJourneyStage, profile } = useUserProfileContext()
-  const { selectedHotel, setPreferredPanel } = useApp()
+  const { selectedHotel, setPreferredPanel, pendingRoomAnnouncement, setPendingRoomAnnouncement } = useApp()
   const { repeat, interrupt } = useAvatarActions("FULL")
   // Use derived profile directly to avoid lag between AI extraction and context sync
   const { profile: derivedProfile, isExtractionPending, userMessages } = useUserProfile()
@@ -218,7 +226,7 @@ const JourneyOrchestrator = () => {
 
     interrupt()
     repeat(
-      `Great choice—the ${hotelName}${locationText} is a fantastic hotel that ${narrative}. Would you like to explore available rooms or the hotel amenities?`,
+      `Great choice—the ${hotelName} is a fantastic hotel that ${narrative}. Would you like to explore available rooms or the hotel amenities?`,
     ).catch(() => undefined)
 
     awaitingHotelIntent.current = true
@@ -257,11 +265,24 @@ const JourneyOrchestrator = () => {
     repeat("Got it. Would you like to explore rooms or check out the hotel amenities?").catch(() => undefined)
   }, [userMessages, repeat, interrupt, setPreferredPanel])
 
+  // Handle room selection announcement
+  useEffect(() => {
+    if (!pendingRoomAnnouncement) return
+
+    const { roomName, occupancy } = pendingRoomAnnouncement
+    setPendingRoomAnnouncement(null)
+
+    interrupt()
+    repeat(
+      `The ${roomName} can host up to ${occupancy} guests. Would you like to explore the room interior or the exterior view?`
+    ).catch(() => undefined)
+  }, [pendingRoomAnnouncement, setPendingRoomAnnouncement, interrupt, repeat])
+
   return null
 }
 
 export default function HomePage() {
-  const { selectHotel, selectedHotel, preferredPanel, setPreferredPanel } = useApp()
+  const { selectHotel, selectedHotel, preferredPanel, setPreferredPanel, setPendingRoomAnnouncement } = useApp()
   const { profile, journeyStage, setJourneyStage, updateProfile } = useUserProfileContext()
   const [sessionToken, setSessionToken] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -269,6 +290,7 @@ export default function HomePage() {
   const hasStream = streamUrl !== "about:blank"
   const [showRoomsPanel, setShowRoomsPanel] = useState(false)
   const [showAmenitiesPanel, setShowAmenitiesPanel] = useState(false)
+  const [selectedUnit, setSelectedUnit] = useState<UnitSelectionMessage | null>(null)
 
   // UE5 WebSocket message handler - memoized to prevent reconnection loops
   const handleUE5Message = useCallback((msg: import("@/lib/useUE5WebSocket").UE5IncomingMessage) => {
@@ -324,6 +346,12 @@ export default function HomePage() {
       handleSendMessage("gameEstate", "default")
     }
   }, [handleSendMessage])
+
+  const handleSelectRoom = useCallback((room: import("@/lib/hotel-data").Room) => {
+    handleSendMessage("selectedRoom", room.id)
+    closeRoomsPanel(false)
+    setPendingRoomAnnouncement({ roomName: room.name, occupancy: room.occupancy })
+  }, [handleSendMessage, closeRoomsPanel, setPendingRoomAnnouncement])
 
   // Open the requested panel when set by the journey orchestrator
   useEffect(() => {
@@ -407,6 +435,17 @@ export default function HomePage() {
 
   const showDestinationsOverlay = journeyStage === "DESTINATION_SELECT"
 
+  const formatUnitPrice = (price?: string) => {
+    if (!price) return "N/A"
+
+    const parsed = Number(price)
+    if (Number.isFinite(parsed)) {
+      return `$${parsed.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
+    }
+
+    return price
+  }
+
   return (
     <div className="relative min-h-screen w-full bg-black overflow-hidden">
       {hasStream ? (
@@ -419,6 +458,26 @@ export default function HomePage() {
       ) : (
         <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-slate-900 via-black to-slate-950 text-white/70">
           Set NEXT_PUBLIC_VAGON_STREAM_URL to render the live UE5 background here.
+        </div>
+      )}
+
+      {selectedUnit && (
+        <div className="pointer-events-none fixed right-6 top-1/2 z-20 -translate-y-1/2">
+          <GlassPanel className="pointer-events-auto w-[360px] space-y-4 border border-white/15 bg-white/12 px-7 py-6 text-white shadow-2xl shadow-black/40 backdrop-blur-2xl">
+            <div className="flex items-center justify-between">
+              <div className="text-xs font-semibold uppercase tracking-[0.2em] text-white/70">Unit Selected</div>
+              <div className="rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs text-white/80">
+                Level {selectedUnit.level ?? "N/A"}
+              </div>
+            </div>
+            <div>
+              <h3 className="text-xl font-semibold uppercase tracking-[0.2em]">{selectedUnit.roomName}</h3>
+              <p className="mt-1 text-lg font-semibold text-white/80">{formatUnitPrice(selectedUnit.price)} /night</p>
+            </div>
+            <p className="text-xs leading-relaxed text-white/70">
+              {selectedUnit.description?.trim() || "No description provided for this unit."}
+            </p>
+          </GlassPanel>
         </div>
       )}
 
@@ -567,10 +626,7 @@ export default function HomePage() {
                     <HotelRoomCard
                       key={room.id}
                       room={room}
-                      onClick={() => {
-                        handleSendMessage("selectedRoom", room.id)
-                        closeRoomsPanel(false)
-                      }}
+                      onClick={() => handleSelectRoom(room)}
                     />
                   ))
                 ) : (

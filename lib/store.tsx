@@ -22,12 +22,18 @@ interface Booking {
   createdAt: Date
 }
 
+interface RoomAnnouncement {
+  roomName: string
+  occupancy: string
+}
+
 interface AppState {
   isAuthenticated: boolean
   user: { email: string } | null
   searchCriteria: SearchCriteria
   selectedHotel: string | null
   preferredPanel: "rooms" | "amenities" | null
+  pendingRoomAnnouncement: RoomAnnouncement | null
   bookings: Booking[]
   isLoading: boolean
 }
@@ -38,6 +44,7 @@ interface AppContextType extends AppState {
   updateSearchCriteria: (criteria: Partial<SearchCriteria>) => void
   selectHotel: (slug: string) => void
   setPreferredPanel: (panel: "rooms" | "amenities" | null) => void
+  setPendingRoomAnnouncement: (room: RoomAnnouncement | null) => void
   addBooking: (booking: Omit<Booking, "id" | "createdAt">) => void
   setLoading: (loading: boolean) => void
 }
@@ -58,6 +65,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     },
     selectedHotel: null,
     preferredPanel: null,
+    pendingRoomAnnouncement: null,
     bookings: [],
     isLoading: false,
   })
@@ -97,6 +105,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setState((prev) => ({ ...prev, preferredPanel: panel }))
   }
 
+  const setPendingRoomAnnouncement = (room: RoomAnnouncement | null) => {
+    setState((prev) => ({ ...prev, pendingRoomAnnouncement: room }))
+  }
+
   const addBooking = (booking: Omit<Booking, "id" | "createdAt">) => {
     const newBooking: Booking = {
       ...booking,
@@ -118,14 +130,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
       value={{
         ...state,
         login,
-      logout,
-      updateSearchCriteria,
-      selectHotel,
-      setPreferredPanel,
-      addBooking,
-      setLoading,
-    }}
-  >
+        logout,
+        updateSearchCriteria,
+        selectHotel,
+        setPreferredPanel,
+        setPendingRoomAnnouncement,
+        addBooking,
+        setLoading,
+      }}
+    >
       {children}
     </AppContext.Provider>
   )
