@@ -27,6 +27,8 @@ interface RoomAnnouncement {
   occupancy: string
 }
 
+type UnitAction = "interior" | "exterior" | "back"
+
 interface AppState {
   isAuthenticated: boolean
   user: { email: string } | null
@@ -34,6 +36,7 @@ interface AppState {
   selectedHotel: string | null
   preferredPanel: "rooms" | "amenities" | null
   pendingRoomAnnouncement: RoomAnnouncement | null
+  pendingUnitAction: UnitAction | null
   bookings: Booking[]
   isLoading: boolean
 }
@@ -45,6 +48,7 @@ interface AppContextType extends AppState {
   selectHotel: (slug: string) => void
   setPreferredPanel: (panel: "rooms" | "amenities" | null) => void
   setPendingRoomAnnouncement: (room: RoomAnnouncement | null) => void
+  setPendingUnitAction: (action: UnitAction | null) => void
   addBooking: (booking: Omit<Booking, "id" | "createdAt">) => void
   setLoading: (loading: boolean) => void
 }
@@ -66,6 +70,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     selectedHotel: null,
     preferredPanel: null,
     pendingRoomAnnouncement: null,
+    pendingUnitAction: null,
     bookings: [],
     isLoading: false,
   })
@@ -109,6 +114,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setState((prev) => ({ ...prev, pendingRoomAnnouncement: room }))
   }
 
+  const setPendingUnitAction = (action: UnitAction | null) => {
+    setState((prev) => ({ ...prev, pendingUnitAction: action }))
+  }
+
   const addBooking = (booking: Omit<Booking, "id" | "createdAt">) => {
     const newBooking: Booking = {
       ...booking,
@@ -135,6 +144,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         selectHotel,
         setPreferredPanel,
         setPendingRoomAnnouncement,
+        setPendingUnitAction,
         addBooking,
         setLoading,
       }}

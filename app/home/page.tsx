@@ -102,12 +102,13 @@ const stageLabels: Record<JourneyStage, string> = {
 
 const JourneyOrchestrator = () => {
   const { journeyStage, setJourneyStage, profile } = useUserProfileContext()
-  const { selectedHotel, setPreferredPanel, pendingRoomAnnouncement, setPendingRoomAnnouncement } = useApp()
+  const { selectedHotel, setPreferredPanel, pendingRoomAnnouncement, setPendingRoomAnnouncement, setPendingUnitAction } = useApp()
   const { repeat, interrupt } = useAvatarActions("FULL")
   // Use derived profile directly to avoid lag between AI extraction and context sync
   const { profile: derivedProfile, isExtractionPending, userMessages } = useUserProfile()
   const lastPromptKey = useRef<string>("")
   const awaitingHotelIntent = useRef(false)
+  const awaitingRoomViewIntent = useRef(false)
   const lastHandledMessageCount = useRef(0)
 
   // Ready to show destinations when we have: dates, guests, and interests
@@ -276,13 +277,57 @@ const JourneyOrchestrator = () => {
     repeat(
       `The ${roomName} can host up to ${occupancy} guests. Would you like to explore the room interior or the exterior view?`
     ).catch(() => undefined)
-  }, [pendingRoomAnnouncement, setPendingRoomAnnouncement, interrupt, repeat])
+
+    awaitingRoomViewIntent.current = true
+    lastHandledMessageCount.current = userMessages.length
+  }, [pendingRoomAnnouncement, setPendingRoomAnnouncement, interrupt, repeat, userMessages.length])
+
+  // Listen for the user's intent (interior vs exterior vs back) after room selection
+  useEffect(() => {
+    if (!awaitingRoomViewIntent.current) return
+    if (userMessages.length <= lastHandledMessageCount.current) return
+
+    const latestMessage = userMessages[userMessages.length - 1]?.message?.toLowerCase() ?? ""
+    lastHandledMessageCount.current = userMessages.length
+
+    const wantsInterior = /\b(interior|inside|indoor|in)\b/.test(latestMessage)
+    const wantsExterior = /\b(exterior|outside|outdoor|out|view)\b/.test(latestMessage)
+    const wantsBack = /\b(back|return|cancel|nevermind|never mind|go back)\b/.test(latestMessage)
+
+    if (wantsBack) {
+      awaitingRoomViewIntent.current = false
+      interrupt()
+      repeat("No problem, taking you back to the hotel view.").catch(() => undefined)
+      setPendingUnitAction("back")
+      return
+    }
+
+    if (wantsInterior && !wantsExterior) {
+      awaitingRoomViewIntent.current = false
+      interrupt()
+      repeat("Great choice! Let me show you the interior of this room.").catch(() => undefined)
+      setPendingUnitAction("interior")
+      return
+    }
+
+    if (wantsExterior && !wantsInterior) {
+      awaitingRoomViewIntent.current = false
+      interrupt()
+      repeat("Perfect! Here's the exterior view of this room.").catch(() => undefined)
+      setPendingUnitAction("exterior")
+      return
+    }
+
+    // Ambiguous response: acknowledge and gently re-ask
+    interrupt()
+    repeat("I didn't catch that. Would you like to explore the room interior, the exterior view, or go back?").catch(() => undefined)
+  }, [userMessages, repeat, interrupt, setPendingUnitAction])
 
   return null
 }
 
 export default function HomePage() {
-  const { selectHotel, selectedHotel, preferredPanel, setPreferredPanel, setPendingRoomAnnouncement } = useApp()
+  const { selectHotel, selectedHotel, preferredPanel, setPreferredPanel, setPendingRoomAnnouncement, pendingUnitAction, setPendingUnitAction } = useApp()
   const { profile, journeyStage, setJourneyStage, updateProfile } = useUserProfileContext()
   const [sessionToken, setSessionToken] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -291,6 +336,7 @@ export default function HomePage() {
   const [showRoomsPanel, setShowRoomsPanel] = useState(false)
   const [showAmenitiesPanel, setShowAmenitiesPanel] = useState(false)
   const [selectedUnit, setSelectedUnit] = useState<UnitSelectionMessage | null>(null)
+  const [unitViewTab, setUnitViewTab] = useState<"interior" | "exterior" | "">(``)
 
   // UE5 WebSocket message handler - memoized to prevent reconnection loops
   const handleUE5Message = useCallback((msg: import("@/lib/useUE5WebSocket").UE5IncomingMessage) => {
@@ -352,6 +398,30 @@ export default function HomePage() {
     closeRoomsPanel(false)
     setPendingRoomAnnouncement({ roomName: room.name, occupancy: room.occupancy })
   }, [handleSendMessage, closeRoomsPanel, setPendingRoomAnnouncement])
+
+  const handleUnitViewChange = useCallback((value: "interior" | "exterior") => {
+    setUnitViewTab(value)
+    handleSendMessage("unitView", value)
+  }, [handleSendMessage])
+
+  const handleUnitBack = useCallback(() => {
+    setSelectedUnit(null)
+    setUnitViewTab("")
+    handleSendMessage("gameEstate", "default")
+  }, [handleSendMessage])
+
+  // Handle pending unit action from JourneyOrchestrator
+  useEffect(() => {
+    if (!pendingUnitAction) return
+
+    setPendingUnitAction(null)
+
+    if (pendingUnitAction === "interior" || pendingUnitAction === "exterior") {
+      handleUnitViewChange(pendingUnitAction)
+    } else if (pendingUnitAction === "back") {
+      handleUnitBack()
+    }
+  }, [pendingUnitAction, setPendingUnitAction, handleUnitViewChange, handleUnitBack])
 
   // Open the requested panel when set by the journey orchestrator
   useEffect(() => {
