@@ -109,6 +109,7 @@ const JourneyOrchestrator = () => {
   const lastPromptKey = useRef<string>("")
   const awaitingHotelIntent = useRef(false)
   const awaitingRoomViewIntent = useRef(false)
+  const lastNavHandledMessageCount = useRef(0)
   const lastHandledMessageCount = useRef(0)
 
   // Ready to show destinations when we have: dates, guests, and interests
@@ -274,6 +275,43 @@ const JourneyOrchestrator = () => {
     interrupt()
     repeat("Got it. Would you like to explore rooms, check out the hotel amenities, or see the surrounding area?").catch(() => undefined)
   }, [userMessages, repeat, interrupt, setPreferredPanel])
+
+  // Allow navigation between rooms / amenities / location at any time during hotel exploration
+  useEffect(() => {
+    if (journeyStage !== "HOTEL_EXPLORATION") return
+    if (userMessages.length <= lastNavHandledMessageCount.current) return
+
+    const latestMessage = userMessages[userMessages.length - 1]?.message?.toLowerCase() ?? ""
+    lastNavHandledMessageCount.current = userMessages.length
+
+    // Skip if user is currently deciding interior/exterior/back for a specific unit
+    if (awaitingRoomViewIntent.current) return
+
+    const wantsRooms = /\b(room|rooms|suite|suites|book|stay|bed|accommodation)\b/.test(latestMessage)
+    const wantsAmenities = /\b(amenity|amenities|spa|pool|gym|restaurant|bar|facility|facilities)\b/.test(latestMessage)
+    const wantsLocation = /\b(location|surrounding|surroundings|area|neighbou?rhood|outside|around|nearby|map|walk)\b/.test(latestMessage)
+
+    if (wantsRooms && !wantsAmenities && !wantsLocation) {
+      interrupt()
+      repeat("Loading the available rooms for you now.").catch(() => undefined)
+      setPreferredPanel("rooms")
+      return
+    }
+
+    if (wantsAmenities && !wantsRooms && !wantsLocation) {
+      interrupt()
+      repeat("Sure, opening the amenities for this property.").catch(() => undefined)
+      setPreferredPanel("amenities")
+      return
+    }
+
+    if (wantsLocation && !wantsRooms && !wantsAmenities) {
+      interrupt()
+      repeat("Taking you to the surrounding area and location view.").catch(() => undefined)
+      setPreferredPanel("location")
+      return
+    }
+  }, [journeyStage, userMessages, interrupt, repeat, setPreferredPanel])
 
   // Handle room selection announcement
   useEffect(() => {
