@@ -94,8 +94,11 @@ const SandboxSessionPlayer = ({ fit }: { fit: "contain" | "cover" }) => {
   const { profile } = useUserProfileContext()
   const { sessionRef } = useLiveAvatarContext()
   const videoRef = useRef<HTMLVideoElement>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
   const hasWelcomedRef = useRef(false)
   const removeFirstSpeakGuardRef = useRef<(() => void) | null>(null)
+  const frameRequestRef = useRef<number | null>(null)
+  const [dimensions, setDimensions] = useState<{ w: number; h: number } | null>(null)
 
   // // Guard to kill any default first utterance from the avatar (HeyGen welcome, etc.)
   // useEffect(() => {
@@ -146,6 +149,70 @@ const SandboxSessionPlayer = ({ fit }: { fit: "contain" | "cover" }) => {
     }
   }, [attachElement, isStreamReady])
 
+  // When metadata is ready, size the canvas to the video for crisp output
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video) return
+
+    const handleLoadedMetadata = () => {
+      if (!canvasRef.current) return
+      const w = video.videoWidth || video.clientWidth
+      const h = video.videoHeight || video.clientHeight
+      if (!w || !h) return
+      canvasRef.current.width = w
+      canvasRef.current.height = h
+      setDimensions({ w, h })
+    }
+
+    video.addEventListener("loadedmetadata", handleLoadedMetadata)
+    return () => video.removeEventListener("loadedmetadata", handleLoadedMetadata)
+  }, [])
+
+  // Lightweight chroma-key pass on each frame
+  useEffect(() => {
+    const video = videoRef.current
+    const canvas = canvasRef.current
+    if (!video || !canvas) return
+    const ctx = canvas.getContext("2d", { willReadFrequently: true })
+    if (!ctx) return
+
+    const GREEN_THRESHOLD = 70      // minimum green value to consider
+    const GREEN_DOMINANCE = 1.25    // how much stronger green must be than red/blue
+
+    const render = () => {
+      if (!dimensions) {
+        frameRequestRef.current = requestAnimationFrame(render)
+        return
+      }
+
+      ctx.drawImage(video, 0, 0, dimensions.w, dimensions.h)
+      const frame = ctx.getImageData(0, 0, dimensions.w, dimensions.h)
+      const data = frame.data
+
+      for (let i = 0; i < data.length; i += 4) {
+        const r = data[i]
+        const g = data[i + 1]
+        const b = data[i + 2]
+
+        // Simple chroma key: drop pixels where green dominates clearly
+        if (g > GREEN_THRESHOLD && g > r * GREEN_DOMINANCE && g > b * GREEN_DOMINANCE) {
+          data[i + 3] = 0 // set alpha to 0
+        }
+      }
+
+      ctx.putImageData(frame, 0, 0)
+      frameRequestRef.current = requestAnimationFrame(render)
+    }
+
+    frameRequestRef.current = requestAnimationFrame(render)
+
+    return () => {
+      if (frameRequestRef.current) {
+        cancelAnimationFrame(frameRequestRef.current)
+      }
+    }
+  }, [dimensions])
+
   useEffect(() => {
     return () => {
       stopSession()?.catch(() => undefined)
@@ -154,14 +221,19 @@ const SandboxSessionPlayer = ({ fit }: { fit: "contain" | "cover" }) => {
 
 
   return (
-    <video
-      ref={videoRef}
-      autoPlay
-      muted={muted}
-      playsInline
-      // onClick={enableAudio}
-      className={`w-full h-full ${fit === "cover" ? "object-cover" : "object-contain"} bg-black`}
-    />
+    <div className="w-full h-full relative">
+      <video
+        ref={videoRef}
+        autoPlay
+        muted={muted}
+        playsInline
+        className="absolute inset-0 h-full w-full opacity-0 pointer-events-none"
+      />
+      <canvas
+        ref={canvasRef}
+        className={`w-full h-full ${fit === "cover" ? "object-cover" : "object-contain"}`}
+      />
+    </div>
   )
 }
 
