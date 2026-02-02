@@ -227,14 +227,14 @@ const JourneyOrchestrator = () => {
 
     interrupt()
     repeat(
-      `Great choice—the ${hotelName} is a fantastic hotel that ${narrative}. Would you like to explore available rooms or the hotel amenities?`,
+      `Great choice—the ${hotelName} is a fantastic hotel that ${narrative}. Would you like to explore available rooms, check out the hotel amenities, or get a feel for the surrounding area?`,
     ).catch(() => undefined)
 
     awaitingHotelIntent.current = true
     lastHandledMessageCount.current = userMessages.length
   }, [journeyStage, selectedHotel, interrupt, repeat, userMessages.length])
 
-  // Listen for the user's intent (rooms vs amenities) after the question
+  // Listen for the user's intent (rooms vs amenities vs location) after the question
   useEffect(() => {
     if (!awaitingHotelIntent.current) return
     if (userMessages.length <= lastHandledMessageCount.current) return
@@ -244,8 +244,9 @@ const JourneyOrchestrator = () => {
 
     const wantsRooms = /\b(room|rooms|suite|suites|book|stay|bed|accommodation)\b/.test(latestMessage)
     const wantsAmenities = /\b(amenity|amenities|spa|pool|gym|restaurant|bar|facility|facilities)\b/.test(latestMessage)
+    const wantsLocation = /\b(location|surrounding|surroundings|area|neighbou?rhood|outside|around|nearby|map|walk)\b/.test(latestMessage)
 
-    if (wantsRooms && !wantsAmenities) {
+    if (wantsRooms && !wantsAmenities && !wantsLocation) {
       awaitingHotelIntent.current = false
       interrupt()
       repeat("Perfect, I'll pull up the available rooms for you now.").catch(() => undefined)
@@ -253,7 +254,7 @@ const JourneyOrchestrator = () => {
       return
     }
 
-    if (wantsAmenities && !wantsRooms) {
+    if (wantsAmenities && !wantsRooms && !wantsLocation) {
       awaitingHotelIntent.current = false
       interrupt()
       repeat("Great choice. Let me show you the amenities available at this property.").catch(() => undefined)
@@ -261,9 +262,17 @@ const JourneyOrchestrator = () => {
       return
     }
 
+    if (wantsLocation && !wantsRooms && !wantsAmenities) {
+      awaitingHotelIntent.current = false
+      interrupt()
+      repeat("Absolutely. I'll show you the surrounding area and location context.").catch(() => undefined)
+      setPreferredPanel("location")
+      return
+    }
+
     // Ambiguous response: acknowledge and gently re-ask
     interrupt()
-    repeat("Got it. Would you like to explore rooms or check out the hotel amenities?").catch(() => undefined)
+    repeat("Got it. Would you like to explore rooms, check out the hotel amenities, or see the surrounding area?").catch(() => undefined)
   }, [userMessages, repeat, interrupt, setPreferredPanel])
 
   // Handle room selection announcement
@@ -379,6 +388,12 @@ export default function HomePage() {
     setShowRoomsPanel(false)
   }, [handleSendMessage])
 
+  const handleLocationView = useCallback(() => {
+    handleSendMessage("gameEstate", "location")
+    setShowRoomsPanel(false)
+    setShowAmenitiesPanel(false)
+  }, [handleSendMessage])
+
   const closeRoomsPanel = useCallback((sendDefault = true) => {
     setShowRoomsPanel(false)
     if (sendDefault) {
@@ -430,9 +445,11 @@ export default function HomePage() {
       handleRoomsPanel()
     } else if (preferredPanel === "amenities") {
       handleAmenitiesPanel()
+    } else if (preferredPanel === "location") {
+      handleLocationView()
     }
     setPreferredPanel(null)
-  }, [preferredPanel, handleRoomsPanel, handleAmenitiesPanel, setPreferredPanel])
+  }, [preferredPanel, handleRoomsPanel, handleAmenitiesPanel, handleLocationView, setPreferredPanel])
 
   // Ready for destination selection when we have basic info + travel context
   // Note: destination is selected via the overlay, not collected beforehand
@@ -752,3 +769,4 @@ export default function HomePage() {
     </div>
   )
 }
+

@@ -34,7 +34,7 @@ interface AppState {
   user: { email: string } | null
   searchCriteria: SearchCriteria
   selectedHotel: string | null
-  preferredPanel: "rooms" | "amenities" | null
+  preferredPanel: "rooms" | "amenities" | "location" | null
   pendingRoomAnnouncement: RoomAnnouncement | null
   pendingUnitAction: UnitAction | null
   bookings: Booking[]
@@ -46,7 +46,7 @@ interface AppContextType extends AppState {
   logout: () => void
   updateSearchCriteria: (criteria: Partial<SearchCriteria>) => void
   selectHotel: (slug: string) => void
-  setPreferredPanel: (panel: "rooms" | "amenities" | null) => void
+  setPreferredPanel: (panel: "rooms" | "amenities" | "location" | null) => void
   setPendingRoomAnnouncement: (room: RoomAnnouncement | null) => void
   setPendingUnitAction: (action: UnitAction | null) => void
   addBooking: (booking: Omit<Booking, "id" | "createdAt">) => void
@@ -106,7 +106,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setState((prev) => ({ ...prev, selectedHotel: slug }))
   }
 
-  const setPreferredPanel = (panel: "rooms" | "amenities" | null) => {
+  const setPreferredPanel = (panel: "rooms" | "amenities" | "location" | null) => {
     setState((prev) => ({ ...prev, preferredPanel: panel }))
   }
 

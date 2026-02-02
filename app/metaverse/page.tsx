@@ -219,14 +219,16 @@ export default function MetaversePage() {
   useEffect(() => {
     if (!preferredPanel) return
 
-    if (preferredPanel === "rooms") {
+    if (preferredPanel === "location") {
+      handleTabChange("location")
+    } else if (preferredPanel === "rooms") {
       handleRoomsTab()
     } else if (preferredPanel === "amenities") {
       handleAmenitiesTab()
     }
 
     setPreferredPanel(null)
-  }, [preferredPanel, setPreferredPanel, handleRoomsTab, handleAmenitiesTab])
+  }, [preferredPanel, setPreferredPanel, handleTabChange, handleRoomsTab, handleAmenitiesTab])
 
   const formatUnitPrice = (price?: string) => {
     if (!price) return "N/A"
