@@ -162,10 +162,7 @@ const JourneyOrchestrator = () => {
     if (lastPromptKey.current === key) return
     lastPromptKey.current = key
 
-    const firstName =
-      profile.firstName?.trim() ||
-      (derivedProfile.name ? derivedProfile.name.split(" ")[0] : "") ||
-      "there"
+    const firstName = profile.firstName?.trim() || "there"
 
     // First, ask for travel dates and party size
     if (missingDates && missingGuests) {
@@ -207,7 +204,6 @@ const JourneyOrchestrator = () => {
     profile.firstName,
     derivedProfile.interests.length,
     derivedProfile.startDate,
-    derivedProfile.name,
     repeat,
   ])
 
