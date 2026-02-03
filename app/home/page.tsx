@@ -7,7 +7,7 @@ import { GlassPanel } from "@/components/glass-panel"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { useUserProfile } from "@/lib/liveavatar"
-import { JourneyStage, useUserProfileContext } from "@/lib/context"
+import { JourneyStage, useUserProfileContext, type UserProfile } from "@/lib/context"
 import { hotels, getHotelBySlug, getRoomsByHotelId, getAmenitiesByHotelId } from "@/lib/hotel-data"
 import { useApp } from "@/lib/store"
 import { useAvatarActions } from "@/lib/liveavatar/useAvatarActions"
@@ -17,7 +17,7 @@ import { HotelAmenityCard } from "@/components/HotelAmenityCard"
 
 const ProfileSync = () => {
   const { profile, isExtractionPending } = useUserProfile()
-  const { updateProfile } = useUserProfileContext()
+  const { profile: storedProfile, updateProfile } = useUserProfileContext()
   const lastSyncRef = useRef<string>("")
 
   useEffect(() => {
@@ -50,17 +50,43 @@ const ProfileSync = () => {
     lastSyncRef.current = syncKey
 
     const [firstName, ...lastNameParts] = (profile.name ?? "").split(" ").filter(Boolean)
-    updateProfile({
-      firstName: firstName || undefined,
-      lastName: lastNameParts.join(" ") || undefined,
-      familySize: profile.partySize,
-      destination: profile.destination || undefined,
-      startDate: profile.startDate || undefined,
-      endDate: profile.endDate || undefined,
-      interests: profile.interests,
-      travelPurpose: profile.travelPurpose || undefined,
-      budgetRange: profile.budgetRange || undefined,
-    })
+    const inferredLastName = lastNameParts.join(" ")
+
+    const updates: Partial<UserProfile> = {}
+
+    // Never override login-provided identity fields.
+    if (!storedProfile.firstName && firstName) {
+      updates.firstName = firstName
+    }
+    if (!storedProfile.lastName && inferredLastName) {
+      updates.lastName = inferredLastName
+    }
+
+    if (profile.partySize != null) {
+      updates.familySize = profile.partySize
+    }
+    if (profile.destination) {
+      updates.destination = profile.destination
+    }
+    if (profile.startDate) {
+      updates.startDate = profile.startDate
+    }
+    if (profile.endDate) {
+      updates.endDate = profile.endDate
+    }
+    if (profile.interests.length > 0) {
+      updates.interests = profile.interests
+    }
+    if (profile.travelPurpose) {
+      updates.travelPurpose = profile.travelPurpose
+    }
+    if (profile.budgetRange) {
+      updates.budgetRange = profile.budgetRange
+    }
+
+    if (Object.keys(updates).length > 0) {
+      updateProfile(updates)
+    }
   }, [
     profile.name,
     profile.destination,
@@ -70,6 +96,8 @@ const ProfileSync = () => {
     profile.interests,
     profile.travelPurpose,
     profile.budgetRange,
+    storedProfile.firstName,
+    storedProfile.lastName,
     updateProfile,
   ])
 

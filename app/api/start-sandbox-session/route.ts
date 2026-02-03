@@ -45,7 +45,7 @@ export async function POST() {
       body: JSON.stringify({
         mode: "FULL",
         avatar_id: avatarId,
-        is_sandbox: false,
+        is_sandbox: true,
         avatar_persona: {
           voice_id: voiceId,
           context_id: contextId,
