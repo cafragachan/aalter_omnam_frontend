@@ -322,7 +322,7 @@ const JourneyOrchestrator = () => {
 
     interrupt()
     repeat(
-      `The ${roomName} can host up to ${occupancy} guests. Would you like to explore the room interior or the exterior view?`
+      `The ${roomName} can host up to ${occupancy} guests. Please select one of our available rooms at the highlighted locations`
     ).catch(() => undefined)
 
     awaitingRoomViewIntent.current = true
@@ -467,13 +467,13 @@ export default function HomePage() {
   useEffect(() => {
     if (!pendingUnitAction) return
 
-    setPendingUnitAction(null)
-
     if (pendingUnitAction === "interior" || pendingUnitAction === "exterior") {
       handleUnitViewChange(pendingUnitAction)
     } else if (pendingUnitAction === "back") {
       handleUnitBack()
     }
+    // Clear the action AFTER calling handlers to ensure they execute
+    setPendingUnitAction(null)
   }, [pendingUnitAction, setPendingUnitAction, handleUnitViewChange, handleUnitBack])
 
   // Open the requested panel when set by the journey orchestrator
