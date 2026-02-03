@@ -128,7 +128,7 @@ const stageLabels: Record<JourneyStage, string> = {
   ROOM_BOOKING: "Room Booking",
 }
 
-const JourneyOrchestrator = () => {
+const JourneyOrchestrator = ({ onHotelExploreReset }: { onHotelExploreReset: () => void }) => {
   const { journeyStage, setJourneyStage, profile } = useUserProfileContext()
   const { selectedHotel, setPreferredPanel, pendingRoomAnnouncement, setPendingRoomAnnouncement, pendingUnitAnnouncement, setPendingUnitAnnouncement, setPendingUnitAction } = useApp()
   const { repeat, interrupt } = useAvatarActions("FULL")
@@ -139,6 +139,7 @@ const JourneyOrchestrator = () => {
   const awaitingRoomViewIntent = useRef(false)
   const lastNavHandledMessageCount = useRef(0)
   const lastHandledMessageCount = useRef(0)
+  const lastHotelResetHandledMessageCount = useRef(0)
 
   // Ready to show destinations when we have: dates, guests, and interests
   // Note: destination is NOT required here - the overlay helps them pick one
@@ -338,6 +339,27 @@ const JourneyOrchestrator = () => {
     }
   }, [journeyStage, userMessages, interrupt, repeat, setPreferredPanel])
 
+  // Listen for "go back" or "explore the hotel" requests during hotel exploration
+  useEffect(() => {
+    if (journeyStage !== "HOTEL_EXPLORATION") return
+    if (userMessages.length <= lastHotelResetHandledMessageCount.current) return
+
+    const latestMessage = userMessages[userMessages.length - 1]?.message?.toLowerCase() ?? ""
+    lastHotelResetHandledMessageCount.current = userMessages.length
+
+    const wantsBack = /\b(back|go back|return|go to hotel|back to hotel)\b/.test(latestMessage)
+    const wantsHotelExplore =
+      /\b(explore|tour|see|show|walk around|look around|view)\b.*\bhotel\b/.test(latestMessage) ||
+      /\bhotel\b.*\b(explore|tour|see|show|walk around|look around|view)\b/.test(latestMessage) ||
+      /\bhotel view\b/.test(latestMessage)
+
+    if (awaitingRoomViewIntent.current && wantsBack) return
+
+    if (wantsBack || wantsHotelExplore) {
+      onHotelExploreReset()
+    }
+  }, [journeyStage, userMessages, onHotelExploreReset])
+
   // Handle room selection announcement (from UI room cards)
   useEffect(() => {
     if (!pendingRoomAnnouncement) return
@@ -456,6 +478,10 @@ export default function HomePage() {
   const handleSendMessage = useCallback((type: string, value: unknown) => {
     sendRawMessage({ type, value })
   }, [sendRawMessage])
+
+  const handleHotelExploreReset = useCallback(() => {
+    handleSendMessage("gameEstate", "default")
+  }, [handleSendMessage])
 
   const selectedHotelData = useMemo(
     () => (selectedHotel ? getHotelBySlug(selectedHotel) : undefined),
@@ -704,7 +730,7 @@ export default function HomePage() {
                     <div className="fixed top-4 right-4 z-30 space-y-3 pointer-events-none">
                       <DebugHud />
                       <ProfileSync />
-                      <JourneyOrchestrator />
+                      <JourneyOrchestrator onHotelExploreReset={handleHotelExploreReset} />
                     </div>
                   }
                 />
