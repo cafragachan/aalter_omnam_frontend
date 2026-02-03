@@ -226,6 +226,7 @@ const JourneyOrchestrator = () => {
     if (lastPromptKey.current === "destinations-shown") return
     lastPromptKey.current = "destinations-shown"
     // Small delay to let the overlay render
+    interrupt()
     const timer = setTimeout(() => {
       repeat("Wonderful! Based on your preferences, let me show you some available options I think you'll love. Take a look at these properties. Tap any card to explore the digital twin.").catch(
         () => undefined,
