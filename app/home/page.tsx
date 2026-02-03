@@ -102,7 +102,7 @@ const stageLabels: Record<JourneyStage, string> = {
 
 const JourneyOrchestrator = () => {
   const { journeyStage, setJourneyStage, profile } = useUserProfileContext()
-  const { selectedHotel, setPreferredPanel, pendingRoomAnnouncement, setPendingRoomAnnouncement, setPendingUnitAction } = useApp()
+  const { selectedHotel, setPreferredPanel, pendingRoomAnnouncement, setPendingRoomAnnouncement, pendingUnitAnnouncement, setPendingUnitAnnouncement, setPendingUnitAction } = useApp()
   const { repeat, interrupt } = useAvatarActions("FULL")
   // Use derived profile directly to avoid lag between AI extraction and context sync
   const { profile: derivedProfile, isExtractionPending, userMessages } = useUserProfile()
@@ -313,7 +313,7 @@ const JourneyOrchestrator = () => {
     }
   }, [journeyStage, userMessages, interrupt, repeat, setPreferredPanel])
 
-  // Handle room selection announcement
+  // Handle room selection announcement (from UI room cards)
   useEffect(() => {
     if (!pendingRoomAnnouncement) return
 
@@ -328,6 +328,22 @@ const JourneyOrchestrator = () => {
     awaitingRoomViewIntent.current = true
     lastHandledMessageCount.current = userMessages.length
   }, [pendingRoomAnnouncement, setPendingRoomAnnouncement, interrupt, repeat, userMessages.length])
+
+  // Handle unit selection announcement (from UE5 experience)
+  useEffect(() => {
+    if (!pendingUnitAnnouncement) return
+
+    const { roomName } = pendingUnitAnnouncement
+    setPendingUnitAnnouncement(null)
+
+    interrupt()
+    repeat(
+      `Lovely pick! The ${roomName} is an excellent choice. Would you like to explore the interior or the exterior view of this room?`
+    ).catch(() => undefined)
+
+    awaitingRoomViewIntent.current = true
+    lastHandledMessageCount.current = userMessages.length
+  }, [pendingUnitAnnouncement, setPendingUnitAnnouncement, interrupt, repeat, userMessages.length])
 
   // Listen for the user's intent (interior vs exterior vs back) after room selection
   useEffect(() => {
@@ -374,7 +390,7 @@ const JourneyOrchestrator = () => {
 }
 
 export default function HomePage() {
-  const { selectHotel, selectedHotel, preferredPanel, setPreferredPanel, setPendingRoomAnnouncement, pendingUnitAction, setPendingUnitAction } = useApp()
+  const { selectHotel, selectedHotel, preferredPanel, setPreferredPanel, setPendingRoomAnnouncement, setPendingUnitAnnouncement, pendingUnitAction, setPendingUnitAction } = useApp()
   const { profile, journeyStage, setJourneyStage, updateProfile } = useUserProfileContext()
   const [sessionToken, setSessionToken] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -390,9 +406,26 @@ export default function HomePage() {
     console.log("UE5 message received:", msg)
   }, [])
 
+  // Ref to hold the latest setPendingUnitAnnouncement to avoid dependency issues
+  const setPendingUnitAnnouncementRef = useRef(setPendingUnitAnnouncement)
+  useEffect(() => {
+    setPendingUnitAnnouncementRef.current = setPendingUnitAnnouncement
+  }, [setPendingUnitAnnouncement])
+
+  // Handle unit selection from UE5 experience
+  const handleUnitSelected = useCallback((unit: UnitSelectionMessage) => {
+    setSelectedUnit(unit)
+    setUnitViewTab("")
+    setShowRoomsPanel(false)
+    setShowAmenitiesPanel(false)
+    // Trigger avatar announcement for the selected unit
+    setPendingUnitAnnouncementRef.current({ roomName: unit.roomName })
+  }, [])
+
   // UE5 WebSocket connection (single instance via hook to avoid multiple sockets)
   const { isConnected, sendStartTest, sendRawMessage } = useUE5WebSocket({
     onMessage: handleUE5Message,
+    onUnitSelected: handleUnitSelected,
   })
 
   const handleSendMessage = useCallback((type: string, value: unknown) => {

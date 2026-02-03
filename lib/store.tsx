@@ -1,6 +1,6 @@
 "use client"
 
-import { createContext, useContext, useState, type ReactNode } from "react"
+import { createContext, useCallback, useContext, useState, type ReactNode } from "react"
 
 interface SearchCriteria {
   destination: string
@@ -27,6 +27,10 @@ interface RoomAnnouncement {
   occupancy: string
 }
 
+interface UnitAnnouncement {
+  roomName: string
+}
+
 type UnitAction = "interior" | "exterior" | "back"
 
 interface AppState {
@@ -36,6 +40,7 @@ interface AppState {
   selectedHotel: string | null
   preferredPanel: "rooms" | "amenities" | "location" | null
   pendingRoomAnnouncement: RoomAnnouncement | null
+  pendingUnitAnnouncement: UnitAnnouncement | null
   pendingUnitAction: UnitAction | null
   bookings: Booking[]
   isLoading: boolean
@@ -48,6 +53,7 @@ interface AppContextType extends AppState {
   selectHotel: (slug: string) => void
   setPreferredPanel: (panel: "rooms" | "amenities" | "location" | null) => void
   setPendingRoomAnnouncement: (room: RoomAnnouncement | null) => void
+  setPendingUnitAnnouncement: (unit: UnitAnnouncement | null) => void
   setPendingUnitAction: (action: UnitAction | null) => void
   addBooking: (booking: Omit<Booking, "id" | "createdAt">) => void
   setLoading: (loading: boolean) => void
@@ -70,6 +76,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     selectedHotel: null,
     preferredPanel: null,
     pendingRoomAnnouncement: null,
+    pendingUnitAnnouncement: null,
     pendingUnitAction: null,
     bookings: [],
     isLoading: false,
@@ -102,21 +109,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }))
   }
 
-  const selectHotel = (slug: string) => {
+  const selectHotel = useCallback((slug: string) => {
     setState((prev) => ({ ...prev, selectedHotel: slug }))
-  }
+  }, [])
 
-  const setPreferredPanel = (panel: "rooms" | "amenities" | "location" | null) => {
+  const setPreferredPanel = useCallback((panel: "rooms" | "amenities" | "location" | null) => {
     setState((prev) => ({ ...prev, preferredPanel: panel }))
-  }
+  }, [])
 
-  const setPendingRoomAnnouncement = (room: RoomAnnouncement | null) => {
+  const setPendingRoomAnnouncement = useCallback((room: RoomAnnouncement | null) => {
     setState((prev) => ({ ...prev, pendingRoomAnnouncement: room }))
-  }
+  }, [])
 
-  const setPendingUnitAction = (action: UnitAction | null) => {
+  const setPendingUnitAnnouncement = useCallback((unit: UnitAnnouncement | null) => {
+    setState((prev) => ({ ...prev, pendingUnitAnnouncement: unit }))
+  }, [])
+
+  const setPendingUnitAction = useCallback((action: UnitAction | null) => {
     setState((prev) => ({ ...prev, pendingUnitAction: action }))
-  }
+  }, [])
 
   const addBooking = (booking: Omit<Booking, "id" | "createdAt">) => {
     const newBooking: Booking = {
@@ -144,6 +155,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         selectHotel,
         setPreferredPanel,
         setPendingRoomAnnouncement,
+        setPendingUnitAnnouncement,
         setPendingUnitAction,
         addBooking,
         setLoading,
