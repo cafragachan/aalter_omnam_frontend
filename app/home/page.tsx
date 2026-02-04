@@ -130,7 +130,7 @@ const stageLabels: Record<JourneyStage, string> = {
 
 const JourneyOrchestrator = ({ onHotelExploreReset }: { onHotelExploreReset: () => void }) => {
   const { journeyStage, setJourneyStage, profile } = useUserProfileContext()
-  const { selectedHotel, setPreferredPanel, pendingRoomAnnouncement, setPendingRoomAnnouncement, pendingUnitAnnouncement, setPendingUnitAnnouncement, setPendingUnitAction } = useApp()
+  const { selectedHotel, setPreferredPanel, pendingRoomAnnouncement, setPendingRoomAnnouncement, pendingAmenityAnnouncement, setPendingAmenityAnnouncement, pendingUnitAnnouncement, setPendingUnitAnnouncement, setPendingUnitAction } = useApp()
   const { repeat, interrupt } = useAvatarActions("FULL")
   // Use derived profile directly to avoid lag between AI extraction and context sync
   const { profile: derivedProfile, isExtractionPending, userMessages } = useUserProfile()
@@ -284,7 +284,7 @@ const JourneyOrchestrator = ({ onHotelExploreReset }: { onHotelExploreReset: () 
     if (wantsAmenities && !wantsRooms && !wantsLocation) {
       awaitingHotelIntent.current = false
       interrupt()
-      repeat("Great choice. Let me show you the amenities available at this property.").catch(() => undefined)
+      repeat("Of course. Let me show you the amenities available at this property.").catch(() => undefined)
       setPreferredPanel("amenities")
       return
     }
@@ -392,6 +392,30 @@ const JourneyOrchestrator = ({ onHotelExploreReset }: { onHotelExploreReset: () 
     lastHandledMessageCount.current = userMessages.length
   }, [pendingUnitAnnouncement, setPendingUnitAnnouncement, interrupt, repeat, userMessages.length])
 
+  const buildAmenityNarrative = useCallback((amenity: { name: string; scene: string }) => {
+    const normalizedScene = amenity.scene.toLowerCase()
+    const normalizedName = amenity.name.toLowerCase()
+    if (normalizedScene.includes("lobby") || normalizedName.includes("lobby")) {
+      return "we'll step into a grand, light-filled arrival lounge with plush seating and a calm lakeside energy."
+    }
+    if (normalizedScene.includes("conference") || normalizedName.includes("conference")) {
+      return "this conference space is set up for focused meetings with modern tech, warm lighting, and quiet service."
+    }
+    return "it's one of the property's signature spaces, designed for comfort, flow, and a touch of quiet luxury."
+  }, [])
+
+  // Handle amenity selection announcement (from UI amenity cards)
+  useEffect(() => {
+    if (!pendingAmenityAnnouncement) return
+
+    const { name, scene } = pendingAmenityAnnouncement
+    setPendingAmenityAnnouncement(null)
+
+    const narrative = buildAmenityNarrative({ name, scene })
+    interrupt()
+    repeat(`Perfect, let me take you to the ${name}, ${narrative}`).catch(() => undefined)
+  }, [pendingAmenityAnnouncement, setPendingAmenityAnnouncement, buildAmenityNarrative, interrupt, repeat])
+
   // Listen for the user's intent (interior vs exterior vs back) after room selection
   useEffect(() => {
     if (!awaitingRoomViewIntent.current) return
@@ -415,7 +439,7 @@ const JourneyOrchestrator = ({ onHotelExploreReset }: { onHotelExploreReset: () 
     if (wantsInterior && !wantsExterior) {
       awaitingRoomViewIntent.current = false
       interrupt()
-      repeat("Great choice! Let me show you the interior of this room.").catch(() => undefined)
+      repeat("Ok, Let me show you the interior of this room.").catch(() => undefined)
       setPendingUnitAction("interior")
       return
     }
@@ -437,7 +461,7 @@ const JourneyOrchestrator = ({ onHotelExploreReset }: { onHotelExploreReset: () 
 }
 
 export default function HomePage() {
-  const { selectHotel, selectedHotel, preferredPanel, setPreferredPanel, setPendingRoomAnnouncement, setPendingUnitAnnouncement, pendingUnitAction, setPendingUnitAction } = useApp()
+  const { selectHotel, selectedHotel, preferredPanel, setPreferredPanel, setPendingRoomAnnouncement, setPendingUnitAnnouncement, setPendingAmenityAnnouncement, pendingUnitAction, setPendingUnitAction } = useApp()
   const { profile, journeyStage, setJourneyStage, updateProfile } = useUserProfileContext()
   const [sessionToken, setSessionToken] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -535,6 +559,12 @@ export default function HomePage() {
     closeRoomsPanel(false)
     setPendingRoomAnnouncement({ roomName: room.name, occupancy: room.occupancy })
   }, [handleSendMessage, closeRoomsPanel, setPendingRoomAnnouncement])
+
+  const handleSelectAmenity = useCallback((amenity: import("@/lib/hotel-data").Amenity) => {
+    setPendingAmenityAnnouncement({ name: amenity.name, scene: amenity.scene })
+    handleSendMessage("communal", amenity.id)
+    closeAmenitiesPanel(false)
+  }, [closeAmenitiesPanel, handleSendMessage, setPendingAmenityAnnouncement])
 
   const handleUnitViewChange = useCallback((value: "interior" | "exterior") => {
     setUnitViewTab(value)
@@ -874,10 +904,7 @@ export default function HomePage() {
                     <HotelAmenityCard
                       key={amenity.id}
                       amenity={amenity}
-                      onClick={() => {
-                        handleSendMessage("selectedAmenity", amenity.id)
-                        closeAmenitiesPanel(false)
-                      }}
+                      onClick={() => handleSelectAmenity(amenity)}
                     />
                   ))
                 ) : (
