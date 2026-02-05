@@ -437,7 +437,6 @@ const JourneyOrchestrator = ({ onHotelExploreReset }: { onHotelExploreReset: () 
     }
 
     if (wantsInterior && !wantsExterior) {
-      awaitingRoomViewIntent.current = false
       interrupt()
       repeat("Ok, Let me show you the interior of this room.").catch(() => undefined)
       setPendingUnitAction("interior")
@@ -445,7 +444,6 @@ const JourneyOrchestrator = ({ onHotelExploreReset }: { onHotelExploreReset: () 
     }
 
     if (wantsExterior && !wantsInterior) {
-      awaitingRoomViewIntent.current = false
       interrupt()
       repeat("Perfect! Here's the exterior view of this room.").catch(() => undefined)
       setPendingUnitAction("exterior")
