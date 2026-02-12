@@ -557,34 +557,6 @@ export default function HomePage() {
     }
   }, [handleSendMessage])
 
-  const handleSelectRoom = useCallback((room: import("@/lib/hotel-data").Room) => {
-    handleSendMessage("selectedRoom", room.id)
-    closeRoomsPanel(false)
-    setPendingRoomAnnouncement({ roomName: room.name, occupancy: room.occupancy })
-  }, [handleSendMessage, closeRoomsPanel, setPendingRoomAnnouncement])
-
-  const handleSelectAmenity = useCallback((amenity: import("@/lib/hotel-data").Amenity) => {
-    setPendingAmenityAnnouncement({ name: amenity.name, scene: amenity.scene })
-    handleSendMessage("communal", amenity.id)
-    closeAmenitiesPanel(false)
-  }, [closeAmenitiesPanel, handleSendMessage, setPendingAmenityAnnouncement])
-
-  const handleUnitViewChange = useCallback((value: "interior" | "exterior") => {
-    setUnitViewTab(value)
-    handleSendMessage("unitView", value)
-  }, [handleSendMessage])
-
-  const handleUnitBack = useCallback(() => {
-    setSelectedUnit(null)
-    setUnitViewTab("")
-    handleSendMessage("gameEstate", "default")
-  }, [handleSendMessage])
-
-  const handleSunStateChange = useCallback((value: SunState) => {
-    setSunState(value)
-    handleSendMessage("sunPosition", value)
-  }, [handleSendMessage])
-
   const clearUe5FadeTimeouts = useCallback(() => {
     ue5FadeTimeoutsRef.current.forEach((id) => window.clearTimeout(id))
     ue5FadeTimeoutsRef.current = []
@@ -616,6 +588,35 @@ export default function HomePage() {
       clearUe5FadeTimeouts()
     }
   }, [clearUe5FadeTimeouts])
+
+  const handleSelectRoom = useCallback((room: import("@/lib/hotel-data").Room) => {
+    handleSendMessage("selectedRoom", room.id)
+    closeRoomsPanel(false)
+    setPendingRoomAnnouncement({ roomName: room.name, occupancy: room.occupancy })
+  }, [handleSendMessage, closeRoomsPanel, setPendingRoomAnnouncement])
+
+  const handleSelectAmenity = useCallback((amenity: import("@/lib/hotel-data").Amenity) => {
+    setPendingAmenityAnnouncement({ name: amenity.name, scene: amenity.scene })
+    handleSendMessage("communal", amenity.id)
+    closeAmenitiesPanel(false)
+    runUe5FadeTransition()
+  }, [closeAmenitiesPanel, handleSendMessage, runUe5FadeTransition, setPendingAmenityAnnouncement])
+
+  const handleUnitViewChange = useCallback((value: "interior" | "exterior") => {
+    setUnitViewTab(value)
+    handleSendMessage("unitView", value)
+  }, [handleSendMessage])
+
+  const handleUnitBack = useCallback(() => {
+    setSelectedUnit(null)
+    setUnitViewTab("")
+    handleSendMessage("gameEstate", "default")
+  }, [handleSendMessage])
+
+  const handleSunStateChange = useCallback((value: SunState) => {
+    setSunState(value)
+    handleSendMessage("sunPosition", value)
+  }, [handleSendMessage])
 
   useEffect(() => {
     if (!selectedHotel) return
