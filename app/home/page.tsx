@@ -14,6 +14,7 @@ import { useAvatarActions } from "@/lib/liveavatar/useAvatarActions"
 import { useUE5WebSocket } from "@/lib/useUE5WebSocket"
 import { HotelRoomCard } from "@/components/HotelRoomCard"
 import { HotelAmenityCard } from "@/components/HotelAmenityCard"
+import { SunToggle, type SunState } from "@/components/SunToggle"
 
 const ProfileSync = () => {
   const { profile, isExtractionPending } = useUserProfile()
@@ -471,6 +472,7 @@ export default function HomePage() {
   const [unitViewTab, setUnitViewTab] = useState<"interior" | "exterior" | "">(``)
   const [showUe5FadeOverlay, setShowUe5FadeOverlay] = useState(false)
   const [isUe5FadeOpaque, setIsUe5FadeOpaque] = useState(false)
+  const [sunState, setSunState] = useState<SunState>("daylight")
   const ue5FadeTimeoutsRef = useRef<number[]>([])
 
   // UE5 WebSocket message handler - memoized to prevent reconnection loops
@@ -578,6 +580,11 @@ export default function HomePage() {
     handleSendMessage("gameEstate", "default")
   }, [handleSendMessage])
 
+  const handleSunStateChange = useCallback((value: SunState) => {
+    setSunState(value)
+    handleSendMessage("sunPosition", value)
+  }, [handleSendMessage])
+
   const clearUe5FadeTimeouts = useCallback(() => {
     ue5FadeTimeoutsRef.current.forEach((id) => window.clearTimeout(id))
     ue5FadeTimeoutsRef.current = []
@@ -609,6 +616,12 @@ export default function HomePage() {
       clearUe5FadeTimeouts()
     }
   }, [clearUe5FadeTimeouts])
+
+  useEffect(() => {
+    if (!selectedHotel) return
+    setSunState("daylight")
+    handleSendMessage("sunPosition", "daylight")
+  }, [selectedHotel, handleSendMessage])
 
   // Handle pending unit action from JourneyOrchestrator
   useEffect(() => {
@@ -739,6 +752,13 @@ export default function HomePage() {
       {showUe5FadeOverlay && (
         <div
           className={`pointer-events-none absolute inset-0 z-[5] bg-black transition-opacity duration-1000 ease-linear ${isUe5FadeOpaque ? "opacity-100" : "opacity-0"}`}
+        />
+      )}
+      {selectedHotel && journeyStage === "HOTEL_EXPLORATION" && (
+        <SunToggle
+          value={sunState}
+          onChange={handleSunStateChange}
+          className="pointer-events-auto fixed left-1/2 top-1 z-20 -translate-x-1/2"
         />
       )}
 

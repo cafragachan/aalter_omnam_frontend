@@ -8,6 +8,7 @@ export type UE5MessageType =
   | "selectedRoom"
   | "selectedAmenity"
   | "unitView"
+  | "sunPosition"
   | "hotelSelected"
   | "profileUpdate"
 
