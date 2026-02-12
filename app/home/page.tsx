@@ -469,6 +469,9 @@ export default function HomePage() {
   const [showAmenitiesPanel, setShowAmenitiesPanel] = useState(false)
   const [selectedUnit, setSelectedUnit] = useState<UnitSelectionMessage | null>(null)
   const [unitViewTab, setUnitViewTab] = useState<"interior" | "exterior" | "">(``)
+  const [showUe5FadeOverlay, setShowUe5FadeOverlay] = useState(false)
+  const [isUe5FadeOpaque, setIsUe5FadeOpaque] = useState(false)
+  const ue5FadeTimeoutsRef = useRef<number[]>([])
 
   // UE5 WebSocket message handler - memoized to prevent reconnection loops
   const handleUE5Message = useCallback((msg: import("@/lib/useUE5WebSocket").UE5IncomingMessage) => {
@@ -575,18 +578,54 @@ export default function HomePage() {
     handleSendMessage("gameEstate", "default")
   }, [handleSendMessage])
 
+  const clearUe5FadeTimeouts = useCallback(() => {
+    ue5FadeTimeoutsRef.current.forEach((id) => window.clearTimeout(id))
+    ue5FadeTimeoutsRef.current = []
+  }, [])
+
+  const runUe5FadeTransition = useCallback(() => {
+    clearUe5FadeTimeouts()
+    setIsUe5FadeOpaque(false)
+    setShowUe5FadeOverlay(true)
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        setIsUe5FadeOpaque(true)
+      })
+    })
+
+    const midpointTimeout = window.setTimeout(() => {
+      setIsUe5FadeOpaque(false)
+    }, 2000)
+
+    const endTimeout = window.setTimeout(() => {
+      setShowUe5FadeOverlay(false)
+    }, 3000)
+
+    ue5FadeTimeoutsRef.current = [midpointTimeout, endTimeout]
+  }, [clearUe5FadeTimeouts])
+
+  useEffect(() => {
+    return () => {
+      clearUe5FadeTimeouts()
+    }
+  }, [clearUe5FadeTimeouts])
+
   // Handle pending unit action from JourneyOrchestrator
   useEffect(() => {
     if (!pendingUnitAction) return
 
-    if (pendingUnitAction === "interior" || pendingUnitAction === "exterior") {
-      handleUnitViewChange(pendingUnitAction)
+    if (pendingUnitAction === "interior") {
+      handleUnitViewChange("interior")
+      runUe5FadeTransition()
+    } else if (pendingUnitAction === "exterior") {
+      handleUnitViewChange("exterior")
     } else if (pendingUnitAction === "back") {
       handleUnitBack()
+      runUe5FadeTransition()
     }
     // Clear the action AFTER calling handlers to ensure they execute
     setPendingUnitAction(null)
-  }, [pendingUnitAction, setPendingUnitAction, handleUnitViewChange, handleUnitBack])
+  }, [pendingUnitAction, setPendingUnitAction, handleUnitViewChange, handleUnitBack, runUe5FadeTransition])
 
   // Open the requested panel when set by the journey orchestrator
   useEffect(() => {
@@ -696,6 +735,11 @@ export default function HomePage() {
         <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-slate-900 via-black to-slate-950 text-white/70">
           Set NEXT_PUBLIC_VAGON_STREAM_URL to render the live UE5 background here.
         </div>
+      )}
+      {showUe5FadeOverlay && (
+        <div
+          className={`pointer-events-none absolute inset-0 z-[5] bg-black transition-opacity duration-1000 ease-linear ${isUe5FadeOpaque ? "opacity-100" : "opacity-0"}`}
+        />
       )}
 
       {selectedUnit && (
