@@ -283,6 +283,52 @@ const extractWithRegex = (
       }
     }
 
+    // Travel purpose
+    if (!result.travelPurpose) {
+      const purposeKeywords: Record<string, string> = {
+        "honeymoon": "honeymoon", "anniversary": "celebration", "birthday": "celebration",
+        "celebration": "celebration", "wedding": "celebration", "romantic": "romantic getaway",
+        "business trip": "business", "work trip": "business", "corporate": "business",
+        "conference": "business", "meeting": "business", "retreat": "business",
+        "leisure": "leisure", "vacation": "leisure", "holiday": "leisure",
+        "getaway": "leisure", "family vacation": "family vacation",
+        "family holiday": "family vacation", "adventure": "adventure",
+      }
+      for (const [keyword, purpose] of Object.entries(purposeKeywords)) {
+        if (lower.includes(keyword)) {
+          result.travelPurpose = purpose
+          break
+        }
+      }
+    }
+
+    // Budget range
+    if (!result.budgetRange) {
+      // Dollar/euro amount patterns
+      const rangeMatch = lower.match(/\$\s*(\d[\d,]*)\s*(?:to|-)\s*\$?\s*(\d[\d,]*)/)
+      if (rangeMatch) {
+        result.budgetRange = `$${rangeMatch[1]}-$${rangeMatch[2]}`
+      } else {
+        const perNightMatch = lower.match(/(\d{2,}[\d,]*)\s*(?:dollars|euros|pounds|per\s*night|a\s*night|\/night)/)
+        if (perNightMatch) {
+          result.budgetRange = `~$${perNightMatch[1]}/night`
+        } else {
+          const budgetKeywords: Record<string, string> = {
+            "budget": "budget", "affordable": "budget", "cheap": "budget",
+            "economic": "budget", "mid-range": "mid-range", "mid range": "mid-range",
+            "moderate": "mid-range", "luxury": "luxury", "premium": "luxury",
+            "high-end": "luxury", "high end": "luxury", "splurge": "luxury",
+          }
+          for (const [keyword, range] of Object.entries(budgetKeywords)) {
+            if (lower.includes(keyword)) {
+              result.budgetRange = range
+              break
+            }
+          }
+        }
+      }
+    }
+
     // Nationality / origin
     if (!result.nationality) {
       const originMatch = text.match(
@@ -398,8 +444,8 @@ export const useUserProfile = (): {
       startDate: aiProfile.startDate ? new Date(aiProfile.startDate) : regexProfile.startDate,
       endDate: aiProfile.endDate ? new Date(aiProfile.endDate) : regexProfile.endDate,
       interests: Array.from(mergedInterests),
-      travelPurpose: aiProfile.travelPurpose ?? undefined,
-      budgetRange: aiProfile.budgetRange ?? undefined,
+      travelPurpose: aiProfile.travelPurpose ?? regexProfile.travelPurpose,
+      budgetRange: aiProfile.budgetRange ?? regexProfile.budgetRange,
       roomTypePreference: aiProfile.roomTypePreference ?? regexProfile.roomTypePreference,
       dietaryRestrictions: mergedDietary.size > 0 ? Array.from(mergedDietary) : undefined,
       accessibilityNeeds: mergedAccessibility.size > 0 ? Array.from(mergedAccessibility) : undefined,
@@ -456,9 +502,15 @@ export const useUserProfile = (): {
 
   // Auto-trigger AI extraction when new messages arrive (debounced)
   useEffect(() => {
-    if (!aiAvailable) return // Don't try if AI is not available
     if (userMessages.length === 0) return
     if (userMessages.length === lastExtractedCount.current) return
+
+    // When AI is not available, immediately mark messages as processed
+    // so isExtractionPending resolves to false (regex-only mode works fine)
+    if (!aiAvailable) {
+      lastExtractedCount.current = userMessages.length
+      return
+    }
 
     const timer = setTimeout(() => {
       triggerAIExtraction()

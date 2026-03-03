@@ -38,6 +38,7 @@ export type GuestIntelligence = {
   bookingOutcome: BookingOutcome
   conversationDuration: number
   roomsExplored: string[]
+  amenitiesExplored: string[]
   consentFlags: ConsentFlags
   referralSource?: string
   devicePlatform?: string
@@ -48,6 +49,7 @@ type GuestIntelligenceContextValue = {
   trackQuestion: (question: string) => void
   trackObjection: (objection: Objection) => void
   trackRoomExplored: (roomId: string) => void
+  trackAmenityExplored: (name: string) => void
   setUpsellReceptivity: (score: number) => void
   setBookingOutcome: (outcome: BookingOutcome) => void
   setConsentFlags: (flags: Partial<ConsentFlags>) => void
@@ -60,6 +62,7 @@ const DEFAULT_INTELLIGENCE: GuestIntelligence = {
   bookingOutcome: "in_progress",
   conversationDuration: 0,
   roomsExplored: [],
+  amenitiesExplored: [],
   consentFlags: {
     marketing: false,
     dataSharing: false,
@@ -97,6 +100,15 @@ export function GuestIntelligenceProvider({ children }: { children: ReactNode })
     }))
   }, [])
 
+  const trackAmenityExplored = useCallback((name: string) => {
+    setData((prev) => ({
+      ...prev,
+      amenitiesExplored: prev.amenitiesExplored.includes(name)
+        ? prev.amenitiesExplored
+        : [...prev.amenitiesExplored, name],
+    }))
+  }, [])
+
   const setUpsellReceptivity = useCallback((score: number) => {
     setData((prev) => ({ ...prev, upsellReceptivity: Math.max(0, Math.min(1, score)) }))
   }, [])
@@ -122,11 +134,12 @@ export function GuestIntelligenceProvider({ children }: { children: ReactNode })
       trackQuestion,
       trackObjection,
       trackRoomExplored,
+      trackAmenityExplored,
       setUpsellReceptivity,
       setBookingOutcome,
       setConsentFlags,
     }),
-    [data, trackQuestion, trackObjection, trackRoomExplored, setUpsellReceptivity, setBookingOutcome, setConsentFlags],
+    [data, trackQuestion, trackObjection, trackRoomExplored, trackAmenityExplored, setUpsellReceptivity, setBookingOutcome, setConsentFlags],
   )
 
   return React.createElement(

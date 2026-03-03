@@ -8,6 +8,7 @@
 export type UserIntent =
   | { type: "ROOMS" }
   | { type: "AMENITIES" }
+  | { type: "AMENITY_BY_NAME"; amenityName: string }
   | { type: "LOCATION" }
   | { type: "INTERIOR" }
   | { type: "EXTERIOR" }
@@ -18,7 +19,8 @@ export type UserIntent =
 
 const DOWNLOAD_DATA_RE = /\bdownload\s+user\s+data\b/
 const ROOM_RE = /\b(room|rooms|suite|suites|book|stay|bed|accommodation)\b/
-const AMENITY_RE = /\b(amenity|amenities|spa|pool|gym|restaurant|bar|facility|facilities)\b/
+const AMENITY_RE = /\b(amenity|amenities|facility|facilities)\b/
+const AMENITY_NAME_RE = /\b(lobby|conference|spa|restaurant|pool|gym|bar|lounge|dining)\b/
 const LOCATION_RE = /\b(location|surrounding|surroundings|area|neighbou?rhood|outside|around|nearby|map|walk)\b/
 const INTERIOR_RE = /\b(interior|inside|indoor|in)\b/
 const EXTERIOR_RE = /\b(exterior|outside|outdoor|out|view)\b/
@@ -30,10 +32,8 @@ const HOTEL_EXPLORE_RE =
  * Classify a user utterance into a navigation / action intent.
  *
  * Priority order (highest → lowest):
- *   BACK > INTERIOR / EXTERIOR > HOTEL_EXPLORE > single-panel (ROOMS / AMENITIES / LOCATION)
- *
- * Returns `{ type: "UNKNOWN" }` when the message doesn't match any pattern
- * or when multiple panel intents are ambiguous.
+ *   DOWNLOAD_DATA > BACK > INTERIOR / EXTERIOR > HOTEL_EXPLORE >
+ *   AMENITY_BY_NAME > AMENITIES (generic) > ROOMS / LOCATION
  */
 export function classifyIntent(message: string): UserIntent {
   const lower = message.toLowerCase()
@@ -53,6 +53,16 @@ export function classifyIntent(message: string): UserIntent {
   // --- hotel-level explore ---
   if (HOTEL_EXPLORE_RE.test(lower)) return { type: "HOTEL_EXPLORE" }
 
+  // --- specific amenity by name (e.g., "take me to the lobby") ---
+  const amenityNameMatch = lower.match(AMENITY_NAME_RE)
+  if (amenityNameMatch) {
+    // If the user says a specific amenity name, navigate there directly
+    // But if they also say the generic "amenities" word, treat as listing request
+    if (!AMENITY_RE.test(lower)) {
+      return { type: "AMENITY_BY_NAME", amenityName: amenityNameMatch[1] }
+    }
+  }
+
   // --- panel navigation (rooms / amenities / location) ---
   const wantsRooms = ROOM_RE.test(lower)
   const wantsAmenities = AMENITY_RE.test(lower)
@@ -63,6 +73,11 @@ export function classifyIntent(message: string): UserIntent {
     if (wantsRooms) return { type: "ROOMS" }
     if (wantsAmenities) return { type: "AMENITIES" }
     if (wantsLocation) return { type: "LOCATION" }
+  }
+
+  // --- fallback: if only an amenity name was matched with no other intent ---
+  if (amenityNameMatch) {
+    return { type: "AMENITY_BY_NAME", amenityName: amenityNameMatch[1] }
   }
 
   return { type: "UNKNOWN" }

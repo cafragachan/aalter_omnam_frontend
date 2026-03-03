@@ -9,7 +9,7 @@ import { getReengagePrompt } from "./reengage-prompts"
 // Helpers
 // ---------------------------------------------------------------------------
 
-function buildAmenityNarrative(name: string, scene: string): string {
+export function buildAmenityNarrative(name: string, scene: string): string {
   const n = name.toLowerCase()
   const s = scene.toLowerCase()
   if (s.includes("lobby") || n.includes("lobby")) {
@@ -33,7 +33,7 @@ function buildAmenityNarrative(name: string, scene: string): string {
 type ProfileCollectionAwaiting = Extract<JourneyState, { stage: "PROFILE_COLLECTION" }>["awaiting"]
 
 function profileCollectionAwaiting(
-  profile: { partySize?: number; startDate?: Date | null; endDate?: Date | null },
+  profile: { partySize?: number; startDate?: Date | null; endDate?: Date | null; travelPurpose?: string },
 ): ProfileCollectionAwaiting {
   const missingDates = !profile.startDate || !profile.endDate
   const missingGuests = !profile.partySize
@@ -41,7 +41,7 @@ function profileCollectionAwaiting(
   if (missingDates && missingGuests) return "dates_and_guests"
   if (missingDates) return "dates"
   if (missingGuests) return "guests"
-  // Interests are NO LONGER gating — they're collected during exploration
+  if (!profile.travelPurpose) return "travel_purpose"
   return "ready"
 }
 
@@ -108,6 +108,12 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
               text: `And how many guests will be joining you? Adults, children — just so I can find the right fit.`,
             })
             break
+          case "travel_purpose":
+            effects.push({
+              type: "SPEAK",
+              text: `Lovely! Is this a leisure getaway, a special celebration, or something for business?`,
+            })
+            break
         }
         return { nextState: { stage: "PROFILE_COLLECTION", awaiting }, effects }
       }
@@ -152,9 +158,14 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
 
         case "AMENITIES":
-          effects.push({ type: "SPEAK", text: "Great idea — let me show you what this property has to offer beyond the rooms." })
-          effects.push({ type: "OPEN_PANEL", panel: "amenities" })
-          return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
+          // The avatar will list available amenities by name — handled in useJourney
+          // which has access to the hotel's amenity data. No panel opened.
+          return { nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" }, effects: [] }
+
+        case "AMENITY_BY_NAME":
+          // Specific amenity navigation — handled in useJourney which resolves
+          // the amenity name against hotel data and triggers UE5 navigation.
+          return { nextState: state, effects: [] }
 
         case "LOCATION":
           effects.push({ type: "SPEAK", text: "Let me show you the surrounding area. It's worth seeing what's nearby — there are some wonderful spots." })
@@ -277,9 +288,12 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
         return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
       }
       if (intent.type === "AMENITIES") {
-        effects.push({ type: "SPEAK", text: "Let me show you what else is available." })
-        effects.push({ type: "OPEN_PANEL", panel: "amenities" })
-        return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
+        // Handled in useJourney — lists amenities by name via voice
+        return { nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" }, effects: [] }
+      }
+      if (intent.type === "AMENITY_BY_NAME") {
+        // Handled in useJourney — navigates to specific amenity
+        return { nextState: state, effects: [] }
       }
       if (intent.type === "LOCATION") {
         effects.push({ type: "SPEAK", text: "Let me show you the surrounding area." })

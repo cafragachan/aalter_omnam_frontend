@@ -7,7 +7,7 @@ import { SunToggle, type SunState } from "@/components/SunToggle"
 import { ProfileSync } from "@/components/ProfileSync"
 import { DestinationsOverlay } from "@/components/panels/DestinationsOverlay"
 import { RoomsPanel } from "@/components/panels/RoomsPanel"
-import { AmenitiesPanel } from "@/components/panels/AmenitiesPanel"
+// AmenitiesPanel removed — amenity navigation is now voice-driven
 import { UnitDetailPanel } from "@/components/panels/UnitDetailPanel"
 import { useUserProfileContext, type JourneyStage } from "@/lib/context"
 import { useApp } from "@/lib/store"
@@ -15,7 +15,7 @@ import { useEmit } from "@/lib/events"
 import { useJourney } from "@/lib/orchestrator"
 import { useUE5Bridge } from "@/lib/ue5/bridge"
 import { hotels, getHotelBySlug, getRoomsByHotelId, getAmenitiesByHotelId } from "@/lib/hotel-data"
-import type { Room, Amenity } from "@/lib/hotel-data"
+import type { Room } from "@/lib/hotel-data"
 
 // ---------------------------------------------------------------------------
 // Stage labels for the journey status badge
@@ -86,7 +86,6 @@ function HomePageContent() {
 
   // --- UI panel visibility (local state, driven by orchestrator callbacks) ---
   const [showRoomsPanel, setShowRoomsPanel] = useState(false)
-  const [showAmenitiesPanel, setShowAmenitiesPanel] = useState(false)
 
   // --- UE5 Bridge (WebSocket + fade transitions + unit state) ---
   const ue5 = useUE5Bridge()
@@ -116,28 +115,21 @@ function HomePageContent() {
     if (panel === "rooms") {
       ue5.navigateToRooms()
       setShowRoomsPanel(true)
-      setShowAmenitiesPanel(false)
-    } else if (panel === "amenities") {
-      ue5.navigateToAmenities()
-      setShowAmenitiesPanel(true)
-      setShowRoomsPanel(false)
     } else if (panel === "location") {
       ue5.navigateToLocation()
       setShowRoomsPanel(false)
-      setShowAmenitiesPanel(false)
     }
+    // "amenities" is now voice-driven — no panel to open
   }, [ue5])
 
   const handleClosePanels = useCallback(() => {
     setShowRoomsPanel(false)
-    setShowAmenitiesPanel(false)
   }, [])
 
   const handleResetToDefault = useCallback(() => {
     ue5.resetToDefault()
     ue5.clearSelectedUnit()
     setShowRoomsPanel(false)
-    setShowAmenitiesPanel(false)
   }, [ue5])
 
   // --- Journey orchestrator (runs as a hook, not a component) ---
@@ -147,6 +139,7 @@ function HomePageContent() {
     onUE5Command: ue5.sendCommand,
     onResetToDefault: handleResetToDefault,
     onFadeTransition: ue5.fadeTransition,
+    amenities,
   })
 
   // --- Reset sun position when hotel changes ---
@@ -183,24 +176,9 @@ function HomePageContent() {
     })
   }, [emit])
 
-  // --- Amenity selection handler (emits to EventBus) ---
-  const handleSelectAmenity = useCallback((amenity: Amenity) => {
-    emit({
-      type: "AMENITY_CARD_TAPPED",
-      amenityId: amenity.id,
-      name: amenity.name,
-      scene: amenity.scene,
-    })
-  }, [emit])
-
   // --- Panel close handlers ---
   const closeRoomsPanel = useCallback(() => {
     setShowRoomsPanel(false)
-    ue5.resetToDefault()
-  }, [ue5])
-
-  const closeAmenitiesPanel = useCallback(() => {
-    setShowAmenitiesPanel(false)
     ue5.resetToDefault()
   }, [ue5])
 
@@ -303,14 +281,7 @@ function HomePageContent() {
         onClose={closeRoomsPanel}
       />
 
-      {/* Amenities panel */}
-      <AmenitiesPanel
-        visible={showAmenitiesPanel}
-        hotelName={selectedHotelData?.name ?? ""}
-        amenities={amenities}
-        onSelectAmenity={handleSelectAmenity}
-        onClose={closeAmenitiesPanel}
-      />
+      {/* Amenities are now voice-driven — no panel */}
     </div>
   )
 }

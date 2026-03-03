@@ -7,9 +7,10 @@ import { useAvatarActions } from "@/lib/liveavatar/useAvatarActions"
 import { useEventBus, useEventListener } from "@/lib/events"
 import { useGuestIntelligence } from "@/lib/guest-intelligence"
 import { classifyIntent } from "./intents"
-import { journeyReducer, INITIAL_JOURNEY_STATE } from "./journey-machine"
+import { journeyReducer, INITIAL_JOURNEY_STATE, buildAmenityNarrative } from "./journey-machine"
 import { useIdleDetection } from "./idle-detection"
 import type { JourneyState, JourneyAction, JourneyEffect } from "./types"
+import type { Amenity } from "@/lib/hotel-data"
 
 // ---------------------------------------------------------------------------
 // useJourney — wires the pure state machine to React
@@ -22,6 +23,8 @@ type UseJourneyOptions = {
   onResetToDefault: () => void
   onFadeTransition: () => void
   onUnitSelected?: (roomName: string) => void
+  /** Amenities for the currently selected hotel (needed for voice-driven navigation) */
+  amenities: Amenity[]
 }
 
 export function useJourney(options: UseJourneyOptions) {
@@ -31,6 +34,7 @@ export function useJourney(options: UseJourneyOptions) {
     onUE5Command,
     onResetToDefault,
     onFadeTransition,
+    amenities,
   } = options
 
   const { profile, journeyStage, setJourneyStage } = useUserProfileContext()
@@ -38,7 +42,7 @@ export function useJourney(options: UseJourneyOptions) {
   const { repeat, interrupt } = useAvatarActions("FULL")
   const eventBus = useEventBus()
   const guestIntelligence = useGuestIntelligence()
-  const { trackQuestion, trackRoomExplored } = guestIntelligence
+  const { trackQuestion, trackRoomExplored, trackAmenityExplored } = guestIntelligence
 
   // --- State machine state (kept in ref to avoid re-render cascades) ---
   const stateRef = useRef<JourneyState>(INITIAL_JOURNEY_STATE)
@@ -68,6 +72,51 @@ export function useJourney(options: UseJourneyOptions) {
     document.body.removeChild(a)
     URL.revokeObjectURL(url)
   }, [profile, derivedProfile, guestIntelligence.data, journeyStage, userMessages])
+
+  // --- Voice-driven amenity navigation ---
+  const navigateToAmenityByName = useCallback((amenityName: string) => {
+    const match = amenities.find((a) => {
+      const n = a.name.toLowerCase()
+      const s = a.scene.toLowerCase()
+      return n.includes(amenityName) || s.includes(amenityName)
+    })
+
+    if (!match) {
+      interrupt()
+      repeat(`I don't think we have a ${amenityName} at this property. Would you like to see the rooms, or explore the surrounding area?`).catch(() => undefined)
+      return
+    }
+
+    // Track this amenity visit
+    trackAmenityExplored(match.name)
+
+    // Navigate UE5 + fade + speak narrative
+    const narrative = buildAmenityNarrative(match.name, match.scene)
+    onClosePanels()
+    onUE5Command("communal", match.id)
+    onFadeTransition()
+    interrupt()
+    repeat(`Let me take you to the ${match.name} — ${narrative}`).catch(() => undefined)
+
+    // Update state to AMENITY_VIEWING
+    stateRef.current = { stage: "AMENITY_VIEWING" }
+  }, [amenities, trackAmenityExplored, onClosePanels, onUE5Command, onFadeTransition, interrupt, repeat])
+
+  const listAmenities = useCallback(() => {
+    if (amenities.length === 0) {
+      interrupt()
+      repeat("This property doesn't have any specific amenity spaces to tour right now. Shall we look at the rooms instead?").catch(() => undefined)
+      return
+    }
+
+    const names = amenities.map((a) => a.name)
+    const listText = names.length === 1
+      ? `a ${names[0].toLowerCase()}`
+      : names.slice(0, -1).map((n) => `a ${n.toLowerCase()}`).join(", ") + ` and a ${names[names.length - 1].toLowerCase()}`
+
+    interrupt()
+    repeat(`This property has ${listText}. Which would you like to visit?`).catch(() => undefined)
+  }, [amenities, interrupt, repeat])
 
   // --- Effect executor ---
   const executeEffects = useCallback((effects: JourneyEffect[]) => {
@@ -100,7 +149,7 @@ export function useJourney(options: UseJourneyOptions) {
           break
       }
     }
-  }, [interrupt, repeat, onUE5Command, onOpenPanel, onClosePanels, onFadeTransition, setJourneyStage, onResetToDefault]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [interrupt, repeat, onUE5Command, onOpenPanel, onClosePanels, onFadeTransition, setJourneyStage, onResetToDefault, downloadUserData])
 
   // --- Dispatch helper ---
   const dispatch = useCallback((action: JourneyAction) => {
@@ -128,6 +177,7 @@ export function useJourney(options: UseJourneyOptions) {
       startDate: derivedProfile.startDate?.toISOString(),
       endDate: derivedProfile.endDate?.toISOString(),
       interests: derivedProfile.interests,
+      travelPurpose: derivedProfile.travelPurpose,
       pending: isExtractionPending,
     })
 
@@ -159,8 +209,24 @@ export function useJourney(options: UseJourneyOptions) {
     if (stage === "PROFILE_COLLECTION" || stage === "DESTINATION_SELECT") return
 
     const intent = classifyIntent(latestMessage)
+
+    // --- Intercept amenity intents (need hotel data, not available in pure reducer) ---
+    if (intent.type === "AMENITIES") {
+      listAmenities()
+      // Still dispatch to reducer so it updates state (it returns empty effects)
+      dispatch({ type: "USER_INTENT", intent })
+      return
+    }
+
+    if (intent.type === "AMENITY_BY_NAME") {
+      navigateToAmenityByName(intent.amenityName)
+      // Dispatch to reducer for state tracking
+      dispatch({ type: "USER_INTENT", intent })
+      return
+    }
+
     dispatch({ type: "USER_INTENT", intent })
-  }, [userMessages, dispatch, trackQuestion])
+  }, [userMessages, dispatch, trackQuestion, listAmenities, navigateToAmenityByName])
 
   // --- Announce destination overlay when stage transitions ---
   useEffect(() => {
@@ -211,6 +277,7 @@ export function useJourney(options: UseJourneyOptions) {
   })
 
   useEventListener("AMENITY_CARD_TAPPED", (event) => {
+    trackAmenityExplored(event.name)
     dispatch({
       type: "AMENITY_CARD_TAPPED",
       name: event.name,
