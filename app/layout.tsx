@@ -6,6 +6,7 @@ import { AppProvider } from "@/lib/store"
 import { Toaster } from "@/components/ui/toaster"
 import { UserProfileProvider } from "@/lib/context"
 import { EventBusProvider } from "@/lib/events"
+import { GuestIntelligenceProvider } from "@/lib/guest-intelligence"
 
 const manrope = Manrope({ subsets: ["latin"], variable: "--font-sans-custom" })
 const jetbrainsMono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-mono-custom" })
@@ -44,6 +45,7 @@ export default function RootLayout({
         <UserProfileProvider>
           <AppProvider>
             <EventBusProvider>
+            <GuestIntelligenceProvider>
             {children}
             <Toaster />
             <div className="pointer-events-none fixed bottom-8 right-8 z-50">
@@ -53,6 +55,7 @@ export default function RootLayout({
                 className="h-10 w-auto opacity-75"
               />
             </div>
+            </GuestIntelligenceProvider>
             </EventBusProvider>
           </AppProvider>
         </UserProfileProvider>

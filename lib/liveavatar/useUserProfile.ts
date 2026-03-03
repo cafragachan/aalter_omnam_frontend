@@ -13,6 +13,13 @@ export type AvatarDerivedProfile = {
   endDate?: Date | null
   travelPurpose?: string
   budgetRange?: string
+  roomTypePreference?: string
+  dietaryRestrictions?: string[]
+  accessibilityNeeds?: string[]
+  amenityPriorities?: string[]
+  nationality?: string
+  arrivalTime?: string
+  guestComposition?: { adults: number; children: number; childrenAges?: number[] }
 }
 
 type AIExtractedProfile = {
@@ -24,6 +31,13 @@ type AIExtractedProfile = {
   interests?: string[]
   travelPurpose?: string | null
   budgetRange?: string | null
+  roomTypePreference?: string | null
+  dietaryRestrictions?: string[]
+  accessibilityNeeds?: string[]
+  amenityPriorities?: string[]
+  nationality?: string | null
+  arrivalTime?: string | null
+  guestComposition?: { adults: number; children: number; childrenAges?: number[] } | null
 }
 
 const clean = (text: string) => text.trim().replace(/\s+/g, " ")
@@ -240,6 +254,95 @@ const extractWithRegex = (
         interestSet.add(keyword)
       }
     }
+
+    // --- NEW FIELDS ---
+
+    // Dietary restrictions
+    const dietaryKeywords = [
+      "vegetarian", "vegan", "gluten free", "gluten-free", "halal", "kosher",
+      "nut allergy", "nut-free", "dairy free", "dairy-free", "lactose",
+      "pescatarian", "celiac", "no pork", "no alcohol",
+    ]
+    for (const keyword of dietaryKeywords) {
+      if (lower.includes(keyword)) {
+        if (!result.dietaryRestrictions) result.dietaryRestrictions = []
+        result.dietaryRestrictions.push(keyword)
+      }
+    }
+
+    // Accessibility needs
+    const accessibilityKeywords = [
+      "wheelchair", "accessible", "mobility", "ground floor",
+      "hearing impaired", "visual impairment", "disability", "disabled",
+      "step-free", "elevator access",
+    ]
+    for (const keyword of accessibilityKeywords) {
+      if (lower.includes(keyword)) {
+        if (!result.accessibilityNeeds) result.accessibilityNeeds = []
+        result.accessibilityNeeds.push(keyword)
+      }
+    }
+
+    // Nationality / origin
+    if (!result.nationality) {
+      const originMatch = text.match(
+        /\b(?:from|based in|live in|living in|coming from|traveling from|travelling from)\s+([A-Z][a-zA-Z\s]+?)(?:[.,!?]|$|\s+(?:and|with|for|to))/,
+      )
+      if (originMatch?.[1]) {
+        const origin = clean(originMatch[1])
+        if (origin.length > 1 && origin.length < 40) {
+          result.nationality = origin
+        }
+      }
+    }
+
+    // Room type preference
+    if (!result.roomTypePreference) {
+      const roomPrefPatterns = [
+        /\b(?:prefer|want|like|looking for)\s+(?:a\s+)?([a-z\s-]+?)\s*(?:room|suite|view)/i,
+        /\b(high(?:er)?\s+floor|ground\s+floor|penthouse|ocean\s+view|lake\s+view|garden|balcony|terrace)/i,
+        /\b(modern|classic|minimalist|luxurious|spacious|cozy|large)\s+(?:room|suite|style)/i,
+      ]
+      for (const pattern of roomPrefPatterns) {
+        const match = lower.match(pattern)
+        if (match?.[1]) {
+          result.roomTypePreference = clean(match[1])
+          break
+        }
+      }
+    }
+
+    // Arrival time
+    if (!result.arrivalTime) {
+      const arrivalMatch = lower.match(
+        /\b(?:arrive|arriving|check.?in|get there|land)\s+(?:at\s+|around\s+|by\s+)?(\d{1,2}(?::\d{2})?\s*(?:am|pm)?|morning|afternoon|evening|night|noon|midnight|late|early)/i,
+      )
+      if (arrivalMatch?.[1]) {
+        result.arrivalTime = clean(arrivalMatch[1])
+      }
+    }
+
+    // Children count and ages for guestComposition
+    if (!result.guestComposition) {
+      const childMatch = lower.match(/(\d+)\s*(?:kids?|children|child|toddlers?)/)
+      if (childMatch) {
+        const childCount = Number(childMatch[1])
+        const adults = (result.partySize ?? 2) - childCount
+        const ageMatches = lower.match(/(?:age[sd]?\s*(?:of\s+)?|aged?\s+)([\d,\s]+(?:and\s+\d+)?)/i)
+        let childrenAges: number[] | undefined
+        if (ageMatches?.[1]) {
+          childrenAges = ageMatches[1]
+            .split(/[,\s]+and\s+|[,\s]+/)
+            .map(Number)
+            .filter((n) => n > 0 && n < 18)
+        }
+        result.guestComposition = {
+          adults: Math.max(1, adults),
+          children: childCount,
+          childrenAges,
+        }
+      }
+    }
   })
 
   result.interests = Array.from(interestSet)
@@ -279,6 +382,15 @@ export const useUserProfile = (): {
       ...(aiProfile.interests ?? []),
     ])
 
+    const mergedDietary = new Set([
+      ...(regexProfile.dietaryRestrictions ?? []),
+      ...(aiProfile.dietaryRestrictions ?? []),
+    ])
+    const mergedAccessibility = new Set([
+      ...(regexProfile.accessibilityNeeds ?? []),
+      ...(aiProfile.accessibilityNeeds ?? []),
+    ])
+
     return {
       name: aiProfile.name ?? regexProfile.name,
       partySize: aiProfile.partySize ?? regexProfile.partySize,
@@ -288,6 +400,13 @@ export const useUserProfile = (): {
       interests: Array.from(mergedInterests),
       travelPurpose: aiProfile.travelPurpose ?? undefined,
       budgetRange: aiProfile.budgetRange ?? undefined,
+      roomTypePreference: aiProfile.roomTypePreference ?? regexProfile.roomTypePreference,
+      dietaryRestrictions: mergedDietary.size > 0 ? Array.from(mergedDietary) : undefined,
+      accessibilityNeeds: mergedAccessibility.size > 0 ? Array.from(mergedAccessibility) : undefined,
+      amenityPriorities: aiProfile.amenityPriorities ?? regexProfile.amenityPriorities,
+      nationality: aiProfile.nationality ?? regexProfile.nationality,
+      arrivalTime: aiProfile.arrivalTime ?? regexProfile.arrivalTime,
+      guestComposition: aiProfile.guestComposition ?? regexProfile.guestComposition,
     }
   }, [regexProfile, aiProfile])
 

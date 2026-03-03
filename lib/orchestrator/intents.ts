@@ -13,8 +13,10 @@ export type UserIntent =
   | { type: "EXTERIOR" }
   | { type: "BACK" }
   | { type: "HOTEL_EXPLORE" }
+  | { type: "DOWNLOAD_DATA" }
   | { type: "UNKNOWN" }
 
+const DOWNLOAD_DATA_RE = /\bdownload\s+user\s+data\b/
 const ROOM_RE = /\b(room|rooms|suite|suites|book|stay|bed|accommodation)\b/
 const AMENITY_RE = /\b(amenity|amenities|spa|pool|gym|restaurant|bar|facility|facilities)\b/
 const LOCATION_RE = /\b(location|surrounding|surroundings|area|neighbou?rhood|outside|around|nearby|map|walk)\b/
@@ -35,6 +37,9 @@ const HOTEL_EXPLORE_RE =
  */
 export function classifyIntent(message: string): UserIntent {
   const lower = message.toLowerCase()
+
+  // --- admin command: download user data ---
+  if (DOWNLOAD_DATA_RE.test(lower)) return { type: "DOWNLOAD_DATA" }
 
   // --- highest priority: navigation commands ---
   if (BACK_RE.test(lower)) return { type: "BACK" }

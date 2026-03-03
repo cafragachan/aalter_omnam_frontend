@@ -2,18 +2,38 @@
 
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react"
 
+export type GuestComposition = {
+  adults: number
+  children: number
+  childrenAges?: number[]
+}
+
 export type UserProfile = {
+  // --- From Login (P0) ---
   firstName?: string
   lastName?: string
   email?: string
+  phoneNumber?: string
+  dateOfBirth?: Date | null
+
+  // --- From Conversation (P0) ---
   startDate?: Date | null
   endDate?: Date | null
-  age?: number
-  familySize?: number
-  interests: string[]
+  guestComposition?: GuestComposition
+  familySize?: number             // backward compat, derived from guestComposition
   destination?: string
+  roomTypePreference?: string
+  accessibilityNeeds?: string[]
+
+  // --- From Conversation (P1) ---
+  interests: string[]
   travelPurpose?: string
   budgetRange?: string
+  dietaryRestrictions?: string[]
+  amenityPriorities?: string[]
+  arrivalTime?: string
+  nationality?: string
+  languagePreference?: string
   loyaltyTier?: string
   notes?: string
 }
@@ -49,6 +69,9 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
       ...prev,
       ...updates,
       interests: mergeUnique(prev.interests, updates.interests),
+      dietaryRestrictions: mergeUnique(prev.dietaryRestrictions ?? [], updates.dietaryRestrictions),
+      accessibilityNeeds: mergeUnique(prev.accessibilityNeeds ?? [], updates.accessibilityNeeds),
+      amenityPriorities: mergeUnique(prev.amenityPriorities ?? [], updates.amenityPriorities),
     }))
   }, [])
 

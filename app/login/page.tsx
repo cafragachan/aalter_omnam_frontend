@@ -10,13 +10,15 @@ import { GlassPanel } from "@/components/glass-panel"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { useToast } from "@/hooks/use-toast"
-import { Lock, Mail, LogIn, User } from "lucide-react"
+import { Lock, Mail, LogIn, User, Phone, Calendar } from "lucide-react"
 
 export default function LoginPage() {
   const [firstName, setFirstName] = useState("")
   const [lastName, setLastName] = useState("")
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
+  const [phoneNumber, setPhoneNumber] = useState("")
+  const [dateOfBirth, setDateOfBirth] = useState("")
   const { login } = useApp()
   const { updateProfile, setJourneyStage } = useUserProfileContext()
   const router = useRouter()
@@ -40,6 +42,8 @@ export default function LoginPage() {
         lastName: lastName.trim(),
         email,
         familySize: 1,
+        phoneNumber: phoneNumber.trim() || undefined,
+        dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : undefined,
       })
       setJourneyStage("PROFILE_COLLECTION")
       toast({
@@ -127,6 +131,39 @@ export default function LoginPage() {
                 onChange={(e) => setPassword(e.target.value)}
                 className="border-white/60 bg-white/25 pl-10 text-slate-900 placeholder:text-slate-600"
               />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-2">
+              <label htmlFor="phone" className="text-sm font-medium text-white/90">
+                Phone
+              </label>
+              <div className="relative">
+                <Phone className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+                <Input
+                  id="phone"
+                  type="tel"
+                  placeholder="+1 234 567 890"
+                  value={phoneNumber}
+                  onChange={(e) => setPhoneNumber(e.target.value)}
+                  className="border-white/60 bg-white/25 pl-10 text-slate-900 placeholder:text-slate-600"
+                />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <label htmlFor="dob" className="text-sm font-medium text-white/90">
+                Date of Birth
+              </label>
+              <div className="relative">
+                <Calendar className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+                <Input
+                  id="dob"
+                  type="date"
+                  value={dateOfBirth}
+                  onChange={(e) => setDateOfBirth(e.target.value)}
+                  className="border-white/60 bg-white/25 pl-10 text-slate-900 placeholder:text-slate-600"
+                />
+              </div>
             </div>
           </div>
           <Button type="submit" size="lg" className="w-full">

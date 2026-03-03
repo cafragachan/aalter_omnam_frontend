@@ -1,5 +1,11 @@
 import { z } from "zod"
 
+const GuestCompositionSchema = z.object({
+  adults: z.number(),
+  children: z.number(),
+  childrenAges: z.array(z.number()).optional(),
+}).nullable().optional()
+
 const ExtractedProfileSchema = z.object({
   name: z.string().nullable().optional(),
   partySize: z.number().nullable().optional(),
@@ -9,29 +15,45 @@ const ExtractedProfileSchema = z.object({
   interests: z.array(z.string()).optional(),
   travelPurpose: z.string().nullable().optional(),
   budgetRange: z.string().nullable().optional(),
+  roomTypePreference: z.string().nullable().optional(),
+  dietaryRestrictions: z.array(z.string()).optional(),
+  accessibilityNeeds: z.array(z.string()).optional(),
+  amenityPriorities: z.array(z.string()).optional(),
+  nationality: z.string().nullable().optional(),
+  arrivalTime: z.string().nullable().optional(),
+  guestComposition: GuestCompositionSchema,
 })
 
 type ExtractedProfile = z.infer<typeof ExtractedProfileSchema>
 
-const SYSTEM_PROMPT = `You are a profile data extraction assistant for a hotel booking AI agent.
+const SYSTEM_PROMPT = `You are a profile data extraction assistant for a luxury hotel booking AI agent.
 Your job is to extract structured information from user utterances in a conversation.
 
 Extract the following fields when mentioned:
 - name: The user's name (first name or full name)
-- partySize: Number of guests/travelers (as a number)
+- partySize: Total number of guests/travelers (as a number)
+- guestComposition: Breakdown of adults and children. Example: { "adults": 2, "children": 2, "childrenAges": [5, 8] }
 - destination: Where they want to travel (city, country, or region)
 - startDate: Travel start date in ISO format (YYYY-MM-DD) if mentioned
 - endDate: Travel end date in ISO format (YYYY-MM-DD) if mentioned
-- interests: Array of interests/activities they mentioned (e.g., ["relaxation", "spa", "hiking"])
-- travelPurpose: Purpose of travel (business, leisure, honeymoon, family vacation, etc.)
-- budgetRange: Budget indication if mentioned (e.g., "luxury", "mid-range", "$500-1000/night")
+- interests: Array of interests/activities (e.g., ["relaxation", "spa", "hiking", "fine dining"])
+- travelPurpose: Purpose of travel (business, leisure, honeymoon, family vacation, celebration, etc.)
+- budgetRange: Budget indication (e.g., "luxury", "mid-range", "$500-1000/night")
+- roomTypePreference: Room type or style preference (e.g., "suite", "ocean view", "high floor", "modern", "penthouse")
+- dietaryRestrictions: Food allergies or dietary needs (e.g., ["vegetarian", "gluten-free", "nut allergy"])
+- accessibilityNeeds: Mobility or accessibility requirements (e.g., ["wheelchair accessible", "ground floor"])
+- amenityPriorities: Amenities the guest values (e.g., ["spa", "pool", "gym", "restaurant"]) in order of importance
+- nationality: Guest's country of origin or where they're traveling from (e.g., "UK", "Germany", "United States")
+- arrivalTime: Expected arrival time if mentioned (e.g., "afternoon", "3pm", "late evening")
 
 Rules:
 - Only extract information that is explicitly stated or clearly implied
 - Return null for fields not mentioned
 - For dates, use the current year if not specified
 - For party size, include the speaker (e.g., "me and my wife" = 2)
-- Be conservative - don't infer information that isn't clearly stated
+- For guestComposition, extract adult/child split and children's ages if mentioned (e.g., "me and my wife and two kids, 5 and 8" → { adults: 2, children: 2, childrenAges: [5, 8] })
+- For nationality, extract from phrases like "traveling from London", "based in Germany", "coming from Dubai"
+- Be conservative — don't infer information that isn't clearly stated
 
 Respond ONLY with valid JSON matching this schema, no other text.`
 

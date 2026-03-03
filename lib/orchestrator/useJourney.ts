@@ -5,32 +5,22 @@ import { useUserProfileContext } from "@/lib/context"
 import { useUserProfile } from "@/lib/liveavatar"
 import { useAvatarActions } from "@/lib/liveavatar/useAvatarActions"
 import { useEventBus, useEventListener } from "@/lib/events"
+import { useGuestIntelligence } from "@/lib/guest-intelligence"
 import { classifyIntent } from "./intents"
 import { journeyReducer, INITIAL_JOURNEY_STATE } from "./journey-machine"
+import { useIdleDetection } from "./idle-detection"
 import type { JourneyState, JourneyAction, JourneyEffect } from "./types"
 
 // ---------------------------------------------------------------------------
 // useJourney — wires the pure state machine to React
 // ---------------------------------------------------------------------------
-// Replaces the old JourneyOrchestrator component (330 lines of useEffects).
-// Single hook that:
-//   1. Listens to profile changes, user messages, and EventBus events
-//   2. Feeds them through classifyIntent + journeyReducer
-//   3. Executes the resulting effects (avatar speak, UE5 commands, etc.)
-// ---------------------------------------------------------------------------
 
 type UseJourneyOptions = {
-  /** Callback to open a UI panel */
   onOpenPanel: (panel: "rooms" | "amenities" | "location") => void
-  /** Callback to close all UI panels */
   onClosePanels: () => void
-  /** Callback to send a command to UE5 */
   onUE5Command: (command: string, value: unknown) => void
-  /** Callback to reset UE5 to default view */
   onResetToDefault: () => void
-  /** Callback to trigger a fade transition */
   onFadeTransition: () => void
-  /** Callback when a unit is selected (to update local UI state) */
   onUnitSelected?: (roomName: string) => void
 }
 
@@ -47,12 +37,37 @@ export function useJourney(options: UseJourneyOptions) {
   const { profile: derivedProfile, isExtractionPending, userMessages } = useUserProfile()
   const { repeat, interrupt } = useAvatarActions("FULL")
   const eventBus = useEventBus()
+  const guestIntelligence = useGuestIntelligence()
+  const { trackQuestion, trackRoomExplored } = guestIntelligence
 
   // --- State machine state (kept in ref to avoid re-render cascades) ---
   const stateRef = useRef<JourneyState>(INITIAL_JOURNEY_STATE)
   const lastMessageCountRef = useRef(0)
   const lastProfileKeyRef = useRef("")
   const destinationAnnouncedRef = useRef(false)
+
+  // --- Admin: download all collected user data as JSON ---
+  const downloadUserData = useCallback(() => {
+    const payload = {
+      timestamp: new Date().toISOString(),
+      profile,
+      derivedProfile,
+      guestIntelligence: guestIntelligence.data,
+      journeyStage,
+      conversationMessages: userMessages,
+    }
+
+    const json = JSON.stringify(payload, null, 2)
+    const blob = new Blob([json], { type: "application/json" })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `omnam-guest-data-${profile.firstName ?? "guest"}-${Date.now()}.json`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }, [profile, derivedProfile, guestIntelligence.data, journeyStage, userMessages])
 
   // --- Effect executor ---
   const executeEffects = useCallback((effects: JourneyEffect[]) => {
@@ -80,9 +95,12 @@ export function useJourney(options: UseJourneyOptions) {
         case "RESET_TO_DEFAULT":
           onResetToDefault()
           break
+        case "DOWNLOAD_DATA":
+          downloadUserData()
+          break
       }
     }
-  }, [interrupt, repeat, onUE5Command, onOpenPanel, onClosePanels, onFadeTransition, setJourneyStage, onResetToDefault])
+  }, [interrupt, repeat, onUE5Command, onOpenPanel, onClosePanels, onFadeTransition, setJourneyStage, onResetToDefault]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // --- Dispatch helper ---
   const dispatch = useCallback((action: JourneyAction) => {
@@ -92,6 +110,16 @@ export function useJourney(options: UseJourneyOptions) {
       executeEffects(result.effects)
     }
   }, [executeEffects])
+
+  // --- Idle detection (re-engagement) ---
+  const handleIdle = useCallback(() => {
+    dispatch({ type: "IDLE_TIMEOUT" })
+  }, [dispatch])
+
+  useIdleDetection({
+    journeyStage,
+    onIdle: handleIdle,
+  })
 
   // --- React to profile changes ---
   useEffect(() => {
@@ -114,20 +142,25 @@ export function useJourney(options: UseJourneyOptions) {
     })
   }, [derivedProfile, isExtractionPending, profile.firstName, dispatch])
 
-  // --- React to new user messages (intent classification) ---
+  // --- React to new user messages (intent classification + question tracking) ---
   useEffect(() => {
     if (userMessages.length <= lastMessageCountRef.current) return
     lastMessageCountRef.current = userMessages.length
+
+    const latestMessage = userMessages[userMessages.length - 1]?.message ?? ""
+
+    // Track questions for GuestIntelligence
+    if (latestMessage.includes("?")) {
+      trackQuestion(latestMessage.trim())
+    }
 
     // Only classify intent when we're in a stage that cares about voice input
     const stage = stateRef.current.stage
     if (stage === "PROFILE_COLLECTION" || stage === "DESTINATION_SELECT") return
 
-    const latestMessage = userMessages[userMessages.length - 1]?.message ?? ""
     const intent = classifyIntent(latestMessage)
-
     dispatch({ type: "USER_INTENT", intent })
-  }, [userMessages, dispatch])
+  }, [userMessages, dispatch, trackQuestion])
 
   // --- Announce destination overlay when stage transitions ---
   useEffect(() => {
@@ -141,7 +174,7 @@ export function useJourney(options: UseJourneyOptions) {
     const timer = setTimeout(() => {
       interrupt()
       repeat(
-        "Wonderful! Based on your preferences, let me show you some available options I think you'll love. Take a look at these properties. Tap any card to explore the digital twin.",
+        "Based on what you've told me, I think you'll love these options. Take a look — tap any card to step inside the digital twin.",
       ).catch(() => undefined)
     }, 500)
     return () => clearTimeout(timer)
@@ -150,18 +183,17 @@ export function useJourney(options: UseJourneyOptions) {
   // --- EventBus subscriptions ---
 
   useEventListener("HOTEL_SELECTED", (event) => {
-    // Hotel data lookup is done by the caller; we receive the enriched event
-    // This is dispatched from the DestinationsOverlay panel
     dispatch({
       type: "HOTEL_PICKED",
       slug: event.slug,
-      hotelName: "", // filled by the panel component
+      hotelName: "",
       location: "",
       description: "",
     })
   })
 
   useEventListener("ROOM_CARD_TAPPED", (event) => {
+    trackRoomExplored(event.roomId)
     dispatch({
       type: "ROOM_CARD_TAPPED",
       roomName: event.roomName,
@@ -191,9 +223,5 @@ export function useJourney(options: UseJourneyOptions) {
     dispatch({ type: "USER_INTENT", intent: { type: "BACK" } })
   })
 
-  // --- Public API ---
-  return {
-    /** Dispatch an action directly (useful for hotel selection with enriched data) */
-    dispatch,
-  }
+  return { dispatch }
 }

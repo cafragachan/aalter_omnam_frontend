@@ -68,6 +68,28 @@ export function ProfileSync() {
     if (profile.budgetRange) {
       updates.budgetRange = profile.budgetRange
     }
+    if (profile.roomTypePreference) {
+      updates.roomTypePreference = profile.roomTypePreference
+    }
+    if (profile.dietaryRestrictions?.length) {
+      updates.dietaryRestrictions = profile.dietaryRestrictions
+    }
+    if (profile.accessibilityNeeds?.length) {
+      updates.accessibilityNeeds = profile.accessibilityNeeds
+    }
+    if (profile.amenityPriorities?.length) {
+      updates.amenityPriorities = profile.amenityPriorities
+    }
+    if (profile.nationality) {
+      updates.nationality = profile.nationality
+    }
+    if (profile.arrivalTime) {
+      updates.arrivalTime = profile.arrivalTime
+    }
+    if (profile.guestComposition) {
+      updates.guestComposition = profile.guestComposition
+      updates.familySize = profile.guestComposition.adults + profile.guestComposition.children
+    }
 
     if (Object.keys(updates).length > 0) {
       updateProfile(updates)
@@ -81,6 +103,13 @@ export function ProfileSync() {
     profile.interests,
     profile.travelPurpose,
     profile.budgetRange,
+    profile.roomTypePreference,
+    profile.dietaryRestrictions,
+    profile.accessibilityNeeds,
+    profile.amenityPriorities,
+    profile.nationality,
+    profile.arrivalTime,
+    profile.guestComposition,
     storedProfile.firstName,
     storedProfile.lastName,
     updateProfile,

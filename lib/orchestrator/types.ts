@@ -7,12 +7,12 @@ import type { AvatarDerivedProfile } from "@/lib/liveavatar/useUserProfile"
 // ---------------------------------------------------------------------------
 
 export type JourneyState =
-  | { stage: "PROFILE_COLLECTION"; awaiting: "dates_and_guests" | "dates" | "guests" | "interests" | "extracting" | "ready" }
+  | { stage: "PROFILE_COLLECTION"; awaiting: "dates_and_guests" | "dates" | "guests" | "travel_purpose" | "extracting" | "ready" }
   | { stage: "DESTINATION_SELECT" }
   | { stage: "HOTEL_EXPLORATION"; subState: "announcing" | "awaiting_intent" | "panel_open" }
   | { stage: "ROOM_SELECTED"; awaiting: "view_choice" }
   | { stage: "AMENITY_VIEWING" }
-  | { stage: "ROOM_BOOKING" }
+  | { stage: "ROOM_BOOKING"; subState: "summary" | "details" | "consent" | "confirmed" }
 
 // ---------------------------------------------------------------------------
 // Actions dispatched into the journey reducer
@@ -26,6 +26,9 @@ export type JourneyAction =
   | { type: "ROOM_CARD_TAPPED"; roomName: string; occupancy: string; roomId: string }
   | { type: "UNIT_SELECTED_UE5"; roomName: string }
   | { type: "AMENITY_CARD_TAPPED"; name: string; scene: string; amenityId: string }
+  | { type: "IDLE_TIMEOUT" }
+  | { type: "BOOKING_CONFIRMED" }
+  | { type: "BOOKING_SAVED" }
 
 // ---------------------------------------------------------------------------
 // Effects produced by the reducer — executed by useJourney
@@ -39,6 +42,7 @@ export type JourneyEffect =
   | { type: "FADE_TRANSITION" }
   | { type: "SET_JOURNEY_STAGE"; stage: JourneyStage }
   | { type: "RESET_TO_DEFAULT" }
+  | { type: "DOWNLOAD_DATA" }
 
 // ---------------------------------------------------------------------------
 // Reducer result
