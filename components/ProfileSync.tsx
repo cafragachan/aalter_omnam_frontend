@@ -1,0 +1,98 @@
+"use client"
+
+import { useEffect, useRef } from "react"
+import { useUserProfile } from "@/lib/liveavatar"
+import { useUserProfileContext, type UserProfile } from "@/lib/context"
+
+export function ProfileSync() {
+  const { profile, isExtractionPending } = useUserProfile()
+  const { profile: storedProfile, updateProfile } = useUserProfileContext()
+  const lastSyncRef = useRef<string>("")
+
+  useEffect(() => {
+    const hasData =
+      profile.name ||
+      profile.destination ||
+      profile.partySize ||
+      profile.startDate ||
+      profile.endDate ||
+      profile.interests.length > 0 ||
+      profile.travelPurpose ||
+      profile.budgetRange
+
+    if (!hasData) return
+
+    const syncKey = JSON.stringify({
+      name: profile.name,
+      destination: profile.destination,
+      partySize: profile.partySize,
+      startDate: profile.startDate?.toISOString(),
+      endDate: profile.endDate?.toISOString(),
+      interests: profile.interests,
+      travelPurpose: profile.travelPurpose,
+      budgetRange: profile.budgetRange,
+    })
+
+    if (syncKey === lastSyncRef.current) return
+    lastSyncRef.current = syncKey
+
+    const [firstName, ...lastNameParts] = (profile.name ?? "").split(" ").filter(Boolean)
+    const inferredLastName = lastNameParts.join(" ")
+
+    const updates: Partial<UserProfile> = {}
+
+    if (!storedProfile.firstName && firstName) {
+      updates.firstName = firstName
+    }
+    if (!storedProfile.lastName && inferredLastName) {
+      updates.lastName = inferredLastName
+    }
+    if (profile.partySize != null) {
+      updates.familySize = profile.partySize
+    }
+    if (profile.destination) {
+      updates.destination = profile.destination
+    }
+    if (profile.startDate) {
+      updates.startDate = profile.startDate
+    }
+    if (profile.endDate) {
+      updates.endDate = profile.endDate
+    }
+    if (profile.interests.length > 0) {
+      updates.interests = profile.interests
+    }
+    if (profile.travelPurpose) {
+      updates.travelPurpose = profile.travelPurpose
+    }
+    if (profile.budgetRange) {
+      updates.budgetRange = profile.budgetRange
+    }
+
+    if (Object.keys(updates).length > 0) {
+      updateProfile(updates)
+    }
+  }, [
+    profile.name,
+    profile.destination,
+    profile.partySize,
+    profile.startDate,
+    profile.endDate,
+    profile.interests,
+    profile.travelPurpose,
+    profile.budgetRange,
+    storedProfile.firstName,
+    storedProfile.lastName,
+    updateProfile,
+  ])
+
+  if (isExtractionPending) {
+    return (
+      <div className="fixed bottom-4 left-4 z-30 rounded-full bg-white/10 px-3 py-1 text-xs text-white/70 backdrop-blur">
+        Analyzing...
+      </div>
+    )
+  }
+
+  return null
+}

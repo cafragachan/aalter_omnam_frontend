@@ -87,7 +87,7 @@ export const DebugHud = () => {
   )
 }
 
-const SandboxSessionPlayer = ({ fit }: { fit: "contain" | "cover" }) => {
+export const SandboxSessionPlayer = ({ fit }: { fit: "contain" | "cover" }) => {
   const [muted, setMuted] = useState(false)
   const { sessionState, isStreamReady, startSession, attachElement, stopSession } = useSession()
   const { repeat, interrupt } = useAvatarActions("FULL")
