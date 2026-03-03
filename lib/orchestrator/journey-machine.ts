@@ -33,7 +33,7 @@ export function buildAmenityNarrative(name: string, scene: string): string {
 type ProfileCollectionAwaiting = Extract<JourneyState, { stage: "PROFILE_COLLECTION" }>["awaiting"]
 
 function profileCollectionAwaiting(
-  profile: { partySize?: number; startDate?: Date | null; endDate?: Date | null; travelPurpose?: string },
+  profile: { partySize?: number; startDate?: Date | null; endDate?: Date | null; travelPurpose?: string; interests: string[] },
 ): ProfileCollectionAwaiting {
   const missingDates = !profile.startDate || !profile.endDate
   const missingGuests = !profile.partySize
@@ -42,6 +42,7 @@ function profileCollectionAwaiting(
   if (missingDates) return "dates"
   if (missingGuests) return "guests"
   if (!profile.travelPurpose) return "travel_purpose"
+  if (profile.interests.length === 0) return "interests"
   return "ready"
 }
 
@@ -112,6 +113,12 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
             effects.push({
               type: "SPEAK",
               text: `Lovely! Is this a leisure getaway, a special celebration, or something for business?`,
+            })
+            break
+          case "interests":
+            effects.push({
+              type: "SPEAK",
+              text: `Great! And what kind of experiences are you most looking forward to? Relaxation, dining, adventure, culture — anything in particular?`,
             })
             break
         }
@@ -246,6 +253,32 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           effects.push({ type: "RESET_TO_DEFAULT" })
           effects.push({ type: "FADE_TRANSITION" })
           return { nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" }, effects }
+
+        case "ROOMS":
+          effects.push({ type: "SPEAK", text: "Sure, let me show you the other available rooms." })
+          effects.push({ type: "RESET_TO_DEFAULT" })
+          effects.push({ type: "FADE_TRANSITION" })
+          effects.push({ type: "OPEN_PANEL", panel: "rooms" })
+          return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
+
+        case "AMENITIES":
+          // Voice-driven — handled in useJourney
+          effects.push({ type: "RESET_TO_DEFAULT" })
+          effects.push({ type: "FADE_TRANSITION" })
+          return { nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" }, effects }
+
+        case "AMENITY_BY_NAME":
+          // Handled in useJourney
+          effects.push({ type: "RESET_TO_DEFAULT" })
+          effects.push({ type: "FADE_TRANSITION" })
+          return { nextState: { stage: "AMENITY_VIEWING" }, effects }
+
+        case "LOCATION":
+          effects.push({ type: "SPEAK", text: "Let me show you the surrounding area." })
+          effects.push({ type: "RESET_TO_DEFAULT" })
+          effects.push({ type: "FADE_TRANSITION" })
+          effects.push({ type: "OPEN_PANEL", panel: "location" })
+          return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
 
         case "UNKNOWN":
           effects.push({

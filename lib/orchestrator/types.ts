@@ -7,7 +7,7 @@ import type { AvatarDerivedProfile } from "@/lib/liveavatar/useUserProfile"
 // ---------------------------------------------------------------------------
 
 export type JourneyState =
-  | { stage: "PROFILE_COLLECTION"; awaiting: "dates_and_guests" | "dates" | "guests" | "travel_purpose" | "extracting" | "ready" }
+  | { stage: "PROFILE_COLLECTION"; awaiting: "dates_and_guests" | "dates" | "guests" | "travel_purpose" | "interests" | "extracting" | "ready" }
   | { stage: "DESTINATION_SELECT" }
   | { stage: "HOTEL_EXPLORATION"; subState: "announcing" | "awaiting_intent" | "panel_open" }
   | { stage: "ROOM_SELECTED"; awaiting: "view_choice" }

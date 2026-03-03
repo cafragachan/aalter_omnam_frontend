@@ -63,7 +63,7 @@ export const rooms: Room[] = [
   {
     id: "r1",
     name: "King Room",
-    occupancy: "x2",
+    occupancy: "2 Guests",
     price: 249,
     hotelId: "1",
     image: "/images/room-standard.jpg",
@@ -71,7 +71,7 @@ export const rooms: Room[] = [
   {
     id: "r2",
     name: "Two-Bedroom Suite",
-    occupancy: "x4",
+    occupancy: "4 Guests",
     price: 399,
     hotelId: "1",
     image: "/images/room-suite-double.jpg",
@@ -79,7 +79,7 @@ export const rooms: Room[] = [
   {
     id: "r3",
     name: "Three-Bedroom Suite",
-    occupancy: "x6",
+    occupancy: "6 Guests",
     price: 599,
     hotelId: "1",
     image: "/images/room-suite-triple.jpg",
