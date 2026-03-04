@@ -118,3 +118,29 @@ export function getRoomsByHotelId(hotelId: string): Room[] {
 export function getAmenitiesByHotelId(hotelId: string): Amenity[] {
   return amenities.filter((a) => a.hotelId === hotelId)
 }
+
+export function getRecommendedRoomId(
+  rooms: Room[],
+  partySize: number | undefined,
+  budgetRange: string | undefined,
+): string | null {
+  if (!partySize || rooms.length === 0) return null
+
+  // Filter rooms that can accommodate the party
+  const fitting = rooms.filter((r) => parseInt(r.occupancy) >= partySize)
+  if (fitting.length === 0) return null
+  if (fitting.length === 1) return fitting[0].id
+
+  // Parse budget if it's a specific number
+  const budgetNum = budgetRange ? parseInt(budgetRange.replace(/[^0-9]/g, "")) : null
+
+  if (budgetNum && budgetNum > 0) {
+    // Pick closest to budget that fits
+    fitting.sort((a, b) => Math.abs(a.price - budgetNum) - Math.abs(b.price - budgetNum))
+    return fitting[0].id
+  }
+
+  // Default: recommend cheapest that fits (best value)
+  fitting.sort((a, b) => a.price - b.price)
+  return fitting[0].id
+}

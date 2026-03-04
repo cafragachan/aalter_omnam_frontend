@@ -12,9 +12,10 @@ type RoomsPanelProps = {
   rooms: Room[]
   onSelectRoom: (room: Room) => void
   onClose: () => void
+  recommendedRoomId?: string | null
 }
 
-export function RoomsPanel({ visible, hotelName, rooms, onSelectRoom, onClose }: RoomsPanelProps) {
+export function RoomsPanel({ visible, hotelName, rooms, onSelectRoom, onClose, recommendedRoomId }: RoomsPanelProps) {
   if (!visible) return null
 
   return (
@@ -45,6 +46,7 @@ export function RoomsPanel({ visible, hotelName, rooms, onSelectRoom, onClose }:
                   key={room.id}
                   room={room}
                   onClick={() => onSelectRoom(room)}
+                  recommended={room.id === recommendedRoomId}
                 />
               ))
             ) : (

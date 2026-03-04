@@ -14,7 +14,7 @@ import { useApp } from "@/lib/store"
 import { useEmit } from "@/lib/events"
 import { useJourney } from "@/lib/orchestrator"
 import { useUE5Bridge } from "@/lib/ue5/bridge"
-import { hotels, getHotelBySlug, getRoomsByHotelId, getAmenitiesByHotelId } from "@/lib/hotel-data"
+import { hotels, getHotelBySlug, getRoomsByHotelId, getAmenitiesByHotelId, getRecommendedRoomId } from "@/lib/hotel-data"
 import type { Room } from "@/lib/hotel-data"
 
 // ---------------------------------------------------------------------------
@@ -80,7 +80,7 @@ export default function HomePage() {
 
 function HomePageContent() {
   const { selectHotel, selectedHotel } = useApp()
-  const { journeyStage, setJourneyStage, updateProfile } = useUserProfileContext()
+  const { profile, journeyStage, setJourneyStage, updateProfile } = useUserProfileContext()
   const emit = useEmit()
 
   // --- UI panel visibility (local state, driven by orchestrator callbacks) ---
@@ -107,6 +107,11 @@ function HomePageContent() {
   const amenities = useMemo(
     () => (selectedHotelData ? getAmenitiesByHotelId(selectedHotelData.id) : []),
     [selectedHotelData],
+  )
+
+  const recommendedRoomId = useMemo(
+    () => getRecommendedRoomId(rooms, profile.familySize, profile.budgetRange),
+    [rooms, profile.familySize, profile.budgetRange],
   )
 
   // --- Panel open/close callbacks (passed to useJourney) ---
@@ -279,6 +284,7 @@ function HomePageContent() {
         rooms={rooms}
         onSelectRoom={handleSelectRoom}
         onClose={closeRoomsPanel}
+        recommendedRoomId={recommendedRoomId}
       />
 
       {/* Amenities are now voice-driven — no panel */}

@@ -313,6 +313,11 @@ const extractWithRegex = (
         if (perNightMatch) {
           result.budgetRange = `~$${perNightMatch[1]}/night`
         } else {
+          // "around 300" / "about 400" / "roughly 500"
+          const aroundMatch = lower.match(/\b(?:around|about|roughly|approximately)\s+(\d{2,}[\d,]*)/)
+          if (aroundMatch) {
+            result.budgetRange = `~$${aroundMatch[1]}/night`
+          } else {
           const budgetKeywords: Record<string, string> = {
             "budget": "budget", "affordable": "budget", "cheap": "budget",
             "economic": "budget", "mid-range": "mid-range", "mid range": "mid-range",
@@ -324,6 +329,7 @@ const extractWithRegex = (
               result.budgetRange = range
               break
             }
+          }
           }
         }
       }
@@ -519,7 +525,7 @@ export const useUserProfile = (): {
     return () => clearTimeout(timer)
   }, [userMessages.length, triggerAIExtraction, aiAvailable])
 
-  const isExtractionPending = isExtracting || userMessages.length > lastExtractedCount.current
+  const isExtractionPending = aiAvailable && (isExtracting || userMessages.length > lastExtractedCount.current)
 
   return { profile, userMessages, triggerAIExtraction, isExtracting, isExtractionPending, aiAvailable }
 }

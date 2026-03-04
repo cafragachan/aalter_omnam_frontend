@@ -40,7 +40,7 @@ export function useJourney(options: UseJourneyOptions) {
     rooms,
   } = options
 
-  const { profile, journeyStage, setJourneyStage } = useUserProfileContext()
+  const { profile, journeyStage, setJourneyStage, updateProfile } = useUserProfileContext()
   const { profile: derivedProfile, isExtractionPending, userMessages } = useUserProfile()
   const { repeat, interrupt } = useAvatarActions("FULL")
   const eventBus = useEventBus()
@@ -54,6 +54,11 @@ export function useJourney(options: UseJourneyOptions) {
   const destinationAnnouncedRef = useRef(false)
   const profileDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const currentRoomIdRef = useRef<string | null>(null)
+
+  // --- Budget collection (first room view only) ---
+  const budgetAskedRef = useRef(false)
+  const awaitingBudgetResponseRef = useRef(false)
+  const budgetRangeRef = useRef("")
 
   // --- Admin: download all collected user data as JSON ---
   const downloadUserData = useCallback(() => {
@@ -261,6 +266,29 @@ export function useJourney(options: UseJourneyOptions) {
     const stage = stateRef.current.stage
     if (stage === "PROFILE_COLLECTION" || stage === "DESTINATION_SELECT") return
 
+    // --- Budget response capture (runs before intent classification) ---
+    // When awaiting a budget response, capture it and THEN open the rooms panel
+    if (awaitingBudgetResponseRef.current) {
+      awaitingBudgetResponseRef.current = false
+
+      const AFFIRMATIVE_RE = /\b(yes|yeah|sure|fine|comfortable|works|sounds good|that's fine|okay|ok|absolutely|perfect|no problem|of course|definitely)\b/i
+      const DONT_CARE_RE = /\b(don't care|doesn't matter|doesn't matter|no limit|no budget|money is not|price doesn't|not worried|not concerned|whatever works|any price|any budget|flexible|unlimited)\b/i
+
+      if (AFFIRMATIVE_RE.test(latestMessage)) {
+        updateProfile({ budgetRange: budgetRangeRef.current })
+      } else if (DONT_CARE_RE.test(latestMessage)) {
+        updateProfile({ budgetRange: "flexible" })
+      }
+      // If they mention a specific number, the regex extractor in useUserProfile handles it
+
+      // Now open the rooms panel
+      interrupt()
+      repeat("Let me show you the available rooms. I'll highlight the best fit based on your group size.").catch(() => undefined)
+      onOpenPanel("rooms")
+      stateRef.current = { stage: "HOTEL_EXPLORATION", subState: "panel_open" }
+      return
+    }
+
     const intent = classifyIntent(latestMessage)
 
     // --- Exploration timer management ---
@@ -277,6 +305,26 @@ export function useJourney(options: UseJourneyOptions) {
       (intent.type === "BACK" || intent.type === "ROOMS" || intent.type === "LOCATION" || intent.type === "HOTEL_EXPLORE")
     ) {
       stopExplorationTimer()
+    }
+
+    // --- Intercept first ROOMS intent to ask about budget ---
+    // Ask budget question first, DON'T open rooms panel yet — wait for response
+    if (intent.type === "ROOMS" && !budgetAskedRef.current && rooms.length > 0) {
+      const prices = rooms.map((r) => r.price)
+      const min = Math.min(...prices)
+      const max = Math.max(...prices)
+
+      interrupt()
+      repeat(
+        `The rooms I'm considering range from around $${min} to $${max} per night, depending on the room type and view. Does that sit comfortably within what you had in mind?`,
+      ).catch(() => undefined)
+
+      // Use "announcing" subState to suppress UNKNOWN fallback speech while waiting
+      stateRef.current = { stage: "HOTEL_EXPLORATION", subState: "announcing" }
+      budgetAskedRef.current = true
+      awaitingBudgetResponseRef.current = true
+      budgetRangeRef.current = `$${min}-$${max}/night`
+      return
     }
 
     // --- Intercept amenity intents (need hotel data, not available in pure reducer) ---
@@ -296,7 +344,7 @@ export function useJourney(options: UseJourneyOptions) {
     }
 
     dispatch({ type: "USER_INTENT", intent })
-  }, [userMessages, dispatch, trackQuestion, trackRequirement, listAmenities, navigateToAmenityByName, startRoomTimer, stopExplorationTimer])
+  }, [userMessages, dispatch, trackQuestion, trackRequirement, listAmenities, navigateToAmenityByName, startRoomTimer, stopExplorationTimer, updateProfile, rooms, interrupt, repeat, onOpenPanel])
 
   // --- Announce destination overlay when stage transitions ---
   useEffect(() => {
@@ -329,6 +377,11 @@ export function useJourney(options: UseJourneyOptions) {
   })
 
   useEventListener("ROOM_CARD_TAPPED", (event) => {
+    // Tapping a room card while awaiting budget response = implicit acceptance
+    if (awaitingBudgetResponseRef.current) {
+      awaitingBudgetResponseRef.current = false
+      updateProfile({ budgetRange: budgetRangeRef.current })
+    }
     stopExplorationTimer()
     trackRoomExplored(event.roomId)
     currentRoomIdRef.current = event.roomId
