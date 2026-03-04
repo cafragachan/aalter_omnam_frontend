@@ -1,8 +1,9 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
+import { Mic, MicOff } from "lucide-react"
 import { DebugHud, SandboxSessionPlayer } from "@/components/liveavatar/SandboxLiveAvatar"
-import { LiveAvatarContextProvider } from "@/lib/liveavatar"
+import { LiveAvatarContextProvider, useLiveAvatarContext } from "@/lib/liveavatar"
 import { SunToggle, type SunState } from "@/components/SunToggle"
 import { ProfileSync } from "@/components/ProfileSync"
 import { DestinationsOverlay } from "@/components/panels/DestinationsOverlay"
@@ -71,6 +72,39 @@ export default function HomePage() {
     <LiveAvatarContextProvider sessionAccessToken={sessionToken}>
       <HomePageContent />
     </LiveAvatarContextProvider>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// MicToggle — round mic mute/unmute button for the avatar frame
+// ---------------------------------------------------------------------------
+
+function MicToggle() {
+  const { isMuted, sessionRef } = useLiveAvatarContext()
+
+  const toggle = useCallback(() => {
+    const vc = sessionRef.current?.voiceChat
+    if (!vc) return
+    if (isMuted) {
+      vc.unmute()
+    } else {
+      vc.mute()
+    }
+  }, [isMuted, sessionRef])
+
+  return (
+    <button
+      type="button"
+      onClick={toggle}
+      className="absolute bottom-3 right-3 z-10 flex h-10 w-10 items-center justify-center rounded-full border border-white/15 bg-white/10 backdrop-blur-md shadow-lg transition-colors hover:bg-white/20"
+      title={isMuted ? "Unmute microphone" : "Mute microphone"}
+    >
+      {isMuted ? (
+        <MicOff className="h-5 w-5 text-red-400" />
+      ) : (
+        <Mic className="h-5 w-5 text-white" />
+      )}
+    </button>
   )
 }
 
@@ -259,6 +293,7 @@ function HomePageContent() {
               <div className="relative w-full h-full">
                 <SandboxSessionPlayer fit="cover" />
               </div>
+              <MicToggle />
             </div>
           </div>
         </div>
