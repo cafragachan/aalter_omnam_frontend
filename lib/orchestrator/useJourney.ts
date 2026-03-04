@@ -120,6 +120,31 @@ export function useJourney(options: UseJourneyOptions) {
       return
     }
 
+    // Check which amenities have already been visited
+    const exploredNames = new Set(guestIntelligence.data.amenitiesExplored.map((a) => a.name))
+    const visited = amenities.filter((a) => exploredNames.has(a.name))
+    const remaining = amenities.filter((a) => !exploredNames.has(a.name))
+
+    // All visited — let the user know
+    if (remaining.length === 0) {
+      const visitedText = visited.map((a) => `the ${a.name.toLowerCase()}`).join(", ")
+      interrupt()
+      repeat(`You've already explored ${visitedText}. Would you like to revisit any of them, or shall we look at the rooms instead?`).catch(() => undefined)
+      return
+    }
+
+    // Some visited — mention visited, offer remaining
+    if (visited.length > 0) {
+      const visitedText = visited.map((a) => `the ${a.name.toLowerCase()}`).join(" and ")
+      const remainingText = remaining.length === 1
+        ? `the ${remaining[0].name.toLowerCase()}`
+        : remaining.map((a) => `the ${a.name.toLowerCase()}`).join(" and ")
+      interrupt()
+      repeat(`We've already visited ${visitedText}. Would you like to see ${remainingText} now?`).catch(() => undefined)
+      return
+    }
+
+    // First time — use recommendation if available and not yet explored
     const recommended = getRecommendedAmenity(amenities, profile.travelPurpose)
 
     if (recommended) {
@@ -151,7 +176,7 @@ export function useJourney(options: UseJourneyOptions) {
       interrupt()
       repeat(`This property has ${listText}. Which would you like to visit?`).catch(() => undefined)
     }
-  }, [amenities, interrupt, repeat, profile.travelPurpose])
+  }, [amenities, interrupt, repeat, profile.travelPurpose, guestIntelligence.data.amenitiesExplored])
 
   // --- Effect executor ---
   const executeEffects = useCallback((effects: JourneyEffect[]) => {
