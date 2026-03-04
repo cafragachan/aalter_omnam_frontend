@@ -53,6 +53,8 @@ export type GuestIntelligence = {
   requirements: string[]
   referralSource?: string
   devicePlatform?: string
+  personalityTraits?: string[]
+  travelDriver?: string
 }
 
 type GuestIntelligenceContextValue = {

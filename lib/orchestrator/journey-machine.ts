@@ -69,6 +69,10 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
   // DOWNLOAD_DATA — admin command, works from any stage
   // -----------------------------------------------------------------------
   if (action.type === "USER_INTENT" && action.intent.type === "DOWNLOAD_DATA") {
+    effects.push({
+      type: "SPEAK",
+      text: "Of course, the download should happen automatically on your browser. Is there anything else you'd like me to assist with?",
+    })
     effects.push({ type: "DOWNLOAD_DATA" })
     return { nextState: state, effects }
   }

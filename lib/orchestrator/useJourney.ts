@@ -61,12 +61,34 @@ export function useJourney(options: UseJourneyOptions) {
   const budgetRangeRef = useRef("")
 
   // --- Admin: download all collected user data as JSON ---
-  const downloadUserData = useCallback(() => {
+  const downloadUserData = useCallback(async () => {
+    const giSnapshot = guestIntelligence.getDataSnapshot()
+
+    // Run AI analysis to infer personality traits + travel driver
+    try {
+      const res = await fetch("/api/analyze-guest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          profile,
+          guestIntelligence: giSnapshot,
+          conversationMessages: userMessages,
+        }),
+      })
+      if (res.ok) {
+        const analysis = await res.json()
+        if (analysis.personalityTraits) giSnapshot.personalityTraits = analysis.personalityTraits
+        if (analysis.travelDriver) giSnapshot.travelDriver = analysis.travelDriver
+      }
+    } catch {
+      // Graceful degradation — download without AI fields
+    }
+
     const payload = {
       timestamp: new Date().toISOString(),
       profile,
       derivedProfile,
-      guestIntelligence: guestIntelligence.getDataSnapshot(),
+      guestIntelligence: giSnapshot,
       journeyStage,
       conversationMessages: userMessages,
     }
