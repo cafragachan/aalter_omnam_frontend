@@ -10,7 +10,7 @@ import { classifyIntent } from "./intents"
 import { journeyReducer, INITIAL_JOURNEY_STATE, buildAmenityNarrative } from "./journey-machine"
 import { useIdleDetection } from "./idle-detection"
 import type { JourneyState, JourneyAction, JourneyEffect } from "./types"
-import type { Amenity } from "@/lib/hotel-data"
+import type { Amenity, Room } from "@/lib/hotel-data"
 
 // ---------------------------------------------------------------------------
 // useJourney — wires the pure state machine to React
@@ -25,6 +25,8 @@ type UseJourneyOptions = {
   onUnitSelected?: (roomName: string) => void
   /** Amenities for the currently selected hotel (needed for voice-driven navigation) */
   amenities: Amenity[]
+  /** Rooms for the currently selected hotel (needed for booking URL resolution) */
+  rooms: Room[]
 }
 
 export function useJourney(options: UseJourneyOptions) {
@@ -35,6 +37,7 @@ export function useJourney(options: UseJourneyOptions) {
     onResetToDefault,
     onFadeTransition,
     amenities,
+    rooms,
   } = options
 
   const { profile, journeyStage, setJourneyStage } = useUserProfileContext()
@@ -42,7 +45,7 @@ export function useJourney(options: UseJourneyOptions) {
   const { repeat, interrupt } = useAvatarActions("FULL")
   const eventBus = useEventBus()
   const guestIntelligence = useGuestIntelligence()
-  const { trackQuestion, trackRoomExplored, trackAmenityExplored } = guestIntelligence
+  const { trackQuestion, trackRoomExplored, trackAmenityExplored, trackRequirement, startRoomTimer, startAmenityTimer, stopExplorationTimer, setBookingOutcome } = guestIntelligence
 
   // --- State machine state (kept in ref to avoid re-render cascades) ---
   const stateRef = useRef<JourneyState>(INITIAL_JOURNEY_STATE)
@@ -50,6 +53,7 @@ export function useJourney(options: UseJourneyOptions) {
   const lastProfileKeyRef = useRef("")
   const destinationAnnouncedRef = useRef(false)
   const profileDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const currentRoomIdRef = useRef<string | null>(null)
 
   // --- Admin: download all collected user data as JSON ---
   const downloadUserData = useCallback(() => {
@@ -57,7 +61,7 @@ export function useJourney(options: UseJourneyOptions) {
       timestamp: new Date().toISOString(),
       profile,
       derivedProfile,
-      guestIntelligence: guestIntelligence.data,
+      guestIntelligence: guestIntelligence.getDataSnapshot(),
       journeyStage,
       conversationMessages: userMessages,
     }
@@ -72,7 +76,7 @@ export function useJourney(options: UseJourneyOptions) {
     a.click()
     document.body.removeChild(a)
     URL.revokeObjectURL(url)
-  }, [profile, derivedProfile, guestIntelligence.data, journeyStage, userMessages])
+  }, [profile, derivedProfile, guestIntelligence, journeyStage, userMessages])
 
   // --- Voice-driven amenity navigation ---
   const navigateToAmenityByName = useCallback((amenityName: string) => {
@@ -88,8 +92,9 @@ export function useJourney(options: UseJourneyOptions) {
       return
     }
 
-    // Track this amenity visit
+    // Track this amenity visit + start timer
     trackAmenityExplored(match.name)
+    startAmenityTimer(match.name)
 
     // Navigate UE5 + fade + speak narrative
     const narrative = buildAmenityNarrative(match.name, match.scene)
@@ -148,9 +153,20 @@ export function useJourney(options: UseJourneyOptions) {
         case "DOWNLOAD_DATA":
           downloadUserData()
           break
+        case "OPEN_BOOKING_URL": {
+          const roomId = currentRoomIdRef.current
+          if (roomId) {
+            const room = rooms.find((r) => r.id === roomId)
+            if (room?.book_url) {
+              window.open(room.book_url, "_blank", "noopener,noreferrer")
+              setBookingOutcome("booked")
+            }
+          }
+          break
+        }
       }
     }
-  }, [interrupt, repeat, onUE5Command, onOpenPanel, onClosePanels, onFadeTransition, setJourneyStage, onResetToDefault, downloadUserData])
+  }, [interrupt, repeat, onUE5Command, onOpenPanel, onClosePanels, onFadeTransition, setJourneyStage, onResetToDefault, downloadUserData, rooms, setBookingOutcome])
 
   // --- Dispatch helper ---
   const dispatch = useCallback((action: JourneyAction) => {
@@ -219,14 +235,53 @@ export function useJourney(options: UseJourneyOptions) {
       trackQuestion(latestMessage.trim())
     }
 
+    // Track requirements for GuestIntelligence (runs at any stage)
+    const REQUIREMENT_PATTERNS = [
+      /\b(?:i need|i'd like|i would like|could you arrange|please arrange)\s+(.+?)(?:[.,!?]|$)/i,
+      /\b(late\s+check.?out|early\s+check.?in)\b/i,
+      /\b(allerg(?:y|ic)\s+to\s+.+?)(?:[.,!?]|$)/i,
+      /\b(champagne|flowers|cake|surprise|celebration|anniversary|birthday)\b/i,
+      /\b(crib|cot|baby\s+bed|extra\s+bed|rollaway|connecting\s+room|adjoining)\b/i,
+      /\b(airport\s+transfer|airport\s+pickup|car\s+service)\b/i,
+      /\b(feather.?free|hypoallergenic|firm\s+(?:mattress|pillow)|non.?smoking)\b/i,
+      /\b(quiet\s+room|high(?:er)?\s+floor|away\s+from\s+(?:elevator|lift))\b/i,
+    ]
+    for (const pattern of REQUIREMENT_PATTERNS) {
+      const match = latestMessage.match(pattern)
+      if (match) {
+        const requirement = (match[1] ?? match[0]).trim()
+        if (requirement.length > 3 && requirement.length < 200) {
+          trackRequirement(requirement)
+        }
+        break
+      }
+    }
+
     // Only classify intent when we're in a stage that cares about voice input
     const stage = stateRef.current.stage
     if (stage === "PROFILE_COLLECTION" || stage === "DESTINATION_SELECT") return
 
     const intent = classifyIntent(latestMessage)
 
+    // --- Exploration timer management ---
+    // Start room timer when user begins interior/exterior exploration
+    if (stage === "ROOM_SELECTED" && (intent.type === "INTERIOR" || intent.type === "EXTERIOR")) {
+      if (currentRoomIdRef.current) {
+        startRoomTimer(currentRoomIdRef.current)
+      }
+    }
+
+    // Stop exploration timer when leaving room/amenity context
+    if (
+      (stage === "ROOM_SELECTED" || stage === "AMENITY_VIEWING") &&
+      (intent.type === "BACK" || intent.type === "ROOMS" || intent.type === "LOCATION" || intent.type === "HOTEL_EXPLORE")
+    ) {
+      stopExplorationTimer()
+    }
+
     // --- Intercept amenity intents (need hotel data, not available in pure reducer) ---
     if (intent.type === "AMENITIES") {
+      stopExplorationTimer()
       listAmenities()
       // Still dispatch to reducer so it updates state (it returns empty effects)
       dispatch({ type: "USER_INTENT", intent })
@@ -241,7 +296,7 @@ export function useJourney(options: UseJourneyOptions) {
     }
 
     dispatch({ type: "USER_INTENT", intent })
-  }, [userMessages, dispatch, trackQuestion, listAmenities, navigateToAmenityByName])
+  }, [userMessages, dispatch, trackQuestion, trackRequirement, listAmenities, navigateToAmenityByName, startRoomTimer, stopExplorationTimer])
 
   // --- Announce destination overlay when stage transitions ---
   useEffect(() => {
@@ -274,7 +329,9 @@ export function useJourney(options: UseJourneyOptions) {
   })
 
   useEventListener("ROOM_CARD_TAPPED", (event) => {
+    stopExplorationTimer()
     trackRoomExplored(event.roomId)
+    currentRoomIdRef.current = event.roomId
     dispatch({
       type: "ROOM_CARD_TAPPED",
       roomName: event.roomName,
@@ -292,7 +349,9 @@ export function useJourney(options: UseJourneyOptions) {
   })
 
   useEventListener("AMENITY_CARD_TAPPED", (event) => {
+    stopExplorationTimer()
     trackAmenityExplored(event.name)
+    startAmenityTimer(event.name)
     dispatch({
       type: "AMENITY_CARD_TAPPED",
       name: event.name,
@@ -302,6 +361,7 @@ export function useJourney(options: UseJourneyOptions) {
   })
 
   useEventListener("NAVIGATE_BACK", () => {
+    stopExplorationTimer()
     dispatch({ type: "USER_INTENT", intent: { type: "BACK" } })
   })
 

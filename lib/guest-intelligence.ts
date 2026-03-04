@@ -31,15 +31,26 @@ export type BookingOutcome =
   | "saved_for_later"
   | "requested_callback"
 
+export type RoomExploration = {
+  roomId: string
+  timeSpentMs: number
+}
+
+export type AmenityExploration = {
+  name: string
+  timeSpentMs: number
+}
+
 export type GuestIntelligence = {
   upsellReceptivity: number
   topQuestions: string[]
   objections: Objection[]
   bookingOutcome: BookingOutcome
   conversationDuration: number
-  roomsExplored: string[]
-  amenitiesExplored: string[]
+  roomsExplored: RoomExploration[]
+  amenitiesExplored: AmenityExploration[]
   consentFlags: ConsentFlags
+  requirements: string[]
   referralSource?: string
   devicePlatform?: string
 }
@@ -50,6 +61,11 @@ type GuestIntelligenceContextValue = {
   trackObjection: (objection: Objection) => void
   trackRoomExplored: (roomId: string) => void
   trackAmenityExplored: (name: string) => void
+  startRoomTimer: (roomId: string) => void
+  startAmenityTimer: (name: string) => void
+  stopExplorationTimer: () => void
+  trackRequirement: (requirement: string) => void
+  getDataSnapshot: () => GuestIntelligence
   setUpsellReceptivity: (score: number) => void
   setBookingOutcome: (outcome: BookingOutcome) => void
   setConsentFlags: (flags: Partial<ConsentFlags>) => void
@@ -63,6 +79,7 @@ const DEFAULT_INTELLIGENCE: GuestIntelligence = {
   conversationDuration: 0,
   roomsExplored: [],
   amenitiesExplored: [],
+  requirements: [],
   consentFlags: {
     marketing: false,
     dataSharing: false,
@@ -76,6 +93,11 @@ const GuestIntelligenceContext = createContext<GuestIntelligenceContextValue | n
 export function GuestIntelligenceProvider({ children }: { children: ReactNode }) {
   const [data, setData] = useState<GuestIntelligence>(DEFAULT_INTELLIGENCE)
   const startTimeRef = useRef(Date.now())
+  const activeExplorationRef = useRef<{
+    type: "room" | "amenity"
+    id: string
+    startedAt: number
+  } | null>(null)
 
   const trackQuestion = useCallback((question: string) => {
     setData((prev) => ({
@@ -94,20 +116,85 @@ export function GuestIntelligenceProvider({ children }: { children: ReactNode })
   const trackRoomExplored = useCallback((roomId: string) => {
     setData((prev) => ({
       ...prev,
-      roomsExplored: prev.roomsExplored.includes(roomId)
+      roomsExplored: prev.roomsExplored.some((r) => r.roomId === roomId)
         ? prev.roomsExplored
-        : [...prev.roomsExplored, roomId],
+        : [...prev.roomsExplored, { roomId, timeSpentMs: 0 }],
     }))
   }, [])
 
   const trackAmenityExplored = useCallback((name: string) => {
     setData((prev) => ({
       ...prev,
-      amenitiesExplored: prev.amenitiesExplored.includes(name)
+      amenitiesExplored: prev.amenitiesExplored.some((a) => a.name === name)
         ? prev.amenitiesExplored
-        : [...prev.amenitiesExplored, name],
+        : [...prev.amenitiesExplored, { name, timeSpentMs: 0 }],
     }))
   }, [])
+
+  const trackRequirement = useCallback((requirement: string) => {
+    setData((prev) => ({
+      ...prev,
+      requirements: prev.requirements.includes(requirement)
+        ? prev.requirements
+        : [...prev.requirements, requirement],
+    }))
+  }, [])
+
+  // --- Exploration timer API ---
+
+  const stopExplorationTimer = useCallback(() => {
+    const active = activeExplorationRef.current
+    if (!active) return
+    const elapsed = Date.now() - active.startedAt
+    activeExplorationRef.current = null
+
+    if (active.type === "room") {
+      setData((prev) => ({
+        ...prev,
+        roomsExplored: prev.roomsExplored.map((r) =>
+          r.roomId === active.id ? { ...r, timeSpentMs: r.timeSpentMs + elapsed } : r,
+        ),
+      }))
+    } else {
+      setData((prev) => ({
+        ...prev,
+        amenitiesExplored: prev.amenitiesExplored.map((a) =>
+          a.name === active.id ? { ...a, timeSpentMs: a.timeSpentMs + elapsed } : a,
+        ),
+      }))
+    }
+  }, [])
+
+  const startRoomTimer = useCallback((roomId: string) => {
+    stopExplorationTimer()
+    activeExplorationRef.current = { type: "room", id: roomId, startedAt: Date.now() }
+  }, [stopExplorationTimer])
+
+  const startAmenityTimer = useCallback((name: string) => {
+    stopExplorationTimer()
+    activeExplorationRef.current = { type: "amenity", id: name, startedAt: Date.now() }
+  }, [stopExplorationTimer])
+
+  const getDataSnapshot = useCallback((): GuestIntelligence => {
+    const active = activeExplorationRef.current
+    if (!active) return data
+
+    const elapsed = Date.now() - active.startedAt
+    if (active.type === "room") {
+      return {
+        ...data,
+        roomsExplored: data.roomsExplored.map((r) =>
+          r.roomId === active.id ? { ...r, timeSpentMs: r.timeSpentMs + elapsed } : r,
+        ),
+      }
+    }
+    return {
+      ...data,
+      amenitiesExplored: data.amenitiesExplored.map((a) =>
+        a.name === active.id ? { ...a, timeSpentMs: a.timeSpentMs + elapsed } : a,
+      ),
+    }
+  }, [data])
 
   const setUpsellReceptivity = useCallback((score: number) => {
     setData((prev) => ({ ...prev, upsellReceptivity: Math.max(0, Math.min(1, score)) }))
@@ -135,11 +222,16 @@ export function GuestIntelligenceProvider({ children }: { children: ReactNode })
       trackObjection,
       trackRoomExplored,
       trackAmenityExplored,
+      trackRequirement,
+      startRoomTimer,
+      startAmenityTimer,
+      stopExplorationTimer,
+      getDataSnapshot,
       setUpsellReceptivity,
       setBookingOutcome,
       setConsentFlags,
     }),
-    [data, trackQuestion, trackObjection, trackRoomExplored, trackAmenityExplored, setUpsellReceptivity, setBookingOutcome, setConsentFlags],
+    [data, trackQuestion, trackObjection, trackRoomExplored, trackAmenityExplored, trackRequirement, startRoomTimer, startAmenityTimer, stopExplorationTimer, getDataSnapshot, setUpsellReceptivity, setBookingOutcome, setConsentFlags],
   )
 
   return React.createElement(

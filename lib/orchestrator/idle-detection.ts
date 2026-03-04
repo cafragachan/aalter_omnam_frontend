@@ -16,7 +16,6 @@ const IDLE_THRESHOLDS: Record<JourneyStage, number> = {
   PROFILE_COLLECTION: 12_000,
   DESTINATION_SELECT: 15_000,
   HOTEL_EXPLORATION: 18_000,
-  ROOM_BOOKING: 20_000,
 }
 
 type UseIdleDetectionOptions = {

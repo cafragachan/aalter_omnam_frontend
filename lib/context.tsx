@@ -42,7 +42,6 @@ export type JourneyStage =
   | "PROFILE_COLLECTION"
   | "DESTINATION_SELECT"
   | "HOTEL_EXPLORATION"
-  | "ROOM_BOOKING"
 
 type UserProfileContextValue = {
   profile: UserProfile

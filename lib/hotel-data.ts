@@ -16,6 +16,7 @@ export interface Room {
   price: number
   hotelId: string
   image: string
+  book_url: string
 }
 
 export interface Amenity {
@@ -62,27 +63,30 @@ export const hotels: Hotel[] = [
 export const rooms: Room[] = [
   {
     id: "r1",
-    name: "King Room",
-    occupancy: "2 Guests",
+    name: "Standard",
+    occupancy: "2",
     price: 249,
     hotelId: "1",
     image: "/images/room-standard.jpg",
+    book_url: "https://www.editionhotels.com/lake-como/rooms-and-suites/standard/"
   },
   {
     id: "r2",
-    name: "Two-Bedroom Suite",
-    occupancy: "4 Guests",
+    name: "Penthouse",
+    occupancy: "4",
     price: 399,
     hotelId: "1",
     image: "/images/room-suite-double.jpg",
+    book_url: "https://www.editionhotels.com/lake-como/rooms-and-suites/penthouse/"
   },
   {
     id: "r3",
-    name: "Three-Bedroom Suite",
-    occupancy: "6 Guests",
+    name: "Loft Suite Lakeview",
+    occupancy: "6",
     price: 599,
     hotelId: "1",
     image: "/images/room-suite-triple.jpg",
+    book_url: "https://www.editionhotels.com/lake-como/rooms-and-suites/loft-suite-lake-view-balcony/"
   },
 ]
 

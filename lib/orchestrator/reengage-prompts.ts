@@ -43,11 +43,6 @@ const ROOM_SELECTED_PROMPTS = [
   "If you'd like, I can also show you similar rooms on different floors. Or we can proceed with this one.",
 ]
 
-const ROOM_BOOKING_PROMPTS = [
-  "Take your time reviewing. Let me know if anything looks off or if you have any questions.",
-  "Everything look good? I can adjust the dates or room if you'd like to make changes.",
-]
-
 /**
  * Get a contextual re-engagement prompt based on current journey state.
  * Returns a different prompt each time to avoid repetition.
@@ -71,7 +66,5 @@ export function getReengagePrompt(state: JourneyState): string {
       return pick(AMENITY_VIEWING_PROMPTS)
     case "ROOM_SELECTED":
       return pick(ROOM_SELECTED_PROMPTS)
-    case "ROOM_BOOKING":
-      return pick(ROOM_BOOKING_PROMPTS)
   }
 }

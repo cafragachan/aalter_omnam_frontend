@@ -42,7 +42,6 @@ function profileCollectionAwaiting(
   if (missingDates) return "dates"
   if (missingGuests) return "guests"
   if (!profile.travelPurpose) return "travel_purpose"
-  if (profile.interests.length === 0) return "interests"
   return "ready"
 }
 
@@ -147,6 +146,11 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           effects.push({ type: "OPEN_PANEL", panel: "location" })
           return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
 
+        case "BOOK":
+          effects.push({ type: "SPEAK", text: "I'd love to help you book! Let me show you the available rooms first — pick the one that catches your eye." })
+          effects.push({ type: "OPEN_PANEL", panel: "rooms" })
+          return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
+
         case "BACK":
         case "HOTEL_EXPLORE":
           effects.push({ type: "RESET_TO_DEFAULT" })
@@ -206,15 +210,20 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
 
       switch (intent.type) {
         case "INTERIOR":
-          effects.push({ type: "SPEAK", text: "Stepping inside — take a look around. Notice the natural light and the finishing details. What do you think?" })
+          effects.push({ type: "SPEAK", text: "Stepping inside — take a look around. Feel free to navigate through the space. Let me know if you have any specific requirements, or if you'd like to book this room, just say the word." })
           effects.push({ type: "UE5_COMMAND", command: "unitView", value: "interior" })
           effects.push({ type: "FADE_TRANSITION" })
           return { nextState: state, effects }
 
         case "EXTERIOR":
-          effects.push({ type: "SPEAK", text: "Here's the exterior view. The perspective from this floor is quite special." })
+          effects.push({ type: "SPEAK", text: "Here's the exterior view. The perspective from this floor is quite special. Would you like to book this room, or explore something else?" })
           effects.push({ type: "UE5_COMMAND", command: "unitView", value: "exterior" })
           return { nextState: state, effects }
+
+        case "BOOK":
+          effects.push({ type: "SPEAK", text: "I'm opening the booking page for you now. You'll be able to complete your reservation directly on the hotel's website. Is there anything else you'd like to explore?" })
+          effects.push({ type: "OPEN_BOOKING_URL" })
+          return { nextState: { stage: "ROOM_SELECTED", awaiting: "view_choice" }, effects }
 
         case "BACK":
           effects.push({ type: "SPEAK", text: "No problem, taking you back to the hotel overview." })
@@ -251,7 +260,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
         case "UNKNOWN":
           effects.push({
             type: "SPEAK",
-            text: "Would you like to see the interior, the view from outside, or go back to explore other options?",
+            text: "Would you like to book this room, or go back to explore other options?",
           })
           return { nextState: state, effects }
 
@@ -283,6 +292,11 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
         return { nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" }, effects }
       }
 
+      if (intent.type === "BOOK") {
+        effects.push({ type: "SPEAK", text: "Great to hear you'd like to book! Let me show you the rooms first so you can pick your favorite." })
+        effects.push({ type: "OPEN_PANEL", panel: "rooms" })
+        return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
+      }
       if (intent.type === "ROOMS") {
         effects.push({ type: "SPEAK", text: "Good call — let me show you the rooms." })
         effects.push({ type: "OPEN_PANEL", panel: "rooms" })
@@ -301,27 +315,6 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
         effects.push({ type: "OPEN_PANEL", panel: "location" })
         return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
       }
-    }
-  }
-
-  // -----------------------------------------------------------------------
-  // ROOM_BOOKING
-  // -----------------------------------------------------------------------
-  if (state.stage === "ROOM_BOOKING") {
-    if (action.type === "BOOKING_CONFIRMED") {
-      effects.push({
-        type: "SPEAK",
-        text: "Wonderful — your booking is confirmed! You'll receive a confirmation email shortly. I hope you have an amazing stay. Is there anything else I can help with?",
-      })
-      return { nextState: { stage: "ROOM_BOOKING", subState: "confirmed" }, effects }
-    }
-
-    if (action.type === "BOOKING_SAVED") {
-      effects.push({
-        type: "SPEAK",
-        text: "No problem — I've saved your selection. You can come back anytime to finalize. Is there anything else you'd like to explore?",
-      })
-      return { nextState: { stage: "ROOM_BOOKING", subState: "confirmed" }, effects }
     }
   }
 

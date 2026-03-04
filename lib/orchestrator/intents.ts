@@ -15,10 +15,12 @@ export type UserIntent =
   | { type: "BACK" }
   | { type: "HOTEL_EXPLORE" }
   | { type: "DOWNLOAD_DATA" }
+  | { type: "BOOK" }
   | { type: "UNKNOWN" }
 
 const DOWNLOAD_DATA_RE = /\bdownload\s+user\s+data\b/
-const ROOM_RE = /\b(room|rooms|suite|suites|book|stay|bed|accommodation)\b/
+const ROOM_RE = /\b(room|rooms|suite|suites|stay|bed|accommodation)\b/
+const BOOK_RE = /\b(book\s*(?:it|this|that|the\s+room|now)?|reserve|make\s+(?:a\s+)?reservation|proceed\s+(?:with\s+)?(?:booking|reservation)|let'?s\s+(?:book|reserve|do\s+it)|i(?:'d| would)\s+(?:like\s+to\s+)?(?:book|reserve)|i(?:'ll| will)\s+take\s+(?:it|this|that)|sign\s+me\s+up)\b/i
 const AMENITY_RE = /\b(amenity|amenities|facility|facilities)\b/
 const AMENITY_NAME_RE = /\b(lobby|conference|spa|restaurant|pool|gym|bar|lounge|dining)\b/
 const LOCATION_RE = /\b(location|surrounding|surroundings|area|neighbou?rhood|outside|around|nearby|map|walk)\b/
@@ -43,6 +45,9 @@ export function classifyIntent(message: string): UserIntent {
 
   // --- highest priority: navigation commands ---
   if (BACK_RE.test(lower)) return { type: "BACK" }
+
+  // --- booking intent ---
+  if (BOOK_RE.test(lower)) return { type: "BOOK" }
 
   // --- view commands (interior / exterior) ---
   const wantsInterior = INTERIOR_RE.test(lower)

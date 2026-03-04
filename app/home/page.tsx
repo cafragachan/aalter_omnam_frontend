@@ -25,7 +25,6 @@ const stageLabels: Record<JourneyStage, string> = {
   PROFILE_COLLECTION: "Profile",
   DESTINATION_SELECT: "Destinations",
   HOTEL_EXPLORATION: "Hotel Exploration",
-  ROOM_BOOKING: "Room Booking",
 }
 
 // ---------------------------------------------------------------------------
@@ -140,6 +139,7 @@ function HomePageContent() {
     onResetToDefault: handleResetToDefault,
     onFadeTransition: ue5.fadeTransition,
     amenities,
+    rooms,
   })
 
   // --- Reset sun position when hotel changes ---
