@@ -10,7 +10,7 @@ import { classifyIntent } from "./intents"
 import { journeyReducer, INITIAL_JOURNEY_STATE, buildAmenityNarrative } from "./journey-machine"
 import { useIdleDetection } from "./idle-detection"
 import type { JourneyState, JourneyAction, JourneyEffect } from "./types"
-import type { Amenity, Room } from "@/lib/hotel-data"
+import { getRecommendedAmenity, type Amenity, type Room } from "@/lib/hotel-data"
 
 // ---------------------------------------------------------------------------
 // useJourney — wires the pure state machine to React
@@ -120,14 +120,38 @@ export function useJourney(options: UseJourneyOptions) {
       return
     }
 
-    const names = amenities.map((a) => a.name)
-    const listText = names.length === 1
-      ? `a ${names[0].toLowerCase()}`
-      : names.slice(0, -1).map((n) => `a ${n.toLowerCase()}`).join(", ") + ` and a ${names[names.length - 1].toLowerCase()}`
+    const recommended = getRecommendedAmenity(amenities, profile.travelPurpose)
 
-    interrupt()
-    repeat(`This property has ${listText}. Which would you like to visit?`).catch(() => undefined)
-  }, [amenities, interrupt, repeat])
+    if (recommended) {
+      const purposeNarrative: Record<string, string> = {
+        business: "on business",
+        leisure: "to unwind",
+        "romantic getaway": "for a romantic getaway",
+        honeymoon: "for your honeymoon",
+        celebration: "to celebrate",
+        "family vacation": "for a family holiday",
+        adventure: "with adventure in mind",
+      }
+      const narrative = purposeNarrative[profile.travelPurpose?.toLowerCase() ?? ""] ?? ""
+      const others = amenities.filter((a) => a.id !== recommended.id)
+      const othersText = others.length === 1
+        ? `a ${others[0].name.toLowerCase()}`
+        : others.map((a) => `a ${a.name.toLowerCase()}`).join(" and ")
+
+      interrupt()
+      repeat(
+        `Since you're here ${narrative}, I'd suggest starting with the ${recommended.name.toLowerCase()}. We also have ${othersText} that I can take you to. Where shall we begin?`,
+      ).catch(() => undefined)
+    } else {
+      const names = amenities.map((a) => a.name)
+      const listText = names.length === 1
+        ? `a ${names[0].toLowerCase()}`
+        : names.slice(0, -1).map((n) => `a ${n.toLowerCase()}`).join(", ") + ` and a ${names[names.length - 1].toLowerCase()}`
+
+      interrupt()
+      repeat(`This property has ${listText}. Which would you like to visit?`).catch(() => undefined)
+    }
+  }, [amenities, interrupt, repeat, profile.travelPurpose])
 
   // --- Effect executor ---
   const executeEffects = useCallback((effects: JourneyEffect[]) => {

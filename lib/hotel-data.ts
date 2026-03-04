@@ -73,8 +73,8 @@ export const rooms: Room[] = [
   {
     id: "r2",
     name: "Penthouse",
-    occupancy: "4",
-    price: 399,
+    occupancy: "6",
+    price: 599,
     hotelId: "1",
     image: "/images/room-suite-double.jpg",
     book_url: "https://www.editionhotels.com/lake-como/rooms-and-suites/penthouse/"
@@ -82,8 +82,8 @@ export const rooms: Room[] = [
   {
     id: "r3",
     name: "Loft Suite Lakeview",
-    occupancy: "6",
-    price: 599,
+    occupancy: "4",
+    price: 399,
     hotelId: "1",
     image: "/images/room-suite-triple.jpg",
     book_url: "https://www.editionhotels.com/lake-como/rooms-and-suites/loft-suite-lake-view-balcony/"
@@ -105,6 +105,13 @@ export const amenities: Amenity[] = [
     scene: "conference",
     image: "/images/amenity-conference.jpg",
   },
+  {
+    id: "a3",
+    name: "Pool",
+    hotelId: "1",
+    scene: "pool",
+    image: "/images/amenity-conference.jpg",
+  },
 ]
 
 export function getHotelBySlug(slug: string): Hotel | undefined {
@@ -117,6 +124,30 @@ export function getRoomsByHotelId(hotelId: string): Room[] {
 
 export function getAmenitiesByHotelId(hotelId: string): Amenity[] {
   return amenities.filter((a) => a.hotelId === hotelId)
+}
+
+export function getRecommendedAmenity(
+  amenities: Amenity[],
+  travelPurpose: string | undefined,
+): Amenity | null {
+  if (!travelPurpose || amenities.length === 0) return null
+
+  const purpose = travelPurpose.toLowerCase()
+  let targetScene: string
+
+  if (purpose.includes("business")) {
+    targetScene = "conference"
+  } else if (
+    purpose.includes("leisure") || purpose.includes("romantic") ||
+    purpose.includes("honeymoon") || purpose.includes("celebration") ||
+    purpose.includes("family") || purpose.includes("adventure")
+  ) {
+    targetScene = "pool"
+  } else {
+    return null
+  }
+
+  return amenities.find((a) => a.scene.toLowerCase().includes(targetScene)) ?? null
 }
 
 export function getRecommendedRoomId(
