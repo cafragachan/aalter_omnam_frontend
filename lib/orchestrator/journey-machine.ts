@@ -57,6 +57,10 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
   // IDLE_TIMEOUT — contextual re-engagement (any stage)
   // -----------------------------------------------------------------------
   if (action.type === "IDLE_TIMEOUT") {
+    // During PROFILE_COLLECTION, HeyGen's AI persona handles re-engagement
+    if (state.stage === "PROFILE_COLLECTION") {
+      return { nextState: state, effects: [] }
+    }
     const prompt = getReengagePrompt(state)
     effects.push({ type: "SPEAK", text: prompt })
     return { nextState: state, effects }
@@ -80,7 +84,6 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
       }
 
       const awaiting = profileCollectionAwaiting(action.profile)
-      const firstName = action.firstName?.trim() || "there"
 
       // Profile is complete → advance to destination selection
       if (awaiting === "ready") {
@@ -88,44 +91,9 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
         return { nextState: { stage: "DESTINATION_SELECT" }, effects }
       }
 
-      // Still missing data — only prompt if the awaiting state changed
-      if (state.awaiting !== awaiting) {
-        switch (awaiting) {
-          case "dates_and_guests":
-            effects.push({
-              type: "SPEAK",
-              text: `Welcome ${firstName}! I'm Ava, your personal concierge. I'll guide you through our properties to find the perfect fit for you. Tell me about your trip — when are you planning to travel, and who's joining you?`,
-            })
-            break
-          case "dates":
-            effects.push({
-              type: "SPEAK",
-              text: `Great, thanks ${firstName}. Could you let me know when you're planning to travel — even a rough timeframe helps.`,
-            })
-            break
-          case "guests":
-            effects.push({
-              type: "SPEAK",
-              text: `And how many guests will be joining you? Adults, children — just so I can find the right fit.`,
-            })
-            break
-          case "travel_purpose":
-            effects.push({
-              type: "SPEAK",
-              text: `Lovely! Is this a leisure getaway, a special celebration, or something for business?`,
-            })
-            break
-          case "interests":
-            effects.push({
-              type: "SPEAK",
-              text: `Great! And what kind of experiences are you most looking forward to? Relaxation, dining, adventure, culture — anything in particular?`,
-            })
-            break
-        }
-        return { nextState: { stage: "PROFILE_COLLECTION", awaiting }, effects }
-      }
-
-      return { nextState: state, effects: [] }
+      // Still collecting — track state silently
+      // (HeyGen's AI persona handles the conversation naturally)
+      return { nextState: { stage: "PROFILE_COLLECTION", awaiting }, effects: [] }
     }
   }
 

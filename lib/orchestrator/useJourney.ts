@@ -49,6 +49,7 @@ export function useJourney(options: UseJourneyOptions) {
   const lastMessageCountRef = useRef(0)
   const lastProfileKeyRef = useRef("")
   const destinationAnnouncedRef = useRef(false)
+  const profileDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // --- Admin: download all collected user data as JSON ---
   const downloadUserData = useCallback(() => {
@@ -184,12 +185,26 @@ export function useJourney(options: UseJourneyOptions) {
     if (profileKey === lastProfileKeyRef.current) return
     lastProfileKeyRef.current = profileKey
 
-    dispatch({
-      type: "PROFILE_UPDATED",
-      profile: derivedProfile,
-      firstName: profile.firstName,
-      isExtractionPending,
-    })
+    const doDispatch = () => {
+      dispatch({
+        type: "PROFILE_UPDATED",
+        profile: derivedProfile,
+        firstName: profile.firstName,
+        isExtractionPending,
+      })
+    }
+
+    // Debounce during PROFILE_COLLECTION so compound answers from
+    // HeyGen's VAD splitting settle before evaluating profile completeness
+    if (stateRef.current.stage === "PROFILE_COLLECTION") {
+      if (profileDebounceRef.current) clearTimeout(profileDebounceRef.current)
+      profileDebounceRef.current = setTimeout(doDispatch, 2500)
+      return () => {
+        if (profileDebounceRef.current) clearTimeout(profileDebounceRef.current)
+      }
+    }
+
+    doDispatch()
   }, [derivedProfile, isExtractionPending, profile.firstName, dispatch])
 
   // --- React to new user messages (intent classification + question tracking) ---
