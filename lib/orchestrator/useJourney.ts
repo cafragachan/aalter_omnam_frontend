@@ -228,6 +228,7 @@ export function useJourney(options: UseJourneyOptions) {
           break
         case "DOWNLOAD_DATA":
           downloadUserData()
+          onUE5Command("downloadData", "downloadData")
           break
         case "OPEN_BOOKING_URL": {
           const roomId = currentRoomIdRef.current
