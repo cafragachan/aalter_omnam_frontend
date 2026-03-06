@@ -61,11 +61,16 @@ export default function LoginPage() {
   }
 
   return (
-    <div
-      className="ios-screen relative flex min-h-screen items-center justify-center bg-cover bg-center p-4"
-      style={{ backgroundImage: "url('/lounge.png')" }}
-    >
-      <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black via-black/70 to-black/20" />
+    <div className="ios-screen relative flex min-h-screen items-center justify-center p-4">
+      <video
+        autoPlay
+        muted
+        loop
+        playsInline
+        className="absolute inset-0 h-full w-full object-cover"
+        src="/videos/omanmBackground_720.mp4"
+      />
+      <div className="pointer-events-none absolute inset-0 bg-black/50" />
       <GlassPanel className="relative z-10 w-full max-w-md space-y-8 px-8 py-10">
         <div className="space-y-2 text-center">
           {/* <div className="inline-flex items-center justify-center rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-white/70">

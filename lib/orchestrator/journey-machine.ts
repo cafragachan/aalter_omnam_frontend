@@ -46,6 +46,19 @@ function profileCollectionAwaiting(
 }
 
 // ---------------------------------------------------------------------------
+// Pilot mode — skip destination selection, default to EDITION Lake Como
+// ---------------------------------------------------------------------------
+
+const PILOT_MODE = true
+
+const PILOT_HOTEL = {
+  slug: "edition-lake-como",
+  hotelName: "EDITION Lake Como",
+  location: "Lake Como, Italy",
+  description: "Luxury lakeside retreat with stunning mountain views",
+}
+
+// ---------------------------------------------------------------------------
 // Reducer
 // ---------------------------------------------------------------------------
 
@@ -88,8 +101,21 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
 
       const awaiting = profileCollectionAwaiting(action.profile)
 
-      // Profile is complete → advance to destination selection
+      // Profile is complete
       if (awaiting === "ready") {
+        if (PILOT_MODE) {
+          // Pilot: skip destination selection, go straight to hotel exploration
+          effects.push({ type: "SELECT_HOTEL", ...PILOT_HOTEL })
+          effects.push({ type: "SET_JOURNEY_STAGE", stage: "HOTEL_EXPLORATION" })
+          effects.push({ type: "UE5_COMMAND", command: "startTEST", value: "startTEST" })
+          effects.push({
+            type: "SPEAK",
+            text: `Let me take you to the hotel. You can explore available rooms, check out the amenities, or wander the surrounding area. What would you like to see first?`,
+          })
+          return { nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" }, effects }
+        }
+
+        // Normal: advance to destination selection
         effects.push({ type: "SET_JOURNEY_STAGE", stage: "DESTINATION_SELECT" })
         return { nextState: { stage: "DESTINATION_SELECT" }, effects }
       }

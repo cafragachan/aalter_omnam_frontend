@@ -170,6 +170,15 @@ function HomePageContent() {
     setShowRoomsPanel(false)
   }, [ue5])
 
+  // --- Auto-select hotel (used by pilot mode in the journey state machine) ---
+  const handleAutoSelectHotel = useCallback((slug: string) => {
+    const hotel = hotels.find((h) => h.slug === slug)
+    if (hotel) {
+      updateProfile({ destination: hotel.location })
+    }
+    selectHotel(slug)
+  }, [selectHotel, updateProfile])
+
   // --- Journey orchestrator (runs as a hook, not a component) ---
   const { dispatch: journeyDispatch } = useJourney({
     onOpenPanel: handleOpenPanel,
@@ -177,6 +186,7 @@ function HomePageContent() {
     onUE5Command: ue5.sendCommand,
     onResetToDefault: handleResetToDefault,
     onFadeTransition: ue5.fadeTransition,
+    onSelectHotel: handleAutoSelectHotel,
     amenities,
     rooms,
   })

@@ -41,6 +41,7 @@ export type JourneyEffect =
   | { type: "RESET_TO_DEFAULT" }
   | { type: "DOWNLOAD_DATA" }
   | { type: "OPEN_BOOKING_URL" }
+  | { type: "SELECT_HOTEL"; slug: string; hotelName: string; location: string; description: string }
 
 // ---------------------------------------------------------------------------
 // Reducer result

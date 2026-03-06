@@ -22,6 +22,7 @@ type UseJourneyOptions = {
   onUE5Command: (command: string, value: unknown) => void
   onResetToDefault: () => void
   onFadeTransition: () => void
+  onSelectHotel: (slug: string) => void
   onUnitSelected?: (roomName: string) => void
   /** Amenities for the currently selected hotel (needed for voice-driven navigation) */
   amenities: Amenity[]
@@ -36,6 +37,7 @@ export function useJourney(options: UseJourneyOptions) {
     onUE5Command,
     onResetToDefault,
     onFadeTransition,
+    onSelectHotel,
     amenities,
     rooms,
   } = options
@@ -230,6 +232,9 @@ export function useJourney(options: UseJourneyOptions) {
           downloadUserData()
           onUE5Command("downloadData", "downloadData")
           break
+        case "SELECT_HOTEL":
+          onSelectHotel(effect.slug)
+          break
         case "OPEN_BOOKING_URL": {
           const roomId = currentRoomIdRef.current
           if (roomId) {
@@ -243,7 +248,7 @@ export function useJourney(options: UseJourneyOptions) {
         }
       }
     }
-  }, [interrupt, repeat, onUE5Command, onOpenPanel, onClosePanels, onFadeTransition, setJourneyStage, onResetToDefault, downloadUserData, rooms, setBookingOutcome])
+  }, [interrupt, repeat, onUE5Command, onOpenPanel, onClosePanels, onFadeTransition, setJourneyStage, onResetToDefault, onSelectHotel, downloadUserData, rooms, setBookingOutcome])
 
   // --- Dispatch helper ---
   const dispatch = useCallback((action: JourneyAction) => {
@@ -288,8 +293,20 @@ export function useJourney(options: UseJourneyOptions) {
     }
 
     // Debounce during PROFILE_COLLECTION so compound answers from
-    // HeyGen's VAD splitting settle before evaluating profile completeness
+    // HeyGen's VAD splitting settle before evaluating profile completeness.
+    // Exception: when all required fields are present, dispatch immediately
+    // so HeyGen's AI persona doesn't keep asking follow-up questions.
     if (stateRef.current.stage === "PROFILE_COLLECTION") {
+      const profileReady = !isExtractionPending
+        && derivedProfile.startDate && derivedProfile.endDate
+        && derivedProfile.partySize && derivedProfile.travelPurpose
+
+      if (profileReady) {
+        if (profileDebounceRef.current) clearTimeout(profileDebounceRef.current)
+        doDispatch()
+        return
+      }
+
       if (profileDebounceRef.current) clearTimeout(profileDebounceRef.current)
       profileDebounceRef.current = setTimeout(doDispatch, 2500)
       return () => {
