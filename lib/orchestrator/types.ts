@@ -9,6 +9,7 @@ import type { AvatarDerivedProfile } from "@/lib/liveavatar/useUserProfile"
 export type JourneyState =
   | { stage: "PROFILE_COLLECTION"; awaiting: "dates_and_guests" | "dates" | "guests" | "travel_purpose" | "interests" | "extracting" | "ready" }
   | { stage: "DESTINATION_SELECT" }
+  | { stage: "VIRTUAL_LOUNGE"; subState: "asking" | "exploring" }
   | { stage: "HOTEL_EXPLORATION"; subState: "announcing" | "awaiting_intent" | "panel_open" }
   | { stage: "ROOM_SELECTED"; awaiting: "view_choice" }
   | { stage: "AMENITY_VIEWING" }
@@ -20,6 +21,7 @@ export type JourneyState =
 export type JourneyAction =
   | { type: "PROFILE_UPDATED"; profile: AvatarDerivedProfile; firstName?: string; isExtractionPending: boolean }
   | { type: "EXTRACTION_COMPLETE" }
+  | { type: "FORCE_ADVANCE" }
   | { type: "HOTEL_PICKED"; slug: string; hotelName: string; location: string; description: string }
   | { type: "USER_INTENT"; intent: UserIntent }
   | { type: "ROOM_CARD_TAPPED"; roomName: string; occupancy: string; roomId: string }

@@ -15,6 +15,7 @@ import type { JourneyStage } from "@/lib/context"
 const IDLE_THRESHOLDS: Record<JourneyStage, number> = {
   PROFILE_COLLECTION: 12_000,
   DESTINATION_SELECT: 15_000,
+  VIRTUAL_LOUNGE: 12_000,
   HOTEL_EXPLORATION: 18_000,
 }
 

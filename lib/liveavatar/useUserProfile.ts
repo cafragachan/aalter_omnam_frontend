@@ -225,16 +225,15 @@ const extractWithRegex = (
       /\bwant(?:ing)?\s+(?:to\s+)?(?:do|try|experience)\s+([a-z\s,]+?)(?:[.,!?]|$)/i,
     ]
 
-    // Direct interest keywords
+    // Direct interest keywords (excludes travel-purpose words to avoid confusion)
     const interestKeywords = [
       "spa", "wellness", "relaxation", "beach", "swimming", "pool",
-      "hiking", "adventure", "nature", "mountains", "skiing",
+      "hiking", "nature", "mountains", "skiing",
       "culture", "history", "museums", "art", "architecture",
       "food", "gastronomy", "wine", "dining", "culinary",
       "shopping", "nightlife", "entertainment",
       "golf", "tennis", "sports", "fitness",
-      "family", "kids", "romantic", "honeymoon",
-      "business", "conference", "meetings",
+      "kids",
     ]
 
     for (const pattern of interestPatterns) {
@@ -283,18 +282,30 @@ const extractWithRegex = (
       }
     }
 
-    // Travel purpose
+    // Travel purpose — checked before interests, with broad keyword coverage
     if (!result.travelPurpose) {
-      const purposeKeywords: Record<string, string> = {
-        "honeymoon": "honeymoon", "anniversary": "celebration", "birthday": "celebration",
-        "celebration": "celebration", "wedding": "celebration", "romantic": "romantic getaway",
-        "business trip": "business", "work trip": "business", "corporate": "business",
-        "conference": "business", "meeting": "business", "retreat": "business",
-        "leisure": "leisure", "vacation": "leisure", "holiday": "leisure",
-        "getaway": "leisure", "family vacation": "family vacation",
-        "family holiday": "family vacation", "adventure": "adventure",
-      }
-      for (const [keyword, purpose] of Object.entries(purposeKeywords)) {
+      // Ordered longest-first so multi-word phrases match before single words
+      const purposeKeywords: [string, string][] = [
+        ["family vacation", "family vacation"], ["family holiday", "family vacation"],
+        ["family trip", "family vacation"], ["with the family", "family vacation"],
+        ["with the kids", "family vacation"], ["with my kids", "family vacation"],
+        ["business trip", "business"], ["work trip", "business"], ["corporate", "business"],
+        ["conference", "business"], ["meeting", "business"], ["meetings", "business"],
+        ["business", "business"], ["work event", "business"],
+        ["romantic getaway", "romantic getaway"], ["romantic", "romantic getaway"],
+        ["honeymoon", "honeymoon"],
+        ["anniversary", "celebration"], ["birthday", "celebration"],
+        ["celebration", "celebration"], ["wedding", "celebration"],
+        ["adventure", "adventure"], ["exploring", "adventure"], ["explore", "adventure"],
+        ["leisure", "leisure"], ["vacation", "leisure"], ["holiday", "leisure"],
+        ["getaway", "leisure"], ["pleasure", "leisure"], ["tourism", "leisure"],
+        ["tourist", "leisure"], ["sightseeing", "leisure"],
+        ["relaxation", "leisure"], ["relaxing", "leisure"], ["relax", "leisure"],
+        ["unwind", "leisure"], ["rest", "leisure"], ["break", "leisure"],
+        ["time off", "leisure"], ["just for fun", "leisure"], ["for fun", "leisure"],
+        ["family", "family vacation"],
+      ]
+      for (const [keyword, purpose] of purposeKeywords) {
         if (lower.includes(keyword)) {
           result.travelPurpose = purpose
           break

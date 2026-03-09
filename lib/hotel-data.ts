@@ -63,12 +63,12 @@ export const hotels: Hotel[] = [
 export const rooms: Room[] = [
   {
     id: "r1",
-    name: "Standard",
+    name: "Standard Lake View",
     occupancy: "2",
     price: 249,
     hotelId: "1",
     image: "/images/room-standard.jpg",
-    book_url: "https://www.editionhotels.com/lake-como/rooms-and-suites/standard/"
+    book_url: "https://www.editionhotels.com/lake-como/rooms-and-suites/standard-lake-view/"
   },
   {
     id: "r2",
@@ -81,12 +81,30 @@ export const rooms: Room[] = [
   },
   {
     id: "r3",
-    name: "Loft Suite Lakeview",
+    name: "Loft Suite Lake View",
     occupancy: "4",
     price: 399,
     hotelId: "1",
     image: "/images/room-suite-triple.jpg",
     book_url: "https://www.editionhotels.com/lake-como/rooms-and-suites/loft-suite-lake-view-balcony/"
+  },
+  {
+    id: "r4",
+    name: "Standard Mountain View",
+    occupancy: "2",
+    price: 199,
+    hotelId: "1",
+    image: "/images/standard_mountain_view.jpg",
+    book_url: "https://www.editionhotels.com/lake-como/rooms-and-suites/standard/"
+  },
+  {
+    id: "r5",
+    name: "Loft Suite Mountain View",
+    occupancy: "4",
+    price: 349,
+    hotelId: "1",
+    image: "/images/loft_mountain_view.jpg",
+    book_url: "https://www.editionhotels.com/lake-como/rooms-and-suites/loft-suite-mountain-view/"
   },
 ]
 

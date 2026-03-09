@@ -16,9 +16,15 @@ export type UserIntent =
   | { type: "HOTEL_EXPLORE" }
   | { type: "DOWNLOAD_DATA" }
   | { type: "BOOK" }
+  | { type: "AFFIRMATIVE" }
+  | { type: "NEGATIVE" }
+  | { type: "TRAVEL_TO_HOTEL" }
   | { type: "UNKNOWN" }
 
 const DOWNLOAD_DATA_RE = /\bdownload\s+user\s+data\b/
+const TRAVEL_TO_HOTEL_RE = /\b(take me to the hotel|go to the hotel|head to the hotel|travel to the hotel|let'?s go to the hotel|ready to go|let'?s travel|bring me to the hotel|hotel please|straight to the hotel|head over)\b/i
+const AFFIRMATIVE_RE = /\b(yes|yeah|sure|absolutely|definitely|love to|why not|let'?s do it|sounds good|okay|ok|of course|i'?d love|please|certainly|yep|yea)\b/i
+const NEGATIVE_RE = /\b(no|nah|skip|not really|no thanks|no thank you|i'?m good|pass|nope|not interested)\b/i
 const ROOM_RE = /\b(room|rooms|suite|suites|stay|bed|accommodation)\b/
 const BOOK_RE = /\b(book\s*(?:it|this|that|the\s+room|now)?|reserve|make\s+(?:a\s+)?reservation|proceed\s+(?:with\s+)?(?:booking|reservation)|let'?s\s+(?:book|reserve|do\s+it)|i(?:'d| would)\s+(?:like\s+to\s+)?(?:book|reserve)|i(?:'ll| will)\s+take\s+(?:it|this|that)|sign\s+me\s+up)\b/i
 const AMENITY_RE = /\b(amenity|amenities|facility|facilities)\b/
@@ -45,6 +51,9 @@ export function classifyIntent(message: string): UserIntent {
 
   // --- highest priority: navigation commands ---
   if (BACK_RE.test(lower)) return { type: "BACK" }
+
+  // --- travel to hotel (lounge → hotel transition) ---
+  if (TRAVEL_TO_HOTEL_RE.test(lower)) return { type: "TRAVEL_TO_HOTEL" }
 
   // --- booking intent ---
   if (BOOK_RE.test(lower)) return { type: "BOOK" }
@@ -84,6 +93,10 @@ export function classifyIntent(message: string): UserIntent {
   if (amenityNameMatch) {
     return { type: "AMENITY_BY_NAME", amenityName: amenityNameMatch[1] }
   }
+
+  // --- affirmative / negative (low priority, mainly used by VIRTUAL_LOUNGE) ---
+  if (AFFIRMATIVE_RE.test(lower)) return { type: "AFFIRMATIVE" }
+  if (NEGATIVE_RE.test(lower)) return { type: "NEGATIVE" }
 
   return { type: "UNKNOWN" }
 }

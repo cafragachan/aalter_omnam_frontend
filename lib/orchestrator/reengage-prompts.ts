@@ -19,6 +19,18 @@ const DESTINATION_SELECT_PROMPTS = [
   "If you're drawn to any of these, just tap the card and I'll take you inside for a virtual tour.",
 ]
 
+const VIRTUAL_LOUNGE_ASKING_PROMPTS = [
+  "Would you like to explore the lounge, or shall we head straight to the hotel?",
+  "Take your time — the lounge has some beautiful pieces. Or we can go directly to the hotel if you prefer.",
+  "The gallery is worth a look, but no pressure. Ready to travel to the hotel?",
+]
+
+const VIRTUAL_LOUNGE_EXPLORING_PROMPTS = [
+  "Take your time browsing. When you're ready to visit the hotel, just let me know.",
+  "Beautiful space, isn't it? Whenever you'd like to head to the hotel, just say the word.",
+  "Would you like to head to the hotel now, or keep exploring the lounge?",
+]
+
 const HOTEL_EXPLORATION_AWAITING_PROMPTS = [
   "Would you like to explore the rooms, check out the amenities, or get a feel for the surrounding area?",
   "I can show you the available room types, or if you'd prefer, we can start with the hotel amenities. What sounds good?",
@@ -59,6 +71,9 @@ export function getReengagePrompt(state: JourneyState): string {
       return pick(PROFILE_COLLECTION_PROMPTS)
     case "DESTINATION_SELECT":
       return pick(DESTINATION_SELECT_PROMPTS)
+    case "VIRTUAL_LOUNGE":
+      if (state.subState === "exploring") return pick(VIRTUAL_LOUNGE_EXPLORING_PROMPTS)
+      return pick(VIRTUAL_LOUNGE_ASKING_PROMPTS)
     case "HOTEL_EXPLORATION":
       if (state.subState === "panel_open") return pick(HOTEL_EXPLORATION_PANEL_PROMPTS)
       return pick(HOTEL_EXPLORATION_AWAITING_PROMPTS)

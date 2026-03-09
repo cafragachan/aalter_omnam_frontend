@@ -94,6 +94,22 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
   // PROFILE_COLLECTION
   // -----------------------------------------------------------------------
   if (state.stage === "PROFILE_COLLECTION") {
+    // FORCE_ADVANCE — user or HeyGen AI wants to move forward even if profile is incomplete
+    if (action.type === "FORCE_ADVANCE") {
+      if (PILOT_MODE) {
+        effects.push({ type: "SELECT_HOTEL", ...PILOT_HOTEL })
+        effects.push({ type: "SET_JOURNEY_STAGE", stage: "VIRTUAL_LOUNGE" })
+        effects.push({
+          type: "SPEAK",
+          text: "Wonderful! Before we head to the hotel, would you like to explore our virtual lounge? We have some exclusive artwork and unique retail offerings on display.",
+        })
+        return { nextState: { stage: "VIRTUAL_LOUNGE", subState: "asking" }, effects }
+      }
+
+      effects.push({ type: "SET_JOURNEY_STAGE", stage: "DESTINATION_SELECT" })
+      return { nextState: { stage: "DESTINATION_SELECT" }, effects }
+    }
+
     if (action.type === "PROFILE_UPDATED") {
       if (action.isExtractionPending) {
         return { nextState: { stage: "PROFILE_COLLECTION", awaiting: "extracting" }, effects: [] }
@@ -104,15 +120,14 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
       // Profile is complete
       if (awaiting === "ready") {
         if (PILOT_MODE) {
-          // Pilot: skip destination selection, go straight to hotel exploration
+          // Pilot: skip destination selection, offer virtual lounge exploration
           effects.push({ type: "SELECT_HOTEL", ...PILOT_HOTEL })
-          effects.push({ type: "SET_JOURNEY_STAGE", stage: "HOTEL_EXPLORATION" })
-          effects.push({ type: "UE5_COMMAND", command: "startTEST", value: "startTEST" })
+          effects.push({ type: "SET_JOURNEY_STAGE", stage: "VIRTUAL_LOUNGE" })
           effects.push({
             type: "SPEAK",
-            text: `Let me take you to the hotel. You can explore available rooms, check out the amenities, or wander the surrounding area. What would you like to see first?`,
+            text: "Wonderful! Before we head to the hotel, would you like to explore our virtual lounge? We have some exclusive artwork and unique retail offerings on display.",
           })
-          return { nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" }, effects }
+          return { nextState: { stage: "VIRTUAL_LOUNGE", subState: "asking" }, effects }
         }
 
         // Normal: advance to destination selection
@@ -134,17 +149,65 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
       const { hotelName, description } = action
       const narrative = `${description.charAt(0).toLowerCase()}${description.slice(1)}`
 
-      effects.push({ type: "SET_JOURNEY_STAGE", stage: "HOTEL_EXPLORATION" })
-      effects.push({ type: "UE5_COMMAND", command: "startTEST", value: "startTEST" })
+      effects.push({ type: "SET_JOURNEY_STAGE", stage: "VIRTUAL_LOUNGE" })
       effects.push({
         type: "SPEAK",
-        text: `Excellent choice — the ${hotelName} ${narrative}. Let me take you inside. You can explore available rooms, check out the amenities, or wander the surrounding area. What would you like to see first?`,
+        text: `Excellent choice — the ${hotelName}, ${narrative}. Before we head there, would you like to explore our virtual lounge? We have some exclusive artwork and unique retail offerings on display.`,
       })
 
       return {
-        nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" },
+        nextState: { stage: "VIRTUAL_LOUNGE", subState: "asking" },
         effects,
       }
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // VIRTUAL_LOUNGE
+  // -----------------------------------------------------------------------
+  if (state.stage === "VIRTUAL_LOUNGE") {
+    if (action.type === "USER_INTENT") {
+      const { intent } = action
+
+      if (state.subState === "asking") {
+        // User said yes → free-roam the lounge
+        if (intent.type === "AFFIRMATIVE") {
+          effects.push({
+            type: "SPEAK",
+            text: "Great, feel free to navigate around the space pointing and clicking throughout the gallery. Let me know if you require any further assistance.",
+          })
+          return { nextState: { stage: "VIRTUAL_LOUNGE", subState: "exploring" }, effects }
+        }
+
+        // User said no or wants to go to hotel → travel immediately
+        if (intent.type === "NEGATIVE" || intent.type === "TRAVEL_TO_HOTEL") {
+          effects.push({ type: "SET_JOURNEY_STAGE", stage: "HOTEL_EXPLORATION" })
+          effects.push({ type: "UE5_COMMAND", command: "startTEST", value: "startTEST" })
+          effects.push({ type: "FADE_TRANSITION" })
+          effects.push({
+            type: "SPEAK",
+            text: "Let me take you to the hotel. You can explore available rooms, check out the amenities, or wander the surrounding area. What would you like to see first?",
+          })
+          return { nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" }, effects }
+        }
+      }
+
+      if (state.subState === "exploring") {
+        // User wants to leave the lounge and go to the hotel
+        if (intent.type === "TRAVEL_TO_HOTEL" || intent.type === "NEGATIVE") {
+          effects.push({ type: "SET_JOURNEY_STAGE", stage: "HOTEL_EXPLORATION" })
+          effects.push({ type: "UE5_COMMAND", command: "startTEST", value: "startTEST" })
+          effects.push({ type: "FADE_TRANSITION" })
+          effects.push({
+            type: "SPEAK",
+            text: "Let me take you to the hotel. You can explore available rooms, check out the amenities, or wander the surrounding area. What would you like to see first?",
+          })
+          return { nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" }, effects }
+        }
+      }
+
+      // Any other intent while in the lounge — ignore silently
+      return { nextState: state, effects: [] }
     }
   }
 

@@ -25,6 +25,7 @@ import type { Room } from "@/lib/hotel-data"
 const stageLabels: Record<JourneyStage, string> = {
   PROFILE_COLLECTION: "Profile",
   DESTINATION_SELECT: "Destinations",
+  VIRTUAL_LOUNGE: "Virtual Lounge",
   HOTEL_EXPLORATION: "Hotel Exploration",
 }
 
