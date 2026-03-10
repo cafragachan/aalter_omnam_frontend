@@ -164,15 +164,15 @@ const extractWithRegex = (
     if (!result.startDate || !result.endDate) {
       // Pattern: "15th to 20th of March" or "15-20 March"
       const range1 = text.match(
-        /(\d{1,2})(?:st|nd|rd|th)?\s*(?:to|-|through|until)\s*(\d{1,2})(?:st|nd|rd|th)?\s*(?:of\s+)?([a-zA-Z]+)/i,
+        /(\d{1,2})(?:st|nd|rd|th)?\s*(?:to|-|through|until|and)\s*(\d{1,2})(?:st|nd|rd|th)?\s*(?:of\s+)?([a-zA-Z]+)/i,
       )
       // Pattern: "March 15 to March 20" or "March 15-20"
       const range2 = text.match(
-        /([a-zA-Z]+)\s*(\d{1,2})(?:st|nd|rd|th)?\s*(?:to|-|through|until)\s*(?:([a-zA-Z]+)\s*)?(\d{1,2})(?:st|nd|rd|th)?/i,
+        /([a-zA-Z]+)\s*(\d{1,2})(?:st|nd|rd|th)?\s*(?:to|-|through|until|and)\s*(?:([a-zA-Z]+)\s*)?(\d{1,2})(?:st|nd|rd|th)?/i,
       )
-      // Pattern: "from March 15 to 20" or "from the 15th to the 20th of March"
+      // Pattern: "from/between March 15 to 20" or "between the 10th and the 15th of May"
       const range3 = text.match(
-        /from\s+(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?\s+(?:to|until)\s+(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?([a-zA-Z]+)/i,
+        /(?:from|between)\s+(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?\s+(?:to|until|and)\s+(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?([a-zA-Z]+)/i,
       )
       // Pattern: "next week", "this weekend", etc.
       const relativeMatch = lower.match(/\b(next week|this weekend|next month|next weekend)\b/i)
@@ -180,7 +180,12 @@ const extractWithRegex = (
       let start: Date | null = null
       let end: Date | null = null
 
-      if (range1) {
+      if (range3) {
+        // Check range3 first — most specific (requires "from"/"between" keyword)
+        const [, d1, d2, monthName] = range3
+        start = parseDate(monthName, d1)
+        end = parseDate(monthName, d2)
+      } else if (range1) {
         const [, d1, d2, monthName] = range1
         start = parseDate(monthName, d1)
         end = parseDate(monthName, d2)
@@ -189,10 +194,6 @@ const extractWithRegex = (
         const m2 = maybeM2 || m1
         start = parseDate(m1, d1)
         end = parseDate(m2, d2)
-      } else if (range3) {
-        const [, d1, d2, monthName] = range3
-        start = parseDate(monthName, d1)
-        end = parseDate(monthName, d2)
       } else if (relativeMatch) {
         const today = new Date()
         if (relativeMatch[1].includes("next week")) {
