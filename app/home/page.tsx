@@ -124,9 +124,17 @@ function HomePageContent() {
   // --- UE5 Bridge (WebSocket + fade transitions + unit state) ---
   const ue5 = useUE5Bridge()
 
-  // --- Stream URL ---
-  const streamUrl = process.env.NEXT_PUBLIC_VAGON_STREAM_URL || "http://127.0.0.1"
-  const hasStream = streamUrl !== "about:blank"
+  // --- Stream URL (swap via NEXT_PUBLIC_STREAM_MODE: "local" | "vagon") ---
+  const streamMode = process.env.NEXT_PUBLIC_STREAM_MODE || "local"
+  const streamUrl =
+    streamMode === "vagon"
+      ? process.env.NEXT_PUBLIC_VAGON_CLOUD_URL || ""
+      : process.env.NEXT_PUBLIC_VAGON_STREAM_URL || "http://127.0.0.1"
+  const hasStream = !!streamUrl && streamUrl !== "about:blank"
+  const iframeAllow =
+    streamMode === "vagon"
+      ? "microphone *; clipboard-read *; clipboard-write *; encrypted-media *; fullscreen *"
+      : "autoplay; fullscreen; clipboard-read; clipboard-write; gamepad"
 
   // --- Hotel data ---
   const selectedHotelData = useMemo(
@@ -247,10 +255,11 @@ function HomePageContent() {
       {/* UE5 Pixel Stream */}
       {hasStream ? (
         <iframe
+          id={streamMode === "vagon" ? "vagonFrame" : undefined}
           title="Vagon UE5 Stream"
           src={streamUrl}
           className="absolute inset-0 h-full w-full"
-          allow="autoplay; fullscreen; clipboard-read; clipboard-write; gamepad"
+          allow={iframeAllow}
         />
       ) : (
         <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-slate-900 via-black to-slate-950 text-white/70">
