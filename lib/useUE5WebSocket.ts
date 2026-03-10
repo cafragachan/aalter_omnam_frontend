@@ -1,6 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useRef, useState } from "react"
+import "@/lib/vagon.d.ts"
 
 export type UE5MessageType =
   | "startTEST"
@@ -40,6 +41,8 @@ export type UE5WebSocketState = {
   isConnecting: boolean
   error: string | null
 }
+
+const STREAM_MODE = process.env.NEXT_PUBLIC_STREAM_MODE || "local"
 
 export const useUE5WebSocket = (options: UseUE5WebSocketOptions = {}) => {
   const {
@@ -93,7 +96,69 @@ export const useUE5WebSocket = (options: UseUE5WebSocketOptions = {}) => {
     return payload.type === "unit" && typeof payload.roomName === "string"
   }, [])
 
-  const connect = useCallback(() => {
+  // ---------------------------------------------------------------------------
+  // Vagon SDK message handler (shared with WebSocket path)
+  // ---------------------------------------------------------------------------
+  const handleIncomingPayloads = useCallback((messages: UE5IncomingMessage[]) => {
+    messages.forEach((payload) => {
+      console.log("Message from UE5:", payload)
+
+      if (isUnitSelectionMessage(payload)) {
+        onUnitSelected?.(payload)
+        return
+      }
+
+      onMessage?.(payload)
+    })
+  }, [isUnitSelectionMessage, onUnitSelected, onMessage])
+
+  // ---------------------------------------------------------------------------
+  // Vagon SDK mode — communicate via window.Vagon instead of raw WebSocket
+  // ---------------------------------------------------------------------------
+  const connectVagon = useCallback(() => {
+    const vagon = typeof window !== "undefined" ? window.Vagon : undefined
+    if (!vagon) {
+      console.warn("Vagon SDK not available yet, retrying in 1s...")
+      const retryTimeout = setTimeout(() => connectVagon(), 1000)
+      return () => clearTimeout(retryTimeout)
+    }
+
+    console.log("Using Vagon SDK for UE5 communication")
+
+    // Listen for connection events
+    vagon.onConnected(() => {
+      console.log("Vagon: connected to UE5 stream")
+      setState({ isConnected: true, isConnecting: false, error: null })
+      onConnect?.()
+    })
+
+    vagon.onDisconnected(() => {
+      console.log("Vagon: disconnected from UE5 stream")
+      setState({ isConnected: false, isConnecting: false, error: null })
+      onDisconnect?.()
+    })
+
+    // Listen for incoming messages from UE5
+    vagon.onApplicationMessage(async (evt) => {
+      const messages = await normalizeIncomingMessage(evt.message)
+      handleIncomingPayloads(messages)
+    })
+
+    // Check if already connected
+    if (vagon.isConnected()) {
+      setState({ isConnected: true, isConnecting: false, error: null })
+      onConnect?.()
+    } else {
+      setState((prev) => ({ ...prev, isConnecting: true }))
+    }
+
+    return undefined
+  }, [onConnect, onDisconnect, normalizeIncomingMessage, handleIncomingPayloads])
+
+  // ---------------------------------------------------------------------------
+  // Direct WebSocket mode — local development
+  // ---------------------------------------------------------------------------
+  const connectWebSocket = useCallback(() => {
     if (websocketRef.current?.readyState === WebSocket.OPEN) {
       return
     }
@@ -112,17 +177,7 @@ export const useUE5WebSocket = (options: UseUE5WebSocketOptions = {}) => {
 
       ws.onmessage = async (event) => {
         const messages = await normalizeIncomingMessage(event.data)
-
-        messages.forEach((payload) => {
-          console.log("Message from UE5:", payload)
-
-          if (isUnitSelectionMessage(payload)) {
-            onUnitSelected?.(payload)
-            return
-          }
-
-          onMessage?.(payload)
-        })
+        handleIncomingPayloads(messages)
       }
 
       ws.onerror = (error) => {
@@ -144,7 +199,15 @@ export const useUE5WebSocket = (options: UseUE5WebSocketOptions = {}) => {
         error: (error as Error).message,
       })
     }
-  }, [url, onConnect, onDisconnect, onError, onMessage, onUnitSelected, normalizeIncomingMessage, isUnitSelectionMessage])
+  }, [url, onConnect, onDisconnect, onError, normalizeIncomingMessage, handleIncomingPayloads])
+
+  const connect = useCallback(() => {
+    if (STREAM_MODE === "vagon") {
+      connectVagon()
+    } else {
+      connectWebSocket()
+    }
+  }, [connectVagon, connectWebSocket])
 
   const disconnect = useCallback(() => {
     if (websocketRef.current) {
@@ -153,28 +216,45 @@ export const useUE5WebSocket = (options: UseUE5WebSocketOptions = {}) => {
     }
   }, [])
 
-  const sendMessage = useCallback((type: UE5MessageType | string, value?: unknown) => {
+  // ---------------------------------------------------------------------------
+  // Send helpers — route through Vagon SDK or direct WebSocket
+  // ---------------------------------------------------------------------------
+
+  const sendViaVagon = useCallback((message: object): boolean => {
+    const vagon = typeof window !== "undefined" ? window.Vagon : undefined
+    if (!vagon || !vagon.isConnected()) {
+      console.warn("Vagon SDK not connected, cannot send message")
+      return false
+    }
+
+    const json = JSON.stringify(message)
+    vagon.sendApplicationMessage(json)
+    console.log("Sent to UE5 (via Vagon):", message)
+    return true
+  }, [])
+
+  const sendViaWebSocket = useCallback((message: object): boolean => {
     if (!websocketRef.current || websocketRef.current.readyState !== WebSocket.OPEN) {
       console.warn("UE5 WebSocket not connected, cannot send message")
       return false
     }
 
-    const message = value !== undefined ? { type, value } : { type }
     websocketRef.current.send(JSON.stringify(message))
     console.log("Sent to UE5:", message)
     return true
   }, [])
 
   const sendRawMessage = useCallback((message: object) => {
-    if (!websocketRef.current || websocketRef.current.readyState !== WebSocket.OPEN) {
-      console.warn("UE5 WebSocket not connected, cannot send message")
-      return false
+    if (STREAM_MODE === "vagon") {
+      return sendViaVagon(message)
     }
+    return sendViaWebSocket(message)
+  }, [sendViaVagon, sendViaWebSocket])
 
-    websocketRef.current.send(JSON.stringify(message))
-    console.log("Sent to UE5:", message)
-    return true
-  }, [])
+  const sendMessage = useCallback((type: UE5MessageType | string, value?: unknown) => {
+    const message = value !== undefined ? { type, value } : { type }
+    return sendRawMessage(message)
+  }, [sendRawMessage])
 
   // Convenience methods for common operations
   const sendStartTest = useCallback((hotelSlug: string) => {

@@ -1,6 +1,7 @@
 import type React from "react"
 import type { Metadata } from "next"
 import { JetBrains_Mono, Manrope } from "next/font/google"
+import Script from "next/script"
 import "./globals.css"
 import { AppProvider } from "@/lib/store"
 import { Toaster } from "@/components/ui/toaster"
@@ -41,6 +42,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
+      <head>
+        <Script src="https://app.vagon.io/vagonsdk.js" strategy="beforeInteractive" />
+      </head>
       <body className={`${manrope.variable} ${jetbrainsMono.variable} font-sans antialiased`}>
         <UserProfileProvider>
           <AppProvider>
