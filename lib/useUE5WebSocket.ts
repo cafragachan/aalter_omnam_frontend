@@ -115,14 +115,24 @@ export const useUE5WebSocket = (options: UseUE5WebSocketOptions = {}) => {
   // ---------------------------------------------------------------------------
   // Vagon SDK mode — communicate via window.Vagon instead of raw WebSocket
   // ---------------------------------------------------------------------------
+  // The Vagon SDK object (`window.Vagon`) may exist before the iframe stream
+  // is fully initialised, meaning its methods (isConnected, onConnected, etc.)
+  // might not yet be functions. We guard every call and retry until ready.
+  // ---------------------------------------------------------------------------
+
+  const isVagonReady = useCallback((): boolean => {
+    const v = typeof window !== "undefined" ? window.Vagon : undefined
+    return !!v && typeof v.onConnected === "function" && typeof v.sendApplicationMessage === "function"
+  }, [])
+
   const connectVagon = useCallback(() => {
-    const vagon = typeof window !== "undefined" ? window.Vagon : undefined
-    if (!vagon) {
-      console.warn("Vagon SDK not available yet, retrying in 1s...")
+    if (!isVagonReady()) {
+      console.warn("Vagon SDK not fully initialised yet, retrying in 1s...")
       const retryTimeout = setTimeout(() => connectVagon(), 1000)
       return () => clearTimeout(retryTimeout)
     }
 
+    const vagon = window.Vagon!
     console.log("Using Vagon SDK for UE5 communication")
 
     // Listen for connection events
@@ -144,8 +154,8 @@ export const useUE5WebSocket = (options: UseUE5WebSocketOptions = {}) => {
       handleIncomingPayloads(messages)
     })
 
-    // Check if already connected
-    if (vagon.isConnected()) {
+    // Check if already connected (guard in case isConnected is not yet available)
+    if (typeof vagon.isConnected === "function" && vagon.isConnected()) {
       setState({ isConnected: true, isConnecting: false, error: null })
       onConnect?.()
     } else {
@@ -153,7 +163,7 @@ export const useUE5WebSocket = (options: UseUE5WebSocketOptions = {}) => {
     }
 
     return undefined
-  }, [onConnect, onDisconnect, normalizeIncomingMessage, handleIncomingPayloads])
+  }, [isVagonReady, onConnect, onDisconnect, normalizeIncomingMessage, handleIncomingPayloads])
 
   // ---------------------------------------------------------------------------
   // Direct WebSocket mode — local development
@@ -222,8 +232,8 @@ export const useUE5WebSocket = (options: UseUE5WebSocketOptions = {}) => {
 
   const sendViaVagon = useCallback((message: object): boolean => {
     const vagon = typeof window !== "undefined" ? window.Vagon : undefined
-    if (!vagon || !vagon.isConnected()) {
-      console.warn("Vagon SDK not connected, cannot send message")
+    if (!vagon || typeof vagon.sendApplicationMessage !== "function") {
+      console.warn("Vagon SDK not ready, cannot send message")
       return false
     }
 
