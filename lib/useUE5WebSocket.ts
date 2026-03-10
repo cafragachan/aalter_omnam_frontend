@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useRef, useState } from "react"
-import "@/lib/vagon.d.ts"
+// Types from lib/vagon.d.ts are picked up automatically by TypeScript
 
 export type UE5MessageType =
   | "startTEST"
