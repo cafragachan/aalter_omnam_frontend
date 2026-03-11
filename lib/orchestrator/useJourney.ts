@@ -395,6 +395,17 @@ export function useJourney(options: UseJourneyOptions) {
       return
     }
 
+    // Bare "yes" when last proposal was amenities → list amenities (needs hotel data)
+    if (intent.type === "AFFIRMATIVE" && stage === "HOTEL_EXPLORATION") {
+      const currentState = stateRef.current
+      if (currentState.stage === "HOTEL_EXPLORATION" && currentState.lastProposal === "amenities") {
+        stopExplorationTimer()
+        listAmenities()
+        dispatch({ type: "USER_INTENT", intent })
+        return
+      }
+    }
+
     if (intent.type === "AMENITY_BY_NAME") {
       navigateToAmenityByName(intent.amenityName)
       // Dispatch to reducer for state tracking

@@ -6,12 +6,15 @@ import type { AvatarDerivedProfile } from "@/lib/liveavatar/useUserProfile"
 // Journey State — rich internal state (superset of the 4 public JourneyStages)
 // ---------------------------------------------------------------------------
 
+/** Tracks what the avatar last proposed, so a bare "yes" can be resolved contextually */
+export type LastProposal = "rooms" | "amenities" | "location" | "book" | "interior_or_exterior"
+
 export type JourneyState =
   | { stage: "PROFILE_COLLECTION"; awaiting: "dates_and_guests" | "dates" | "guests" | "travel_purpose" | "interests" | "extracting" | "ready" }
   | { stage: "DESTINATION_SELECT" }
   | { stage: "VIRTUAL_LOUNGE"; subState: "asking" | "exploring" }
-  | { stage: "HOTEL_EXPLORATION"; subState: "announcing" | "awaiting_intent" | "panel_open" }
-  | { stage: "ROOM_SELECTED"; awaiting: "view_choice" }
+  | { stage: "HOTEL_EXPLORATION"; subState: "announcing" | "awaiting_intent" | "panel_open"; lastProposal?: LastProposal }
+  | { stage: "ROOM_SELECTED"; awaiting: "view_choice"; lastProposal?: LastProposal }
   | { stage: "AMENITY_VIEWING" }
 
 // ---------------------------------------------------------------------------

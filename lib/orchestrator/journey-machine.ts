@@ -217,6 +217,26 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
       const { intent } = action
 
       switch (intent.type) {
+        case "AFFIRMATIVE": {
+          // Resolve bare "yes" using what the avatar last proposed (default: rooms)
+          const proposal = state.lastProposal ?? "rooms"
+          if (proposal === "rooms" || proposal === "book") {
+            effects.push({ type: "SPEAK", text: "Let me pull up the available rooms." })
+            effects.push({ type: "OPEN_PANEL", panel: "rooms" })
+            return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
+          }
+          if (proposal === "amenities") {
+            // Handled in useJourney (lists amenities by voice)
+            return { nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" }, effects: [] }
+          }
+          if (proposal === "location") {
+            effects.push({ type: "SPEAK", text: "Let me show you the surrounding area." })
+            effects.push({ type: "OPEN_PANEL", panel: "location" })
+            return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
+          }
+          return { nextState: state, effects: [] }
+        }
+
         case "ROOMS":
           effects.push({ type: "SPEAK", text: "Let me pull up the available rooms. I'll suggest the best fit based on your group size." })
           effects.push({ type: "OPEN_PANEL", panel: "rooms" })
@@ -279,7 +299,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
         type: "SPEAK",
         text: `Great pick! The ${action.roomName} is a wonderful choice. Would you like to explore the interior or see the exterior view first?`,
       })
-      return { nextState: { stage: "ROOM_SELECTED", awaiting: "view_choice" }, effects }
+      return { nextState: { stage: "ROOM_SELECTED", awaiting: "view_choice", lastProposal: "interior_or_exterior" }, effects }
     }
 
     if (action.type === "AMENITY_CARD_TAPPED") {
@@ -300,16 +320,33 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
       const { intent } = action
 
       switch (intent.type) {
+        case "AFFIRMATIVE": {
+          // Resolve bare "yes" using what the avatar last proposed (default: book)
+          const proposal = state.lastProposal ?? "book"
+          if (proposal === "book") {
+            effects.push({ type: "SPEAK", text: "I'm opening the booking page for you now. You'll be able to complete your reservation directly on the hotel's website. Is there anything else you'd like to explore?" })
+            effects.push({ type: "OPEN_BOOKING_URL" })
+            return { nextState: { stage: "ROOM_SELECTED", awaiting: "view_choice" }, effects }
+          }
+          if (proposal === "interior_or_exterior") {
+            effects.push({ type: "SPEAK", text: "Stepping inside — take a look around. Feel free to navigate through the space. Let me know if you have any specific requirements, or if you'd like to book this room, just say the word." })
+            effects.push({ type: "UE5_COMMAND", command: "unitView", value: "interior" })
+            effects.push({ type: "FADE_TRANSITION" })
+            return { nextState: { ...state, lastProposal: "book" }, effects }
+          }
+          return { nextState: state, effects: [] }
+        }
+
         case "INTERIOR":
           effects.push({ type: "SPEAK", text: "Stepping inside — take a look around. Feel free to navigate through the space. Let me know if you have any specific requirements, or if you'd like to book this room, just say the word." })
           effects.push({ type: "UE5_COMMAND", command: "unitView", value: "interior" })
           effects.push({ type: "FADE_TRANSITION" })
-          return { nextState: state, effects }
+          return { nextState: { ...state, lastProposal: "book" }, effects }
 
         case "EXTERIOR":
           effects.push({ type: "SPEAK", text: "Here's the exterior view. The perspective from this floor is quite special. Would you like to book this room, or explore something else?" })
           effects.push({ type: "UE5_COMMAND", command: "unitView", value: "exterior" })
-          return { nextState: state, effects }
+          return { nextState: { ...state, lastProposal: "book" }, effects }
 
         case "BOOK":
           effects.push({ type: "SPEAK", text: "I'm opening the booking page for you now. You'll be able to complete your reservation directly on the hotel's website. Is there anything else you'd like to explore?" })
@@ -353,7 +390,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
             type: "SPEAK",
             text: "Would you like to book this room, or go back to explore other options?",
           })
-          return { nextState: state, effects }
+          return { nextState: { ...state, lastProposal: "book" }, effects }
 
         default:
           return { nextState: state, effects: [] }
@@ -365,7 +402,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
         type: "SPEAK",
         text: `Nice — the ${action.roomName}. Would you like to step inside or see the view from the exterior?`,
       })
-      return { nextState: { stage: "ROOM_SELECTED", awaiting: "view_choice" }, effects }
+      return { nextState: { stage: "ROOM_SELECTED", awaiting: "view_choice", lastProposal: "interior_or_exterior" }, effects }
     }
   }
 
