@@ -2,7 +2,7 @@
 // Journey State Machine — pure reducer, no React, fully testable
 // ---------------------------------------------------------------------------
 
-import type { JourneyState, JourneyAction, JourneyResult, JourneyEffect } from "./types"
+import type { JourneyState, JourneyAction, JourneyResult, JourneyEffect, AmenityRef } from "./types"
 import { getReengagePrompt } from "./reengage-prompts"
 
 // ---------------------------------------------------------------------------
@@ -43,6 +43,108 @@ function profileCollectionAwaiting(
   if (missingGuests) return "guests"
   if (!profile.travelPurpose) return "travel_purpose"
   return "ready"
+}
+
+// ---------------------------------------------------------------------------
+// Amenity helpers
+// ---------------------------------------------------------------------------
+
+/** Compute the next unvisited amenity name (if any) */
+function computeSuggestedNext(
+  allAmenities: AmenityRef[],
+  visitedAmenities: string[],
+  currentAmenityName: string,
+): string | undefined {
+  const visited = new Set([...visitedAmenities, currentAmenityName])
+  const remaining = allAmenities.filter((a) => !visited.has(a.name))
+  return remaining[0]?.name
+}
+
+/** Build the AMENITY_VIEWING state with full context */
+function buildAmenityViewingState(
+  amenity: AmenityRef,
+  visitedAmenities: string[],
+  allAmenities: AmenityRef[],
+): Extract<JourneyState, { stage: "AMENITY_VIEWING" }> {
+  return {
+    stage: "AMENITY_VIEWING",
+    currentAmenity: amenity,
+    visitedAmenities: [...visitedAmenities, amenity.name],
+    suggestedNext: computeSuggestedNext(allAmenities, visitedAmenities, amenity.name),
+    allAmenities,
+  }
+}
+
+const PURPOSE_NARRATIVE: Record<string, string> = {
+  business: "on business",
+  leisure: "to unwind",
+  "romantic getaway": "for a romantic getaway",
+  honeymoon: "for your honeymoon",
+  celebration: "to celebrate",
+  "family vacation": "for a family holiday",
+  adventure: "with adventure in mind",
+}
+
+/** Build the speech text for listing amenities (first time, partial, or all visited) */
+function buildAmenityListingSpeech(
+  allAmenities: AmenityRef[],
+  visitedAmenities: string[],
+  travelPurpose?: string,
+  recommendedAmenityName?: string,
+): { text: string; suggestedName?: string } {
+  if (allAmenities.length === 0) {
+    return { text: "This property doesn't have any specific amenity spaces to tour right now. Shall we look at the rooms instead?" }
+  }
+
+  const exploredSet = new Set(visitedAmenities)
+  const visited = allAmenities.filter((a) => exploredSet.has(a.name))
+  const remaining = allAmenities.filter((a) => !exploredSet.has(a.name))
+
+  // All visited
+  if (remaining.length === 0) {
+    const visitedText = visited.map((a) => `the ${a.name.toLowerCase()}`).join(", ")
+    return { text: `You've already explored ${visitedText}. Would you like to revisit any of them, or shall we look at the rooms instead?` }
+  }
+
+  // Some visited — mention visited, offer remaining
+  if (visited.length > 0) {
+    const suggestedName = remaining[0].name
+    const visitedText = visited.map((a) => `the ${a.name.toLowerCase()}`).join(" and ")
+    const remainingText = remaining.length === 1
+      ? `the ${remaining[0].name.toLowerCase()}`
+      : remaining.map((a) => `the ${a.name.toLowerCase()}`).join(" and ")
+    return {
+      text: `We've already visited ${visitedText}. Would you like to see ${remainingText} now?`,
+      suggestedName,
+    }
+  }
+
+  // First time — use recommendation if available
+  if (recommendedAmenityName) {
+    const recommended = allAmenities.find((a) => a.name.toLowerCase() === recommendedAmenityName.toLowerCase())
+    if (recommended) {
+      const narrative = PURPOSE_NARRATIVE[travelPurpose?.toLowerCase() ?? ""] ?? ""
+      const others = allAmenities.filter((a) => a.id !== recommended.id)
+      const othersText = others.length === 1
+        ? `a ${others[0].name.toLowerCase()}`
+        : others.map((a) => `a ${a.name.toLowerCase()}`).join(" and ")
+      return {
+        text: `Since you're here ${narrative}, I'd suggest starting with the ${recommended.name.toLowerCase()}. We also have ${othersText} that I can take you to. Where shall we begin?`,
+        suggestedName: recommended.name,
+      }
+    }
+  }
+
+  // No recommendation — suggest the first amenity
+  const names = allAmenities.map((a) => a.name)
+  const suggestedName = names[0]
+  const listText = names.length === 1
+    ? `a ${names[0].toLowerCase()}`
+    : names.slice(0, -1).map((n) => `a ${n.toLowerCase()}`).join(", ") + ` and a ${names[names.length - 1].toLowerCase()}`
+  return {
+    text: `This property has ${listText}. Which would you like to visit?`,
+    suggestedName,
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -219,6 +321,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
       switch (intent.type) {
         case "AFFIRMATIVE": {
           // Resolve bare "yes" using what the avatar last proposed (default: rooms)
+          // Note: suggestedAmenityName "yes" is intercepted in useJourney before reaching here
           const proposal = state.lastProposal ?? "rooms"
           if (proposal === "rooms" || proposal === "book") {
             effects.push({ type: "SPEAK", text: "Let me pull up the available rooms." })
@@ -226,8 +329,10 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
             return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
           }
           if (proposal === "amenities") {
-            // Handled in useJourney (lists amenities by voice)
-            return { nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" }, effects: [] }
+            // useJourney dispatches LIST_AMENITIES before this can be reached,
+            // but as a safety net, prompt for specifics
+            effects.push({ type: "SPEAK", text: "Which amenity would you like to visit? I can show you the options." })
+            return { nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" }, effects }
           }
           if (proposal === "location") {
             effects.push({ type: "SPEAK", text: "Let me show you the surrounding area." })
@@ -243,13 +348,11 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
 
         case "AMENITIES":
-          // The avatar will list available amenities by name — handled in useJourney
-          // which has access to the hotel's amenity data. No panel opened.
-          return { nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" }, effects: [] }
+          // Intercepted in useJourney which dispatches LIST_AMENITIES instead
+          return { nextState: state, effects: [] }
 
         case "AMENITY_BY_NAME":
-          // Specific amenity navigation — handled in useJourney which resolves
-          // the amenity name against hotel data and triggers UE5 navigation.
+          // Intercepted in useJourney which dispatches NAVIGATE_TO_AMENITY instead
           return { nextState: state, effects: [] }
 
         case "LOCATION":
@@ -309,11 +412,14 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
 
     if (action.type === "AMENITY_CARD_TAPPED") {
       const narrative = buildAmenityNarrative(action.name, action.scene)
+      const amenity = { id: action.amenityId, name: action.name, scene: action.scene }
       effects.push({ type: "CLOSE_PANELS" })
       effects.push({ type: "UE5_COMMAND", command: "communal", value: action.amenityId })
       effects.push({ type: "FADE_TRANSITION" })
-      effects.push({ type: "SPEAK", text: `Let me take you to the ${action.name} — ${narrative}` })
-      return { nextState: { stage: "AMENITY_VIEWING" }, effects }
+      const nextState = buildAmenityViewingState(amenity, action.visitedAmenities, action.allAmenities)
+      const teaser = nextState.suggestedNext ? ` When you're ready, I can also show you the ${nextState.suggestedNext}.` : ""
+      effects.push({ type: "SPEAK", text: `Let me take you to the ${action.name} — ${narrative}${teaser}` })
+      return { nextState, effects }
     }
   }
 
@@ -373,16 +479,15 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
 
         case "AMENITIES":
-          // Voice-driven — handled in useJourney
+          // Intercepted in useJourney which dispatches LIST_AMENITIES instead
           effects.push({ type: "RESET_TO_DEFAULT" })
           effects.push({ type: "FADE_TRANSITION" })
           return { nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" }, effects }
 
         case "AMENITY_BY_NAME":
-          // Handled in useJourney
-          effects.push({ type: "RESET_TO_DEFAULT" })
-          effects.push({ type: "FADE_TRANSITION" })
-          return { nextState: { stage: "AMENITY_VIEWING" }, effects }
+          // Intercepted in useJourney which dispatches NAVIGATE_TO_AMENITY instead
+          // The NAVIGATE_TO_AMENITY handler (below) handles the full transition
+          return { nextState: state, effects: [] }
 
         case "LOCATION":
           effects.push({ type: "SPEAK", text: "Let me show you the surrounding area." })
@@ -419,36 +524,123 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
     if (action.type === "USER_INTENT") {
       const { intent } = action
 
-      if (intent.type === "BACK" || intent.type === "HOTEL_EXPLORE") {
-        effects.push({ type: "RESET_TO_DEFAULT" })
-        effects.push({ type: "FADE_TRANSITION" })
-        effects.push({ type: "SPEAK", text: "Back to the hotel. What would you like to explore next?" })
-        return { nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" }, effects }
-      }
+      switch (intent.type) {
+        case "BACK":
+        case "HOTEL_EXPLORE":
+          effects.push({ type: "RESET_TO_DEFAULT" })
+          effects.push({ type: "FADE_TRANSITION" })
+          effects.push({ type: "SPEAK", text: "Back to the hotel. What would you like to explore next?" })
+          return { nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" }, effects }
 
-      if (intent.type === "BOOK") {
-        effects.push({ type: "SPEAK", text: "Great to hear you'd like to book! Let me show you the rooms first so you can pick your favorite." })
-        effects.push({ type: "OPEN_PANEL", panel: "rooms" })
-        return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
+        case "AFFIRMATIVE":
+          // "Yes" after we suggested the next amenity → useJourney intercepts
+          // and dispatches NAVIGATE_TO_AMENITY. If it reaches here, no suggestion active.
+          if (state.suggestedNext) {
+            // Safety: shouldn't normally reach here (useJourney intercepts), but handle gracefully
+            effects.push({ type: "SPEAK", text: `Sure! Let me take you to the ${state.suggestedNext}. Just a moment.` })
+            return { nextState: state, effects }
+          }
+          effects.push({ type: "SPEAK", text: "Would you like to see the rooms, or explore another area of the hotel?" })
+          return { nextState: state, effects }
+
+        case "NEGATIVE":
+          if (state.suggestedNext) {
+            // "No" to the suggested next amenity
+            effects.push({ type: "SPEAK", text: "No worries. Would you like to check out the rooms, or see the surrounding area instead?" })
+            return { nextState: { ...state, suggestedNext: undefined }, effects }
+          }
+          effects.push({ type: "SPEAK", text: "Shall we head back to the hotel overview?" })
+          return { nextState: state, effects }
+
+        case "BOOK":
+          effects.push({ type: "SPEAK", text: "Great to hear you'd like to book! Let me show you the rooms first so you can pick your favorite." })
+          effects.push({ type: "OPEN_PANEL", panel: "rooms" })
+          return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
+
+        case "ROOMS":
+          effects.push({ type: "SPEAK", text: "Good call — let me show you the rooms." })
+          effects.push({ type: "OPEN_PANEL", panel: "rooms" })
+          return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
+
+        case "OTHER_OPTIONS":
+        case "AMENITIES":
+          // Intercepted in useJourney which dispatches LIST_AMENITIES instead
+          return { nextState: state, effects: [] }
+
+        case "AMENITY_BY_NAME":
+          // Intercepted in useJourney which dispatches NAVIGATE_TO_AMENITY instead
+          return { nextState: state, effects: [] }
+
+        case "LOCATION":
+          effects.push({ type: "SPEAK", text: "Let me show you the surrounding area." })
+          effects.push({ type: "OPEN_PANEL", panel: "location" })
+          return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
+
+        case "UNKNOWN":
+          // Contextual response prevents HeyGen from filling silence with off-topic speech
+          if (state.suggestedNext) {
+            effects.push({
+              type: "SPEAK",
+              text: `You're currently viewing the ${state.currentAmenity.name}. Would you like to see the ${state.suggestedNext} next, or shall we look at rooms?`,
+            })
+          } else {
+            effects.push({
+              type: "SPEAK",
+              text: `You're exploring the ${state.currentAmenity.name}. Shall we check out the rooms, or see the surrounding area?`,
+            })
+          }
+          return { nextState: state, effects }
+
+        default:
+          return { nextState: state, effects: [] }
       }
-      if (intent.type === "ROOMS") {
-        effects.push({ type: "SPEAK", text: "Good call — let me show you the rooms." })
-        effects.push({ type: "OPEN_PANEL", panel: "rooms" })
-        return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // NAVIGATE_TO_AMENITY — global handler, works from any exploration stage
+  // -----------------------------------------------------------------------
+  if (action.type === "NAVIGATE_TO_AMENITY") {
+    const { amenity, narrative, visitedAmenities, allAmenities } = action
+    const nextState = buildAmenityViewingState(amenity, visitedAmenities, allAmenities)
+    const teaser = nextState.suggestedNext ? ` When you're ready, I can also show you the ${nextState.suggestedNext}.` : ""
+
+    // If coming from a non-amenity state, reset UE5 scene first
+    if (state.stage !== "AMENITY_VIEWING") {
+      effects.push({ type: "CLOSE_PANELS" })
+      effects.push({ type: "RESET_TO_DEFAULT" })
+    }
+    effects.push({ type: "UE5_COMMAND", command: "communal", value: amenity.id })
+    effects.push({ type: "FADE_TRANSITION" })
+    effects.push({ type: "SPEAK", text: `Let me take you to the ${amenity.name} — ${narrative}${teaser}` })
+    return { nextState, effects }
+  }
+
+  // -----------------------------------------------------------------------
+  // LIST_AMENITIES — global handler, builds listing speech from action data
+  // -----------------------------------------------------------------------
+  if (action.type === "LIST_AMENITIES") {
+    const { visitedAmenities, allAmenities, travelPurpose, recommendedAmenityName } = action
+    const listing = buildAmenityListingSpeech(allAmenities, visitedAmenities, travelPurpose, recommendedAmenityName)
+    effects.push({ type: "SPEAK", text: listing.text })
+
+    // If currently viewing an amenity, stay in AMENITY_VIEWING with updated suggestedNext
+    if (state.stage === "AMENITY_VIEWING") {
+      return {
+        nextState: { ...state, suggestedNext: listing.suggestedName },
+        effects,
       }
-      if (intent.type === "OTHER_OPTIONS" || intent.type === "AMENITIES") {
-        // Handled in useJourney — lists amenities by name via voice
-        return { nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" }, effects: [] }
-      }
-      if (intent.type === "AMENITY_BY_NAME") {
-        // Handled in useJourney — navigates to specific amenity
-        return { nextState: state, effects: [] }
-      }
-      if (intent.type === "LOCATION") {
-        effects.push({ type: "SPEAK", text: "Let me show you the surrounding area." })
-        effects.push({ type: "OPEN_PANEL", panel: "location" })
-        return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
-      }
+    }
+
+    // Otherwise, stay in HOTEL_EXPLORATION with amenity suggestion tracked
+    return {
+      nextState: {
+        stage: "HOTEL_EXPLORATION",
+        subState: "awaiting_intent",
+        lastProposal: "amenities",
+        suggestedAmenityName: listing.suggestedName,
+      },
+      effects,
     }
   }
 

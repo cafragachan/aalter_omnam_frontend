@@ -9,7 +9,7 @@ import { useGuestIntelligence } from "@/lib/guest-intelligence"
 import { classifyIntent } from "./intents"
 import { journeyReducer, INITIAL_JOURNEY_STATE, buildAmenityNarrative } from "./journey-machine"
 import { useIdleDetection } from "./idle-detection"
-import type { JourneyState, JourneyAction, JourneyEffect } from "./types"
+import type { JourneyState, JourneyAction, JourneyEffect, AmenityRef } from "./types"
 import { getRecommendedAmenity, type Amenity, type Room } from "@/lib/hotel-data"
 
 // ---------------------------------------------------------------------------
@@ -102,120 +102,6 @@ export function useJourney(options: UseJourneyOptions) {
     URL.revokeObjectURL(url)
   }, [profile, derivedProfile, guestIntelligence, journeyStage, userMessages])
 
-  // --- Delayed speak: waits for HeyGen's AI to respond, then overrides it ---
-  // HeyGen's AI generates its own response ~1-2s after transcription.
-  // If we interrupt+repeat immediately, HeyGen's AI overwrites us.
-  // By delaying, we let HeyGen speak first, then interrupt and take over.
-  const HEYGEN_AI_DELAY = 2500
-  const delayedSpeakRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  // Tracks the amenity suggested by listAmenities(), so a bare "yes" navigates there
-  const suggestedAmenityRef = useRef<string | null>(null)
-
-  const speakAfterAI = useCallback((text: string) => {
-    if (delayedSpeakRef.current) clearTimeout(delayedSpeakRef.current)
-    delayedSpeakRef.current = setTimeout(() => {
-      interrupt()
-      repeat(text).catch(() => undefined)
-    }, HEYGEN_AI_DELAY)
-  }, [interrupt, repeat])
-
-  // --- Voice-driven amenity navigation ---
-  const navigateToAmenityByName = useCallback((amenityName: string) => {
-    const match = amenities.find((a) => {
-      const n = a.name.toLowerCase()
-      const s = a.scene.toLowerCase()
-      return n.includes(amenityName) || s.includes(amenityName)
-    })
-
-    if (!match) {
-      speakAfterAI(`I don't think we have a ${amenityName} at this property. Would you like to see the rooms, or explore the surrounding area?`)
-      return
-    }
-
-    // Track this amenity visit + start timer
-    trackAmenityExplored(match.name)
-    startAmenityTimer(match.name)
-
-    // Navigate UE5 + fade (these are immediate — no race condition with HeyGen)
-    const narrative = buildAmenityNarrative(match.name, match.scene)
-    onClosePanels()
-    onUE5Command("communal", match.id)
-    onFadeTransition()
-
-    // Delay speech to override HeyGen's AI response
-    speakAfterAI(`Let me take you to the ${match.name} — ${narrative}`)
-
-    // Update state to AMENITY_VIEWING
-    stateRef.current = { stage: "AMENITY_VIEWING" }
-  }, [amenities, trackAmenityExplored, onClosePanels, onUE5Command, onFadeTransition, speakAfterAI])
-
-  const listAmenities = useCallback(() => {
-    if (amenities.length === 0) {
-      suggestedAmenityRef.current = null
-      speakAfterAI("This property doesn't have any specific amenity spaces to tour right now. Shall we look at the rooms instead?")
-      return
-    }
-
-    // Check which amenities have already been visited
-    const exploredNames = new Set(guestIntelligence.data.amenitiesExplored.map((a) => a.name))
-    const visited = amenities.filter((a) => exploredNames.has(a.name))
-    const remaining = amenities.filter((a) => !exploredNames.has(a.name))
-
-    // All visited — let the user know
-    if (remaining.length === 0) {
-      suggestedAmenityRef.current = null
-      const visitedText = visited.map((a) => `the ${a.name.toLowerCase()}`).join(", ")
-      speakAfterAI(`You've already explored ${visitedText}. Would you like to revisit any of them, or shall we look at the rooms instead?`)
-      return
-    }
-
-    // Some visited — mention visited, offer remaining
-    if (visited.length > 0) {
-      // Suggest the first remaining amenity (the one mentioned first)
-      suggestedAmenityRef.current = remaining[0].name.toLowerCase()
-      const visitedText = visited.map((a) => `the ${a.name.toLowerCase()}`).join(" and ")
-      const remainingText = remaining.length === 1
-        ? `the ${remaining[0].name.toLowerCase()}`
-        : remaining.map((a) => `the ${a.name.toLowerCase()}`).join(" and ")
-      speakAfterAI(`We've already visited ${visitedText}. Would you like to see ${remainingText} now?`)
-      return
-    }
-
-    // First time — use recommendation if available and not yet explored
-    const recommended = getRecommendedAmenity(amenities, profile.travelPurpose)
-
-    if (recommended) {
-      suggestedAmenityRef.current = recommended.name.toLowerCase()
-      const purposeNarrative: Record<string, string> = {
-        business: "on business",
-        leisure: "to unwind",
-        "romantic getaway": "for a romantic getaway",
-        honeymoon: "for your honeymoon",
-        celebration: "to celebrate",
-        "family vacation": "for a family holiday",
-        adventure: "with adventure in mind",
-      }
-      const narrative = purposeNarrative[profile.travelPurpose?.toLowerCase() ?? ""] ?? ""
-      const others = amenities.filter((a) => a.id !== recommended.id)
-      const othersText = others.length === 1
-        ? `a ${others[0].name.toLowerCase()}`
-        : others.map((a) => `a ${a.name.toLowerCase()}`).join(" and ")
-
-      speakAfterAI(
-        `Since you're here ${narrative}, I'd suggest starting with the ${recommended.name.toLowerCase()}. We also have ${othersText} that I can take you to. Where shall we begin?`,
-      )
-    } else {
-      // No recommendation — suggest the first amenity in the list
-      suggestedAmenityRef.current = amenities[0].name.toLowerCase()
-      const names = amenities.map((a) => a.name)
-      const listText = names.length === 1
-        ? `a ${names[0].toLowerCase()}`
-        : names.slice(0, -1).map((n) => `a ${n.toLowerCase()}`).join(", ") + ` and a ${names[names.length - 1].toLowerCase()}`
-
-      speakAfterAI(`This property has ${listText}. Which would you like to visit?`)
-    }
-  }, [amenities, speakAfterAI, profile.travelPurpose, guestIntelligence.data.amenitiesExplored])
-
   // --- Effect executor ---
   const executeEffects = useCallback((effects: JourneyEffect[]) => {
     for (const effect of effects) {
@@ -272,6 +158,58 @@ export function useJourney(options: UseJourneyOptions) {
       executeEffects(result.effects)
     }
   }, [executeEffects])
+
+  // --- Amenity data helpers (compute data for rich actions dispatched to reducer) ---
+
+  /** Build the lightweight AmenityRef[] the reducer needs from the full Amenity[] */
+  const amenityRefs: AmenityRef[] = amenities.map((a) => ({ id: a.id, name: a.name, scene: a.scene }))
+
+  /** Get visited amenity names from GuestIntelligence */
+  const getVisitedAmenityNames = useCallback(
+    () => guestIntelligence.data.amenitiesExplored.map((a) => a.name),
+    [guestIntelligence.data.amenitiesExplored],
+  )
+
+  // --- Voice-driven amenity navigation (dispatches rich action to reducer) ---
+  const navigateToAmenityByName = useCallback((amenityName: string) => {
+    const match = amenities.find((a) => {
+      const n = a.name.toLowerCase()
+      const s = a.scene.toLowerCase()
+      return n.includes(amenityName) || s.includes(amenityName)
+    })
+
+    if (!match) {
+      // No match — speak directly (no state change needed)
+      interrupt()
+      repeat(`I don't think we have a ${amenityName} at this property. Would you like to see the rooms, or explore the surrounding area?`).catch(() => undefined)
+      return
+    }
+
+    // Track this amenity visit + start timer
+    trackAmenityExplored(match.name)
+    startAmenityTimer(match.name)
+
+    // Dispatch rich action — reducer handles UE5 commands, fade, speech, and state transition
+    dispatch({
+      type: "NAVIGATE_TO_AMENITY",
+      amenity: { id: match.id, name: match.name, scene: match.scene },
+      narrative: buildAmenityNarrative(match.name, match.scene),
+      visitedAmenities: getVisitedAmenityNames(),
+      allAmenities: amenityRefs,
+    })
+  }, [amenities, amenityRefs, trackAmenityExplored, startAmenityTimer, getVisitedAmenityNames, interrupt, repeat, dispatch])
+
+  /** Dispatch LIST_AMENITIES action with pre-computed hotel data */
+  const dispatchListAmenities = useCallback(() => {
+    const recommended = getRecommendedAmenity(amenities, profile.travelPurpose)
+    dispatch({
+      type: "LIST_AMENITIES",
+      visitedAmenities: getVisitedAmenityNames(),
+      allAmenities: amenityRefs,
+      travelPurpose: profile.travelPurpose,
+      recommendedAmenityName: recommended?.name,
+    })
+  }, [amenities, amenityRefs, profile.travelPurpose, getVisitedAmenityNames, dispatch])
 
   // --- Idle detection (re-engagement) ---
   const handleIdle = useCallback(() => {
@@ -388,11 +326,7 @@ export function useJourney(options: UseJourneyOptions) {
     }
 
     const intent = classifyIntent(latestMessage)
-
-    // Clear suggested amenity on any non-affirmative intent (prevents stale suggestions)
-    if (intent.type !== "AFFIRMATIVE") {
-      suggestedAmenityRef.current = null
-    }
+    const currentState = stateRef.current
 
     // --- Exploration timer management ---
     // Start room timer when user begins interior/exterior exploration
@@ -410,45 +344,37 @@ export function useJourney(options: UseJourneyOptions) {
       stopExplorationTimer()
     }
 
-    // --- Intercept amenity intents (need hotel data, not available in pure reducer) ---
-    // OTHER_OPTIONS in AMENITY_VIEWING also means "show other amenities"
+    // --- Intercept amenity intents (need hotel data → dispatch rich actions) ---
+
+    // "amenities" or "other options" while viewing → list amenities via reducer
     if (intent.type === "AMENITIES" || (intent.type === "OTHER_OPTIONS" && stage === "AMENITY_VIEWING")) {
       stopExplorationTimer()
-      listAmenities()
-      // Still dispatch to reducer so it updates state (it returns empty effects)
-      dispatch({ type: "USER_INTENT", intent })
+      dispatchListAmenities()
       return
     }
 
-    // Bare "yes" after amenity suggestion → navigate to the suggested amenity
-    if (intent.type === "AFFIRMATIVE" && suggestedAmenityRef.current) {
-      const amenityName = suggestedAmenityRef.current
-      suggestedAmenityRef.current = null
-      navigateToAmenityByName(amenityName)
-      dispatch({ type: "USER_INTENT", intent })
+    // Specific amenity by name → navigate via reducer
+    if (intent.type === "AMENITY_BY_NAME") {
+      navigateToAmenityByName(intent.amenityName)
       return
     }
 
-    // Bare "yes" when last proposal was amenities → list amenities (needs hotel data)
-    if (intent.type === "AFFIRMATIVE" && stage === "HOTEL_EXPLORATION") {
-      const currentState = stateRef.current
-      if (currentState.stage === "HOTEL_EXPLORATION" && currentState.lastProposal === "amenities") {
-        stopExplorationTimer()
-        listAmenities()
-        dispatch({ type: "USER_INTENT", intent })
+    // Bare "yes" → resolve against suggested amenity in state
+    if (intent.type === "AFFIRMATIVE") {
+      // Check AMENITY_VIEWING suggestedNext
+      if (currentState.stage === "AMENITY_VIEWING" && currentState.suggestedNext) {
+        navigateToAmenityByName(currentState.suggestedNext)
+        return
+      }
+      // Check HOTEL_EXPLORATION suggestedAmenityName
+      if (currentState.stage === "HOTEL_EXPLORATION" && currentState.suggestedAmenityName) {
+        navigateToAmenityByName(currentState.suggestedAmenityName)
         return
       }
     }
 
-    if (intent.type === "AMENITY_BY_NAME") {
-      navigateToAmenityByName(intent.amenityName)
-      // Dispatch to reducer for state tracking
-      dispatch({ type: "USER_INTENT", intent })
-      return
-    }
-
     dispatch({ type: "USER_INTENT", intent })
-  }, [userMessages, dispatch, trackQuestion, trackRequirement, listAmenities, navigateToAmenityByName, startRoomTimer, stopExplorationTimer, updateProfile, rooms, interrupt, repeat, onOpenPanel])
+  }, [userMessages, dispatch, trackQuestion, trackRequirement, dispatchListAmenities, navigateToAmenityByName, startRoomTimer, stopExplorationTimer])
 
   // --- Announce destination overlay when stage transitions ---
   useEffect(() => {
@@ -509,6 +435,8 @@ export function useJourney(options: UseJourneyOptions) {
       name: event.name,
       scene: event.scene,
       amenityId: event.amenityId,
+      visitedAmenities: getVisitedAmenityNames(),
+      allAmenities: amenityRefs,
     })
   })
 

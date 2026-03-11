@@ -43,11 +43,8 @@ const HOTEL_EXPLORATION_PANEL_PROMPTS = [
   "Take your time looking — and let me know if you have any questions about what you see.",
 ]
 
-const AMENITY_VIEWING_PROMPTS = [
-  "This space is lovely, isn't it? Would you like to explore another area, or shall we look at rooms?",
-  "Is there anything specific you'd like to know about this space? Or shall we continue the tour?",
-  "I can also show you how this area looks at different times of day. Or we can move on to the rooms — up to you.",
-]
+// Amenity viewing prompts are now generated dynamically using state context
+// (see getReengagePrompt below)
 
 const ROOM_SELECTED_PROMPTS = [
   "Would you like to see the room from a different angle, or shall I tell you more about what's included?",
@@ -77,8 +74,24 @@ export function getReengagePrompt(state: JourneyState): string {
     case "HOTEL_EXPLORATION":
       if (state.subState === "panel_open") return pick(HOTEL_EXPLORATION_PANEL_PROMPTS)
       return pick(HOTEL_EXPLORATION_AWAITING_PROMPTS)
-    case "AMENITY_VIEWING":
-      return pick(AMENITY_VIEWING_PROMPTS)
+    case "AMENITY_VIEWING": {
+      const { currentAmenity, suggestedNext } = state
+      const name = currentAmenity.name
+      if (suggestedNext) {
+        const options = [
+          `Take your time exploring the ${name}. When you're ready, I can show you the ${suggestedNext}.`,
+          `The ${name} is quite something, isn't it? Would you like to head to the ${suggestedNext} next, or check out the rooms?`,
+          `Enjoying the ${name}? I can also take you to the ${suggestedNext}, or we can look at rooms whenever you're ready.`,
+        ]
+        return pick(options)
+      }
+      const options = [
+        `You've seen all the amenity spaces! Would you like to look at the rooms, or explore the surrounding area?`,
+        `That's the last of the amenity spaces. Shall we check out the rooms next?`,
+        `The ${name} is the last stop on the amenity tour. Ready to look at rooms, or shall we explore the area?`,
+      ]
+      return pick(options)
+    }
     case "ROOM_SELECTED":
       return pick(ROOM_SELECTED_PROMPTS)
   }

@@ -9,13 +9,22 @@ import type { AvatarDerivedProfile } from "@/lib/liveavatar/useUserProfile"
 /** Tracks what the avatar last proposed, so a bare "yes" can be resolved contextually */
 export type LastProposal = "rooms" | "amenities" | "location" | "book" | "interior_or_exterior"
 
+/** Lightweight amenity reference carried in state and actions */
+export type AmenityRef = { id: string; name: string; scene: string }
+
 export type JourneyState =
   | { stage: "PROFILE_COLLECTION"; awaiting: "dates_and_guests" | "dates" | "guests" | "travel_purpose" | "interests" | "extracting" | "ready" }
   | { stage: "DESTINATION_SELECT" }
   | { stage: "VIRTUAL_LOUNGE"; subState: "asking" | "exploring" }
-  | { stage: "HOTEL_EXPLORATION"; subState: "announcing" | "awaiting_intent" | "panel_open"; lastProposal?: LastProposal }
+  | { stage: "HOTEL_EXPLORATION"; subState: "announcing" | "awaiting_intent" | "panel_open"; lastProposal?: LastProposal; suggestedAmenityName?: string }
   | { stage: "ROOM_SELECTED"; awaiting: "view_choice"; lastProposal?: LastProposal }
-  | { stage: "AMENITY_VIEWING" }
+  | {
+      stage: "AMENITY_VIEWING"
+      currentAmenity: AmenityRef
+      visitedAmenities: string[]
+      suggestedNext?: string
+      allAmenities: AmenityRef[]
+    }
 
 // ---------------------------------------------------------------------------
 // Actions dispatched into the journey reducer
@@ -29,8 +38,22 @@ export type JourneyAction =
   | { type: "USER_INTENT"; intent: UserIntent }
   | { type: "ROOM_CARD_TAPPED"; roomName: string; occupancy: string; roomId: string }
   | { type: "UNIT_SELECTED_UE5"; roomName: string }
-  | { type: "AMENITY_CARD_TAPPED"; name: string; scene: string; amenityId: string }
+  | { type: "AMENITY_CARD_TAPPED"; name: string; scene: string; amenityId: string; visitedAmenities: string[]; allAmenities: AmenityRef[] }
   | { type: "IDLE_TIMEOUT" }
+  | {
+      type: "NAVIGATE_TO_AMENITY"
+      amenity: AmenityRef
+      narrative: string
+      visitedAmenities: string[]
+      allAmenities: AmenityRef[]
+    }
+  | {
+      type: "LIST_AMENITIES"
+      visitedAmenities: string[]
+      allAmenities: AmenityRef[]
+      travelPurpose?: string
+      recommendedAmenityName?: string
+    }
 
 // ---------------------------------------------------------------------------
 // Effects produced by the reducer — executed by useJourney
