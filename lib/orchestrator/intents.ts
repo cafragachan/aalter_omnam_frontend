@@ -19,6 +19,7 @@ export type UserIntent =
   | { type: "AFFIRMATIVE" }
   | { type: "NEGATIVE" }
   | { type: "TRAVEL_TO_HOTEL" }
+  | { type: "OTHER_OPTIONS" }
   | { type: "UNKNOWN" }
 
 const DOWNLOAD_DATA_RE = /\bdownload\s+user\s+data\b/
@@ -33,6 +34,7 @@ const LOCATION_RE = /\b(location|surrounding|surroundings|area|neighbou?rhood|ou
 const INTERIOR_RE = /\b(interior|inside|indoor|in)\b/
 const EXTERIOR_RE = /\b(exterior|outside|outdoor|out|view)\b/
 const BACK_RE = /\b(back|return|cancel|nevermind|never mind|go back)\b/
+const OTHER_OPTIONS_RE = /\b(other\s+options|something\s+else|explore\s+(?:other|more)|see\s+(?:other|more)|different\s+option|alternatives|what\s+else|other\s+choices|more\s+options)\b/i
 const HOTEL_EXPLORE_RE =
   /(?:\b(explore|tour|see|show|walk around|look around|view)\b.*\bhotel\b|\bhotel\b.*\b(explore|tour|see|show|walk around|look around|view)\b|\bhotel view\b)/
 
@@ -40,8 +42,9 @@ const HOTEL_EXPLORE_RE =
  * Classify a user utterance into a navigation / action intent.
  *
  * Priority order (highest → lowest):
- *   DOWNLOAD_DATA > BACK > INTERIOR / EXTERIOR > HOTEL_EXPLORE >
- *   AMENITY_BY_NAME > AMENITIES (generic) > ROOMS / LOCATION
+ *   DOWNLOAD_DATA > BACK > TRAVEL_TO_HOTEL > BOOK > INTERIOR / EXTERIOR >
+ *   HOTEL_EXPLORE > AMENITY_BY_NAME > AMENITIES (generic) > ROOMS / LOCATION >
+ *   OTHER_OPTIONS > AFFIRMATIVE / NEGATIVE
  */
 export function classifyIntent(message: string): UserIntent {
   const lower = message.toLowerCase()
@@ -93,6 +96,9 @@ export function classifyIntent(message: string): UserIntent {
   if (amenityNameMatch) {
     return { type: "AMENITY_BY_NAME", amenityName: amenityNameMatch[1] }
   }
+
+  // --- "other options" / "something else" → context-dependent, resolved by journey machine ---
+  if (OTHER_OPTIONS_RE.test(lower)) return { type: "OTHER_OPTIONS" }
 
   // --- affirmative / negative (low priority, mainly used by VIRTUAL_LOUNGE) ---
   if (AFFIRMATIVE_RE.test(lower)) return { type: "AFFIRMATIVE" }

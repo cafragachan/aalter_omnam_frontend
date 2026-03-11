@@ -262,6 +262,11 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           effects.push({ type: "OPEN_PANEL", panel: "rooms" })
           return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
 
+        case "OTHER_OPTIONS":
+          effects.push({ type: "SPEAK", text: "Let me pull up the available rooms." })
+          effects.push({ type: "OPEN_PANEL", panel: "rooms" })
+          return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
+
         case "BACK":
         case "HOTEL_EXPLORE":
           effects.push({ type: "RESET_TO_DEFAULT" })
@@ -359,6 +364,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           effects.push({ type: "FADE_TRANSITION" })
           return { nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" }, effects }
 
+        case "OTHER_OPTIONS":
         case "ROOMS":
           effects.push({ type: "SPEAK", text: "Sure, let me show you the other available rooms." })
           effects.push({ type: "RESET_TO_DEFAULT" })
@@ -430,7 +436,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
         effects.push({ type: "OPEN_PANEL", panel: "rooms" })
         return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
       }
-      if (intent.type === "AMENITIES") {
+      if (intent.type === "OTHER_OPTIONS" || intent.type === "AMENITIES") {
         // Handled in useJourney — lists amenities by name via voice
         return { nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" }, effects: [] }
       }

@@ -387,7 +387,8 @@ export function useJourney(options: UseJourneyOptions) {
     }
 
     // --- Intercept amenity intents (need hotel data, not available in pure reducer) ---
-    if (intent.type === "AMENITIES") {
+    // OTHER_OPTIONS in AMENITY_VIEWING also means "show other amenities"
+    if (intent.type === "AMENITIES" || (intent.type === "OTHER_OPTIONS" && stage === "AMENITY_VIEWING")) {
       stopExplorationTimer()
       listAmenities()
       // Still dispatch to reducer so it updates state (it returns empty effects)
