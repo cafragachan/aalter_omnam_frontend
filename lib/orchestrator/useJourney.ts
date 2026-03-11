@@ -102,6 +102,21 @@ export function useJourney(options: UseJourneyOptions) {
     URL.revokeObjectURL(url)
   }, [profile, derivedProfile, guestIntelligence, journeyStage, userMessages])
 
+  // --- Delayed speak: waits for HeyGen's AI to respond, then overrides it ---
+  // HeyGen's AI generates its own response ~1-2s after transcription.
+  // If we interrupt+repeat immediately, HeyGen's AI overwrites us.
+  // By delaying, we let HeyGen speak first, then interrupt and take over.
+  const HEYGEN_AI_DELAY = 2500
+  const delayedSpeakRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const speakAfterAI = useCallback((text: string) => {
+    if (delayedSpeakRef.current) clearTimeout(delayedSpeakRef.current)
+    delayedSpeakRef.current = setTimeout(() => {
+      interrupt()
+      repeat(text).catch(() => undefined)
+    }, HEYGEN_AI_DELAY)
+  }, [interrupt, repeat])
+
   // --- Voice-driven amenity navigation ---
   const navigateToAmenityByName = useCallback((amenityName: string) => {
     const match = amenities.find((a) => {
@@ -111,8 +126,7 @@ export function useJourney(options: UseJourneyOptions) {
     })
 
     if (!match) {
-      interrupt()
-      repeat(`I don't think we have a ${amenityName} at this property. Would you like to see the rooms, or explore the surrounding area?`).catch(() => undefined)
+      speakAfterAI(`I don't think we have a ${amenityName} at this property. Would you like to see the rooms, or explore the surrounding area?`)
       return
     }
 
@@ -120,22 +134,22 @@ export function useJourney(options: UseJourneyOptions) {
     trackAmenityExplored(match.name)
     startAmenityTimer(match.name)
 
-    // Navigate UE5 + fade + speak narrative
+    // Navigate UE5 + fade (these are immediate — no race condition with HeyGen)
     const narrative = buildAmenityNarrative(match.name, match.scene)
     onClosePanels()
     onUE5Command("communal", match.id)
     onFadeTransition()
-    interrupt()
-    repeat(`Let me take you to the ${match.name} — ${narrative}`).catch(() => undefined)
+
+    // Delay speech to override HeyGen's AI response
+    speakAfterAI(`Let me take you to the ${match.name} — ${narrative}`)
 
     // Update state to AMENITY_VIEWING
     stateRef.current = { stage: "AMENITY_VIEWING" }
-  }, [amenities, trackAmenityExplored, onClosePanels, onUE5Command, onFadeTransition, interrupt, repeat])
+  }, [amenities, trackAmenityExplored, onClosePanels, onUE5Command, onFadeTransition, speakAfterAI])
 
   const listAmenities = useCallback(() => {
     if (amenities.length === 0) {
-      interrupt()
-      repeat("This property doesn't have any specific amenity spaces to tour right now. Shall we look at the rooms instead?").catch(() => undefined)
+      speakAfterAI("This property doesn't have any specific amenity spaces to tour right now. Shall we look at the rooms instead?")
       return
     }
 
@@ -147,8 +161,7 @@ export function useJourney(options: UseJourneyOptions) {
     // All visited — let the user know
     if (remaining.length === 0) {
       const visitedText = visited.map((a) => `the ${a.name.toLowerCase()}`).join(", ")
-      interrupt()
-      repeat(`You've already explored ${visitedText}. Would you like to revisit any of them, or shall we look at the rooms instead?`).catch(() => undefined)
+      speakAfterAI(`You've already explored ${visitedText}. Would you like to revisit any of them, or shall we look at the rooms instead?`)
       return
     }
 
@@ -158,8 +171,7 @@ export function useJourney(options: UseJourneyOptions) {
       const remainingText = remaining.length === 1
         ? `the ${remaining[0].name.toLowerCase()}`
         : remaining.map((a) => `the ${a.name.toLowerCase()}`).join(" and ")
-      interrupt()
-      repeat(`We've already visited ${visitedText}. Would you like to see ${remainingText} now?`).catch(() => undefined)
+      speakAfterAI(`We've already visited ${visitedText}. Would you like to see ${remainingText} now?`)
       return
     }
 
@@ -182,20 +194,18 @@ export function useJourney(options: UseJourneyOptions) {
         ? `a ${others[0].name.toLowerCase()}`
         : others.map((a) => `a ${a.name.toLowerCase()}`).join(" and ")
 
-      interrupt()
-      repeat(
+      speakAfterAI(
         `Since you're here ${narrative}, I'd suggest starting with the ${recommended.name.toLowerCase()}. We also have ${othersText} that I can take you to. Where shall we begin?`,
-      ).catch(() => undefined)
+      )
     } else {
       const names = amenities.map((a) => a.name)
       const listText = names.length === 1
         ? `a ${names[0].toLowerCase()}`
         : names.slice(0, -1).map((n) => `a ${n.toLowerCase()}`).join(", ") + ` and a ${names[names.length - 1].toLowerCase()}`
 
-      interrupt()
-      repeat(`This property has ${listText}. Which would you like to visit?`).catch(() => undefined)
+      speakAfterAI(`This property has ${listText}. Which would you like to visit?`)
     }
-  }, [amenities, interrupt, repeat, profile.travelPurpose, guestIntelligence.data.amenitiesExplored])
+  }, [amenities, speakAfterAI, profile.travelPurpose, guestIntelligence.data.amenitiesExplored])
 
   // --- Effect executor ---
   const executeEffects = useCallback((effects: JourneyEffect[]) => {
