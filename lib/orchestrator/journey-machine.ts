@@ -179,17 +179,15 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           return { nextState: { stage: "VIRTUAL_LOUNGE", subState: "exploring" }, effects }
         }
 
-        // User said no or wants to go to hotel → travel immediately
-        if (intent.type === "NEGATIVE" || intent.type === "TRAVEL_TO_HOTEL") {
-          effects.push({ type: "SET_JOURNEY_STAGE", stage: "HOTEL_EXPLORATION" })
-          effects.push({ type: "UE5_COMMAND", command: "startTEST", value: "startTEST" })
-          effects.push({ type: "FADE_TRANSITION" })
-          effects.push({
-            type: "SPEAK",
-            text: "Let me take you to the hotel. You can explore available rooms, check out the amenities, or wander the surrounding area. What would you like to see first?",
-          })
-          return { nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" }, effects }
-        }
+        // Anything else → go to the hotel (the only alternative to "yes")
+        effects.push({ type: "SET_JOURNEY_STAGE", stage: "HOTEL_EXPLORATION" })
+        effects.push({ type: "UE5_COMMAND", command: "startTEST", value: "startTEST" })
+        effects.push({ type: "FADE_TRANSITION" })
+        effects.push({
+          type: "SPEAK",
+          text: "Let me take you to the hotel. You can explore available rooms, check out the amenities, or wander the surrounding area. What would you like to see first?",
+        })
+        return { nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" }, effects }
       }
 
       if (state.subState === "exploring") {
