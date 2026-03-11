@@ -10,24 +10,13 @@ import { DestinationsOverlay } from "@/components/panels/DestinationsOverlay"
 import { RoomsPanel } from "@/components/panels/RoomsPanel"
 // AmenitiesPanel removed — amenity navigation is now voice-driven
 import { UnitDetailPanel } from "@/components/panels/UnitDetailPanel"
-import { useUserProfileContext, type JourneyStage } from "@/lib/context"
+import { useUserProfileContext } from "@/lib/context"
 import { useApp } from "@/lib/store"
 import { useEmit } from "@/lib/events"
 import { useJourney } from "@/lib/orchestrator"
 import { useUE5Bridge } from "@/lib/ue5/bridge"
 import { hotels, getHotelBySlug, getRoomsByHotelId, getAmenitiesByHotelId, getRecommendedRoomId } from "@/lib/hotel-data"
 import type { Room } from "@/lib/hotel-data"
-
-// ---------------------------------------------------------------------------
-// Stage labels for the journey status badge
-// ---------------------------------------------------------------------------
-
-const stageLabels: Record<JourneyStage, string> = {
-  PROFILE_COLLECTION: "Profile",
-  DESTINATION_SELECT: "Destinations",
-  VIRTUAL_LOUNGE: "Virtual Lounge",
-  HOTEL_EXPLORATION: "Hotel Exploration",
-}
 
 // ---------------------------------------------------------------------------
 // HomePage — fetches session token, then renders content inside provider
@@ -286,22 +275,8 @@ function HomePageContent() {
       {/* Unit detail panel */}
       <UnitDetailPanel unit={ue5.selectedUnit} />
 
-      {/* HUD: journey status + connection indicator */}
       <div className="pointer-events-none relative z-10 flex min-h-screen flex-col justify-between px-6 pb-10 pt-12 sm:px-10">
-        <div className="flex items-start justify-between text-white/80">
-          <div className="flex items-center gap-3">
-            <div className="rounded-full border border-white/15 bg-white/10 px-4 py-2 text-xs uppercase tracking-[0.2em]">
-              Journey: {stageLabels[journeyStage]}
-            </div>
-            <div
-              className={`h-2 w-2 rounded-full ${ue5.isConnected ? "bg-green-400" : "bg-red-400"}`}
-              title={ue5.isConnected ? "UE5 Connected" : "UE5 Disconnected"}
-            />
-          </div>
-          {journeyStage === "PROFILE_COLLECTION" && (
-            <div className="text-xs text-white/70">Share your travel details to see destinations</div>
-          )}
-        </div>
+        <div />
 
         {/* Avatar panel */}
         <div className="mt-auto grid gap-6 md:grid-cols-[420px,1fr] md:items-end">
@@ -319,11 +294,13 @@ function HomePageContent() {
         </div>
       </div>
 
-      {/* Debug HUD + Profile Sync (floating) */}
-      <div className="fixed top-4 right-4 z-30 space-y-3 pointer-events-none">
-        <DebugHud />
-        <ProfileSync />
-      </div>
+      {/* Debug HUD + Profile Sync (floating, local dev only) */}
+      {streamMode === "local" && (
+        <div className="fixed top-4 right-4 z-30 space-y-3 pointer-events-none">
+          <DebugHud />
+          <ProfileSync />
+        </div>
+      )}
 
       {/* Destinations overlay */}
       <DestinationsOverlay
