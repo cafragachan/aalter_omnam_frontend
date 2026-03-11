@@ -108,6 +108,8 @@ export function useJourney(options: UseJourneyOptions) {
   // By delaying, we let HeyGen speak first, then interrupt and take over.
   const HEYGEN_AI_DELAY = 2500
   const delayedSpeakRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Tracks the amenity suggested by listAmenities(), so a bare "yes" navigates there
+  const suggestedAmenityRef = useRef<string | null>(null)
 
   const speakAfterAI = useCallback((text: string) => {
     if (delayedSpeakRef.current) clearTimeout(delayedSpeakRef.current)
@@ -149,6 +151,7 @@ export function useJourney(options: UseJourneyOptions) {
 
   const listAmenities = useCallback(() => {
     if (amenities.length === 0) {
+      suggestedAmenityRef.current = null
       speakAfterAI("This property doesn't have any specific amenity spaces to tour right now. Shall we look at the rooms instead?")
       return
     }
@@ -160,6 +163,7 @@ export function useJourney(options: UseJourneyOptions) {
 
     // All visited — let the user know
     if (remaining.length === 0) {
+      suggestedAmenityRef.current = null
       const visitedText = visited.map((a) => `the ${a.name.toLowerCase()}`).join(", ")
       speakAfterAI(`You've already explored ${visitedText}. Would you like to revisit any of them, or shall we look at the rooms instead?`)
       return
@@ -167,6 +171,8 @@ export function useJourney(options: UseJourneyOptions) {
 
     // Some visited — mention visited, offer remaining
     if (visited.length > 0) {
+      // Suggest the first remaining amenity (the one mentioned first)
+      suggestedAmenityRef.current = remaining[0].name.toLowerCase()
       const visitedText = visited.map((a) => `the ${a.name.toLowerCase()}`).join(" and ")
       const remainingText = remaining.length === 1
         ? `the ${remaining[0].name.toLowerCase()}`
@@ -179,6 +185,7 @@ export function useJourney(options: UseJourneyOptions) {
     const recommended = getRecommendedAmenity(amenities, profile.travelPurpose)
 
     if (recommended) {
+      suggestedAmenityRef.current = recommended.name.toLowerCase()
       const purposeNarrative: Record<string, string> = {
         business: "on business",
         leisure: "to unwind",
@@ -198,6 +205,8 @@ export function useJourney(options: UseJourneyOptions) {
         `Since you're here ${narrative}, I'd suggest starting with the ${recommended.name.toLowerCase()}. We also have ${othersText} that I can take you to. Where shall we begin?`,
       )
     } else {
+      // No recommendation — suggest the first amenity in the list
+      suggestedAmenityRef.current = amenities[0].name.toLowerCase()
       const names = amenities.map((a) => a.name)
       const listText = names.length === 1
         ? `a ${names[0].toLowerCase()}`
@@ -380,6 +389,11 @@ export function useJourney(options: UseJourneyOptions) {
 
     const intent = classifyIntent(latestMessage)
 
+    // Clear suggested amenity on any non-affirmative intent (prevents stale suggestions)
+    if (intent.type !== "AFFIRMATIVE") {
+      suggestedAmenityRef.current = null
+    }
+
     // --- Exploration timer management ---
     // Start room timer when user begins interior/exterior exploration
     if (stage === "ROOM_SELECTED" && (intent.type === "INTERIOR" || intent.type === "EXTERIOR")) {
@@ -402,6 +416,15 @@ export function useJourney(options: UseJourneyOptions) {
       stopExplorationTimer()
       listAmenities()
       // Still dispatch to reducer so it updates state (it returns empty effects)
+      dispatch({ type: "USER_INTENT", intent })
+      return
+    }
+
+    // Bare "yes" after amenity suggestion → navigate to the suggested amenity
+    if (intent.type === "AFFIRMATIVE" && suggestedAmenityRef.current) {
+      const amenityName = suggestedAmenityRef.current
+      suggestedAmenityRef.current = null
+      navigateToAmenityByName(amenityName)
       dispatch({ type: "USER_INTENT", intent })
       return
     }
