@@ -634,16 +634,51 @@ function HomePageContent() {
   const showDestinationsOverlay = journeyStage === "DESTINATION_SELECT"
 
   // -----------------------------------------------------------------------
-  // Render
+  // Render — panels are rendered outside the pointer-events-none wrapper
+  // so they sit as siblings of the iframe and receive events properly.
   // -----------------------------------------------------------------------
   return (
-    <div className="pointer-events-none relative min-h-screen w-full overflow-hidden">
-      {/* Fade overlay for scene transitions */}
-      {ue5.showFadeOverlay && (
-        <div
-          className={`pointer-events-none absolute inset-0 z-[5] bg-black transition-opacity duration-1000 ease-linear ${ue5.isFadeOpaque ? "opacity-100" : "opacity-0"}`}
-        />
-      )}
+    <>
+      <div className="pointer-events-none relative min-h-screen w-full overflow-hidden">
+        {/* Fade overlay for scene transitions */}
+        {ue5.showFadeOverlay && (
+          <div
+            className={`pointer-events-none absolute inset-0 z-[5] bg-black transition-opacity duration-1000 ease-linear ${ue5.isFadeOpaque ? "opacity-100" : "opacity-0"}`}
+          />
+        )}
+
+        {/* Unit detail panel */}
+        <UnitDetailPanel unit={ue5.selectedUnit} />
+
+        <div className="pointer-events-none relative z-10 flex min-h-screen flex-col justify-between px-6 pb-10 pt-12 sm:px-10">
+          <div />
+
+          {/* Avatar panel */}
+          <div className="mt-auto grid gap-6 md:grid-cols-[210px,1fr] md:items-end">
+            <div className="pointer-events-auto w-full max-w-[230px]">
+              <div
+                className="relative overflow-hidden rounded-xl border border-white/10 bg-black shadow-2xl"
+                style={{ aspectRatio: "1 / 1.25" }}
+              >
+                <div className="relative w-full h-full">
+                  <SandboxSessionPlayer fit="cover" />
+                </div>
+                <MicToggle />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Debug HUD + Profile Sync (floating, local dev only) */}
+        {streamMode === "local" && (
+          <div className="fixed top-4 right-4 z-30 space-y-3 pointer-events-none">
+            <DebugHud />
+            <ProfileSync />
+          </div>
+        )}
+      </div>
+
+      {/* --- Panels rendered outside the wrapper, as siblings of the iframe --- */}
 
       {/* Sun toggle (only during hotel exploration) */}
       {selectedHotel && journeyStage === "HOTEL_EXPLORATION" && (
@@ -652,36 +687,6 @@ function HomePageContent() {
           onChange={handleSunStateChange}
           className="pointer-events-auto fixed left-1/2 top-1 z-20 -translate-x-1/2"
         />
-      )}
-
-      {/* Unit detail panel */}
-      <UnitDetailPanel unit={ue5.selectedUnit} />
-
-      <div className="pointer-events-none relative z-10 flex min-h-screen flex-col justify-between px-6 pb-10 pt-12 sm:px-10">
-        <div />
-
-        {/* Avatar panel */}
-        <div className="mt-auto grid gap-6 md:grid-cols-[210px,1fr] md:items-end">
-          <div className="pointer-events-auto w-full max-w-[230px]">
-            <div
-              className="relative overflow-hidden rounded-xl border border-white/10 bg-black shadow-2xl"
-              style={{ aspectRatio: "1 / 1.25" }}
-            >
-              <div className="relative w-full h-full">
-                <SandboxSessionPlayer fit="cover" />
-              </div>
-              <MicToggle />
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Debug HUD + Profile Sync (floating, local dev only) */}
-      {streamMode === "local" && (
-        <div className="fixed top-4 right-4 z-30 space-y-3 pointer-events-none">
-          <DebugHud />
-          <ProfileSync />
-        </div>
       )}
 
       {/* Destinations overlay */}
@@ -700,8 +705,6 @@ function HomePageContent() {
         onClose={closeRoomsPanel}
         recommendedRoomId={recommendedRoomId}
       />
-
-      {/* Amenities are now voice-driven — no panel */}
-    </div>
+    </>
   )
 }
