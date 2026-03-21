@@ -20,7 +20,7 @@ export function UnitDetailPanel({ unit }: UnitDetailPanelProps) {
   if (!unit) return null
 
   return (
-    <div className="pointer-events-none fixed right-4 top-1/2 z-20 -translate-y-1/2">
+    <div className="fixed right-4 top-1/2 z-20 -translate-y-1/2">
       <GlassPanel className="pointer-events-auto w-[180px] space-y-2 border border-white/15 bg-white/12 px-3.5 py-3 text-white shadow-2xl shadow-black/40 backdrop-blur-2xl">
         <div className="flex items-center justify-between">
           <div className="text-[9px] font-semibold uppercase tracking-[0.2em] text-white/70">Unit Selected</div>

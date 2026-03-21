@@ -1,5 +1,6 @@
 "use client"
 
+import type React from "react"
 import { ArrowLeft, MapPin, X } from "lucide-react"
 import { GlassPanel } from "@/components/glass-panel"
 import { Button } from "@/components/ui/button"
@@ -16,8 +17,9 @@ export function DestinationsOverlay({ visible, onSelectHotel, onClose }: Destina
   if (!visible) return null
 
   return (
-    <div className="fixed inset-0 z-20 flex items-center justify-center px-4 py-10 pointer-events-none">
-      <GlassPanel className="relative z-10 w-full max-w-2xl space-y-3 px-4 py-5 pointer-events-auto">
+    <div className="pointer-events-auto fixed inset-0 z-20 flex items-center justify-center px-4 py-10 bg-black/40" onClick={onClose}>
+      <div className="relative z-10 w-full max-w-2xl" onClick={(e: React.MouseEvent) => e.stopPropagation()}>
+      <GlassPanel className="w-full space-y-3 px-4 py-5 pointer-events-auto">
         <div className="flex items-center gap-2">
           <Button
             variant="ghost"
@@ -81,6 +83,7 @@ export function DestinationsOverlay({ visible, onSelectHotel, onClose }: Destina
           ))}
         </div>
       </GlassPanel>
+      </div>
     </div>
   )
 }

@@ -20,7 +20,7 @@ export function RoomsPanel({ visible, hotelName, rooms, onSelectRoom, onClose, r
 
   return (
     <div
-      className="fixed inset-0 z-30 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+      className="pointer-events-auto fixed inset-0 z-30 flex items-center justify-center bg-black/60 backdrop-blur-sm"
       onClick={onClose}
     >
       <div className="w-full max-w-3xl px-4" onClick={(event) => event.stopPropagation()}>
