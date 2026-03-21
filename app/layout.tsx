@@ -1,6 +1,6 @@
 import type React from "react"
 import type { Metadata } from "next"
-import { JetBrains_Mono, Manrope } from "next/font/google"
+import { JetBrains_Mono, Manrope, Open_Sans } from "next/font/google"
 import Script from "next/script"
 import "./globals.css"
 import { AppProvider } from "@/lib/store"
@@ -11,6 +11,7 @@ import { GuestIntelligenceProvider } from "@/lib/guest-intelligence"
 
 const manrope = Manrope({ subsets: ["latin"], variable: "--font-sans-custom" })
 const jetbrainsMono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-mono-custom" })
+const openSans = Open_Sans({ subsets: ["latin"], weight: "500", variable: "--font-open-sans" })
 
 export const metadata: Metadata = {
   title: "Omnam Metaverse",
@@ -45,7 +46,7 @@ export default function RootLayout({
       <head>
         <Script src="https://app.vagon.io/vagonsdk.js" strategy="beforeInteractive" />
       </head>
-      <body className={`${manrope.variable} ${jetbrainsMono.variable} font-sans antialiased`}>
+      <body className={`${manrope.variable} ${jetbrainsMono.variable} ${openSans.variable} font-sans antialiased`}>
         <UserProfileProvider>
           <AppProvider>
             <EventBusProvider>

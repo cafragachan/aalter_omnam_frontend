@@ -279,10 +279,10 @@ function HomePageContent() {
         <div />
 
         {/* Avatar panel */}
-        <div className="mt-auto grid gap-6 md:grid-cols-[420px,1fr] md:items-end">
-          <div className="pointer-events-auto w-full max-w-[460px]">
+        <div className="mt-auto grid gap-6 md:grid-cols-[210px,1fr] md:items-end">
+          <div className="pointer-events-auto w-full max-w-[230px]">
             <div
-              className="relative overflow-hidden rounded-2xl border border-white/10 bg-black/70 shadow-2xl backdrop-blur"
+              className="relative overflow-hidden rounded-xl border border-white/10 bg-black shadow-2xl"
               style={{ aspectRatio: "1 / 1.25" }}
             >
               <div className="relative w-full h-full">
