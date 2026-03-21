@@ -17,16 +17,27 @@ import { useJourney } from "@/lib/orchestrator"
 import { useUE5Bridge } from "@/lib/ue5/bridge"
 import { hotels, getHotelBySlug, getRoomsByHotelId, getAmenitiesByHotelId, getRecommendedRoomId } from "@/lib/hotel-data"
 import type { Room } from "@/lib/hotel-data"
+import { useUE5WebSocket } from "@/lib/useUE5WebSocket"
 
 // ---------------------------------------------------------------------------
 // HomePage — fetches session token, then renders content inside provider
 // ---------------------------------------------------------------------------
 
 export default function HomePage() {
+  const [ue5Ready, setUe5Ready] = useState(false)
   const [sessionToken, setSessionToken] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
+  // Lightweight UE5 listener — detect the first incoming message
+  const handleFirstUE5Message = useCallback(() => setUe5Ready(true), [])
+  useUE5WebSocket({
+    onMessage: handleFirstUE5Message,
+    onUnitSelected: handleFirstUE5Message,
+  })
+
+  // Only fetch HeyGen session token once UE5 has sent its first message
   useEffect(() => {
+    if (!ue5Ready) return
     const startSandboxSession = async () => {
       try {
         const res = await fetch("/api/start-sandbox-session", { method: "POST" })
@@ -41,27 +52,53 @@ export default function HomePage() {
       }
     }
     startSandboxSession()
-  }, [])
+  }, [ue5Ready])
 
-  // Before session token is available, show loading state
-  if (!sessionToken) {
-    return (
-      <div className="relative flex min-h-screen w-full items-center justify-center bg-black">
-        {error ? (
-          <div className="text-center text-sm text-red-300">{error}</div>
-        ) : (
-          <div className="text-white/80">Launching sandbox avatar...</div>
-        )}
-      </div>
-    )
-  }
+  // --- Stream config (lifted here so the iframe renders before the avatar) ---
+  const streamMode = process.env.NEXT_PUBLIC_STREAM_MODE || "local"
+  const streamUrl =
+    streamMode === "vagon"
+      ? process.env.NEXT_PUBLIC_VAGON_CLOUD_URL || ""
+      : process.env.NEXT_PUBLIC_VAGON_STREAM_URL || "http://127.0.0.1"
+  const hasStream = !!streamUrl && streamUrl !== "about:blank"
+  const iframeAllow =
+    streamMode === "vagon"
+      ? "microphone *; clipboard-read *; clipboard-write *; encrypted-media *; fullscreen *"
+      : "autoplay; fullscreen; clipboard-read; clipboard-write; gamepad"
 
-  // Wrap everything in LiveAvatarContextProvider so useJourney, ProfileSync,
-  // DebugHud all have access to avatar context
   return (
-    <LiveAvatarContextProvider sessionAccessToken={sessionToken}>
-      <HomePageContent />
-    </LiveAvatarContextProvider>
+    <div className="relative min-h-screen w-full bg-black overflow-hidden">
+      {/* UE5 Pixel Stream — always visible, even before avatar loads */}
+      {hasStream ? (
+        <iframe
+          id={streamMode === "vagon" ? "vagonFrame" : undefined}
+          title="Vagon UE5 Stream"
+          src={streamUrl}
+          className="absolute inset-0 h-full w-full"
+          allow={iframeAllow}
+        />
+      ) : (
+        <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-slate-900 via-black to-slate-950 text-white/70">
+          Set NEXT_PUBLIC_VAGON_STREAM_URL to render the live UE5 background here.
+        </div>
+      )}
+
+      {!sessionToken ? (
+        <div className="relative z-10 flex min-h-screen items-center justify-center">
+          {error ? (
+            <div className="text-center text-sm text-red-300">{error}</div>
+          ) : (
+            <div className="text-white/80 text-sm">
+              {ue5Ready ? "Launching avatar..." : "Waiting for UE5 stream..."}
+            </div>
+          )}
+        </div>
+      ) : (
+        <LiveAvatarContextProvider sessionAccessToken={sessionToken}>
+          <HomePageContent />
+        </LiveAvatarContextProvider>
+      )}
+    </div>
   )
 }
 
@@ -113,17 +150,8 @@ function HomePageContent() {
   // --- UE5 Bridge (WebSocket + fade transitions + unit state) ---
   const ue5 = useUE5Bridge()
 
-  // --- Stream URL (swap via NEXT_PUBLIC_STREAM_MODE: "local" | "vagon") ---
+  // --- Stream mode (for debug hud visibility) ---
   const streamMode = process.env.NEXT_PUBLIC_STREAM_MODE || "local"
-  const streamUrl =
-    streamMode === "vagon"
-      ? process.env.NEXT_PUBLIC_VAGON_CLOUD_URL || ""
-      : process.env.NEXT_PUBLIC_VAGON_STREAM_URL || "http://127.0.0.1"
-  const hasStream = !!streamUrl && streamUrl !== "about:blank"
-  const iframeAllow =
-    streamMode === "vagon"
-      ? "microphone *; clipboard-read *; clipboard-write *; encrypted-media *; fullscreen *"
-      : "autoplay; fullscreen; clipboard-read; clipboard-write; gamepad"
 
   // --- Hotel data ---
   const selectedHotelData = useMemo(
@@ -240,22 +268,7 @@ function HomePageContent() {
   // Render
   // -----------------------------------------------------------------------
   return (
-    <div className="relative min-h-screen w-full bg-black overflow-hidden">
-      {/* UE5 Pixel Stream */}
-      {hasStream ? (
-        <iframe
-          id={streamMode === "vagon" ? "vagonFrame" : undefined}
-          title="Vagon UE5 Stream"
-          src={streamUrl}
-          className="absolute inset-0 h-full w-full"
-          allow={iframeAllow}
-        />
-      ) : (
-        <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-slate-900 via-black to-slate-950 text-white/70">
-          Set NEXT_PUBLIC_VAGON_STREAM_URL to render the live UE5 background here.
-        </div>
-      )}
-
+    <div className="relative min-h-screen w-full overflow-hidden">
       {/* Fade overlay for scene transitions */}
       {ue5.showFadeOverlay && (
         <div
