@@ -2,19 +2,13 @@
 
 import { useEffect } from "react"
 import { useRouter } from "next/navigation"
-import { useApp } from "@/lib/store"
 
-export default function HomePage() {
+export default function RootPage() {
   const router = useRouter()
-  const { isAuthenticated } = useApp()
 
   useEffect(() => {
-    if (isAuthenticated) {
-      router.push("/home")
-    } else {
-      router.push("/login")
-    }
-  }, [isAuthenticated, router])
+    router.push("/home")
+  }, [router])
 
   return null
 }

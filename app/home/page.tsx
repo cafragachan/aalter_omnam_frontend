@@ -1,7 +1,9 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
-import { Mic, MicOff } from "lucide-react"
+import type React from "react"
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { Mic, MicOff, Lock, Mail, LogIn, User, Phone, Calendar } from "lucide-react"
 import { DebugHud, SandboxSessionPlayer } from "@/components/liveavatar/SandboxLiveAvatar"
 import { LiveAvatarContextProvider, useLiveAvatarContext } from "@/lib/liveavatar"
 import { SunToggle, type SunState } from "@/components/SunToggle"
@@ -18,86 +20,352 @@ import { useUE5Bridge } from "@/lib/ue5/bridge"
 import { hotels, getHotelBySlug, getRoomsByHotelId, getAmenitiesByHotelId, getRecommendedRoomId } from "@/lib/hotel-data"
 import type { Room } from "@/lib/hotel-data"
 import { useUE5WebSocket } from "@/lib/useUE5WebSocket"
+import { GlassPanel } from "@/components/glass-panel"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { useToast } from "@/hooks/use-toast"
 
 // ---------------------------------------------------------------------------
-// HomePage — fetches session token, then renders content inside provider
+// Typewriter intro constants & component
 // ---------------------------------------------------------------------------
 
-export default function HomePage() {
-  const [ue5Ready, setUe5Ready] = useState(false)
-  const [sessionToken, setSessionToken] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
+const INTRO_MESSAGES = [
+  "Welcome",
+  "Your next stay begins here",
+  "We'll tailor this experience to you",
+  "A few details will help us personalise it",
+  "Please sign in to begin",
+]
 
-  // Lightweight UE5 listener — detect the first incoming message
-  const handleFirstUE5Message = useCallback(() => setUe5Ready(true), [])
-  useUE5WebSocket({
-    onMessage: handleFirstUE5Message,
-    onUnitSelected: handleFirstUE5Message,
-  })
+const FAREWELL_MESSAGES = [
+  "Thank you",
+  "I'll take you to our virtual lounge now",
+]
 
-  // Only fetch HeyGen session token once UE5 has sent its first message
+const CHAR_INTERVAL = 120
+const HOLD_AFTER_TYPING = 1500
+const FADE_DURATION = 1
+
+type IntroPhase = "video" | "messages" | "login" | "farewell" | "done"
+
+function TypewriterText({
+  text,
+  onComplete,
+}: {
+  text: string
+  onComplete: () => void
+}) {
+  const [displayed, setDisplayed] = useState("")
+  const onCompleteRef = useRef(onComplete)
+  onCompleteRef.current = onComplete
+
   useEffect(() => {
-    if (!ue5Ready) return
-    const startSandboxSession = async () => {
-      try {
-        const res = await fetch("/api/start-sandbox-session", { method: "POST" })
-        if (!res.ok) {
-          const resp = await res.json().catch(() => ({}))
-          throw new Error(resp?.error ?? "Failed to start sandbox session")
-        }
-        const { session_token } = await res.json()
-        setSessionToken(session_token)
-      } catch (err) {
-        setError((err as Error).message)
+    setDisplayed("")
+    let i = 0
+    let timer: ReturnType<typeof setTimeout>
+    function tick() {
+      i++
+      while (i < text.length && text[i] === " ") {
+        i++
       }
+      setDisplayed(text.slice(0, i))
+      if (i >= text.length) {
+        requestAnimationFrame(() => onCompleteRef.current())
+        return
+      }
+      timer = setTimeout(tick, CHAR_INTERVAL)
     }
-    startSandboxSession()
-  }, [ue5Ready])
-
-  // --- Stream config (lifted here so the iframe renders before the avatar) ---
-  const streamMode = process.env.NEXT_PUBLIC_STREAM_MODE || "local"
-  const streamUrl =
-    streamMode === "vagon"
-      ? process.env.NEXT_PUBLIC_VAGON_CLOUD_URL || ""
-      : process.env.NEXT_PUBLIC_VAGON_STREAM_URL || "http://127.0.0.1"
-  const hasStream = !!streamUrl && streamUrl !== "about:blank"
-  const iframeAllow =
-    streamMode === "vagon"
-      ? "microphone *; clipboard-read *; clipboard-write *; encrypted-media *; fullscreen *"
-      : "autoplay; fullscreen; clipboard-read; clipboard-write; gamepad"
+    timer = setTimeout(tick, CHAR_INTERVAL)
+    return () => clearTimeout(timer)
+  }, [text])
 
   return (
-    <div className="relative min-h-screen w-full bg-black overflow-hidden">
-      {/* UE5 Pixel Stream — always visible, even before avatar loads */}
-      {hasStream ? (
-        <iframe
-          id={streamMode === "vagon" ? "vagonFrame" : undefined}
-          title="Vagon UE5 Stream"
-          src={streamUrl}
-          className="absolute inset-0 h-full w-full"
-          allow={iframeAllow}
-        />
-      ) : (
-        <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-slate-900 via-black to-slate-950 text-white/70">
-          Set NEXT_PUBLIC_VAGON_STREAM_URL to render the live UE5 background here.
+    <span
+      className="text-base tracking-wide text-white md:text-xl"
+      style={{ fontFamily: "var(--font-open-sans)" }}
+    >
+      {displayed}
+    </span>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// LoginOverlay — video + typewriter + login form, overlaid on top of UE5
+// ---------------------------------------------------------------------------
+
+function LoginOverlay({ onComplete }: { onComplete: () => void }) {
+  const [phase, setPhase] = useState<IntroPhase>("video")
+  const [messageIndex, setMessageIndex] = useState(0)
+  const [farewellIndex, setFarewellIndex] = useState(0)
+  const [messageFading, setMessageFading] = useState(false)
+  const [typing, setTyping] = useState(false)
+  const [showLogin, setShowLogin] = useState(false)
+
+  const [firstName, setFirstName] = useState("")
+  const [lastName, setLastName] = useState("")
+  const [email, setEmail] = useState("")
+  const [password, setPassword] = useState("")
+  const [phoneNumber, setPhoneNumber] = useState("")
+  const [dateOfBirth, setDateOfBirth] = useState("")
+  const { login } = useApp()
+  const { updateProfile, setJourneyStage } = useUserProfileContext()
+  const { toast } = useToast()
+
+  // Start messages phase after 1s of video
+  useEffect(() => {
+    if (phase !== "video") return
+    const timer = setTimeout(() => {
+      setPhase("messages")
+      setTyping(true)
+    }, 1000)
+    return () => clearTimeout(timer)
+  }, [phase])
+
+  const handleTypewriterComplete = useCallback(() => {
+    setTyping(false)
+    const fadeOutTimer = setTimeout(() => {
+      setMessageFading(true)
+      const nextTimer = setTimeout(() => {
+        setMessageFading(false)
+        if (phase === "messages") {
+          if (messageIndex < INTRO_MESSAGES.length - 1) {
+            setMessageIndex((prev) => prev + 1)
+            setTyping(true)
+          } else {
+            setPhase("login")
+            setTimeout(() => setShowLogin(true), 200)
+          }
+        } else if (phase === "farewell") {
+          if (farewellIndex < FAREWELL_MESSAGES.length - 1) {
+            setFarewellIndex((prev) => prev + 1)
+            setTyping(true)
+          } else {
+            setPhase("done")
+            onComplete()
+          }
+        }
+      }, FADE_DURATION)
+      return () => clearTimeout(nextTimer)
+    }, HOLD_AFTER_TYPING)
+    return () => clearTimeout(fadeOutTimer)
+  }, [messageIndex, farewellIndex, phase, onComplete])
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!firstName.trim() || !lastName.trim() || !email || !password) {
+      toast({
+        title: "Error",
+        description: "Please enter your name, surname, email, and password",
+        variant: "destructive",
+      })
+      return
+    }
+
+    try {
+      await login(email, password)
+      updateProfile({
+        firstName: firstName.trim(),
+        lastName: lastName.trim(),
+        email,
+        familySize: 1,
+        phoneNumber: phoneNumber.trim() || undefined,
+        dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : undefined,
+      })
+      setJourneyStage("PROFILE_COLLECTION")
+      // Transition to farewell messages
+      setShowLogin(false)
+      setTimeout(() => {
+        setPhase("farewell")
+        setFarewellIndex(0)
+        setTyping(true)
+      }, 400)
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: "Login failed",
+        variant: "destructive",
+      })
+    }
+  }
+
+  if (phase === "done") return null
+
+  return (
+    <div className="absolute inset-0 z-20 flex items-center justify-center p-4">
+      <video
+        autoPlay
+        muted
+        loop
+        playsInline
+        className="absolute inset-0 h-full w-full object-cover"
+        src="/videos/omanmBackground_720.mp4"
+      />
+      <div className="pointer-events-none absolute inset-0 bg-black/80" />
+
+      {/* Sequenced typewriter messages */}
+      {phase === "messages" && (
+        <div
+          className="absolute inset-0 z-10 flex items-center justify-center px-8 text-center"
+          style={{
+            opacity: messageFading ? 0 : 1,
+            transition: `opacity ${FADE_DURATION}ms ease-in-out`,
+          }}
+        >
+          {typing ? (
+            <TypewriterText
+              key={messageIndex}
+              text={INTRO_MESSAGES[messageIndex]}
+              onComplete={handleTypewriterComplete}
+            />
+          ) : (
+            <span
+              className="text-base tracking-wide text-white md:text-xl"
+              style={{ fontFamily: "var(--font-open-sans)" }}
+            >
+              {INTRO_MESSAGES[messageIndex]}
+            </span>
+          )}
         </div>
       )}
 
-      {!sessionToken ? (
-        <div className="relative z-10 flex min-h-screen items-center justify-center">
-          {error ? (
-            <div className="text-center text-sm text-red-300">{error}</div>
+      {/* Farewell typewriter messages */}
+      {phase === "farewell" && (
+        <div
+          className="absolute inset-0 z-10 flex items-center justify-center px-8 text-center"
+          style={{
+            opacity: messageFading ? 0 : 1,
+            transition: `opacity ${FADE_DURATION}ms ease-in-out`,
+          }}
+        >
+          {typing ? (
+            <TypewriterText
+              key={`farewell-${farewellIndex}`}
+              text={FAREWELL_MESSAGES[farewellIndex]}
+              onComplete={handleTypewriterComplete}
+            />
           ) : (
-            <div className="text-white/80 text-sm">
-              {ue5Ready ? "Launching avatar..." : "Waiting for UE5 stream..."}
-            </div>
+            <span
+              className="text-base tracking-wide text-white md:text-xl"
+              style={{ fontFamily: "var(--font-open-sans)" }}
+            >
+              {FAREWELL_MESSAGES[farewellIndex]}
+            </span>
           )}
         </div>
-      ) : (
-        <LiveAvatarContextProvider sessionAccessToken={sessionToken}>
-          <HomePageContent />
-        </LiveAvatarContextProvider>
       )}
+
+      {/* Login modal */}
+      <div
+        className={`relative z-10 w-full max-w-md transition-all duration-600 ease-out ${
+          showLogin
+            ? "translate-y-0 opacity-100"
+            : "pointer-events-none translate-y-3 opacity-0"
+        }`}
+      >
+        <GlassPanel className="w-full space-y-8 px-8 py-10">
+          <div className="space-y-2 text-center">
+            <h1 className="text-3xl tracking-tight text-white">Login</h1>
+          </div>
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-white/90">Name</label>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="relative">
+                  <User className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+                  <Input
+                    id="firstName"
+                    type="text"
+                    placeholder="First name"
+                    value={firstName}
+                    onChange={(e) => setFirstName(e.target.value)}
+                    className="border-white/60 bg-white/25 pl-10 text-slate-900 placeholder:text-slate-600"
+                  />
+                </div>
+                <div className="relative">
+                  <User className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+                  <Input
+                    id="lastName"
+                    type="text"
+                    placeholder="Surname"
+                    value={lastName}
+                    onChange={(e) => setLastName(e.target.value)}
+                    className="border-white/60 bg-white/25 pl-10 text-slate-900 placeholder:text-slate-600"
+                  />
+                </div>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <label htmlFor="email" className="text-sm font-medium text-white/90">
+                Email
+              </label>
+              <div className="relative">
+                <Mail className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+                <Input
+                  id="email"
+                  type="email"
+                  placeholder="Enter your email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="border-white/60 bg-white/25 pl-10 text-slate-900 placeholder:text-slate-600"
+                />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <label htmlFor="password" className="text-sm font-medium text-white/90">
+                Password
+              </label>
+              <div className="relative">
+                <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+                <Input
+                  id="password"
+                  type="password"
+                  placeholder="Enter your password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="border-white/60 bg-white/25 pl-10 text-slate-900 placeholder:text-slate-600"
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <label htmlFor="phone" className="text-sm font-medium text-white/90">
+                  Phone
+                </label>
+                <div className="relative">
+                  <Phone className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+                  <Input
+                    id="phone"
+                    type="tel"
+                    placeholder="+1 234 567 890"
+                    value={phoneNumber}
+                    onChange={(e) => setPhoneNumber(e.target.value)}
+                    className="border-white/60 bg-white/25 pl-10 text-slate-900 placeholder:text-slate-600"
+                  />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <label htmlFor="dob" className="text-sm font-medium text-white/90">
+                  Date of Birth
+                </label>
+                <div className="relative">
+                  <Calendar className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+                  <Input
+                    id="dob"
+                    type="date"
+                    value={dateOfBirth}
+                    onChange={(e) => setDateOfBirth(e.target.value)}
+                    className="border-white/60 bg-white/25 pl-10 text-slate-900 placeholder:text-slate-600"
+                  />
+                </div>
+              </div>
+            </div>
+            <Button type="submit" size="lg" className="w-full">
+              <LogIn className="h-4 w-4" />
+              Login
+            </Button>
+          </form>
+        </GlassPanel>
+      </div>
     </div>
   )
 }
@@ -132,6 +400,106 @@ function MicToggle() {
         <Mic className="h-5 w-5 text-white" />
       )}
     </button>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// HomePage — single page: UE5 iframe loads immediately, login overlays on top
+// ---------------------------------------------------------------------------
+
+export default function HomePage() {
+  const { isAuthenticated } = useApp()
+  // Track initial auth state — if already logged in on mount, skip the intro entirely
+  const [wasAuthOnMount] = useState(isAuthenticated)
+  const [introComplete, setIntroComplete] = useState(wasAuthOnMount)
+  const [ue5Ready, setUe5Ready] = useState(false)
+  const [sessionToken, setSessionToken] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  // The overlay stays until introComplete — auth state changes mid-intro don't dismiss it
+  const showLoginOverlay = !introComplete
+
+  // Lightweight UE5 listener — detect the first incoming message
+  const handleFirstUE5Message = useCallback(() => setUe5Ready(true), [])
+  useUE5WebSocket({
+    onMessage: handleFirstUE5Message,
+    onUnitSelected: handleFirstUE5Message,
+  })
+
+  // Only fetch HeyGen session token once UE5 has sent its first message
+  useEffect(() => {
+    if (!ue5Ready) return
+    const startSandboxSession = async () => {
+      try {
+        const res = await fetch("/api/start-sandbox-session", { method: "POST" })
+        if (!res.ok) {
+          const resp = await res.json().catch(() => ({}))
+          throw new Error(resp?.error ?? "Failed to start sandbox session")
+        }
+        const { session_token } = await res.json()
+        setSessionToken(session_token)
+      } catch (err) {
+        setError((err as Error).message)
+      }
+    }
+    startSandboxSession()
+  }, [ue5Ready])
+
+  // --- Stream config ---
+  const streamMode = process.env.NEXT_PUBLIC_STREAM_MODE || "local"
+  const streamUrl =
+    streamMode === "vagon"
+      ? process.env.NEXT_PUBLIC_VAGON_CLOUD_URL || ""
+      : process.env.NEXT_PUBLIC_VAGON_STREAM_URL || "http://127.0.0.1"
+  const hasStream = !!streamUrl && streamUrl !== "about:blank"
+  const iframeAllow =
+    streamMode === "vagon"
+      ? "microphone *; clipboard-read *; clipboard-write *; encrypted-media *; fullscreen *"
+      : "autoplay; fullscreen; clipboard-read; clipboard-write; gamepad"
+
+  const handleIntroComplete = useCallback(() => setIntroComplete(true), [])
+
+  return (
+    <div className="relative min-h-screen w-full bg-black overflow-hidden">
+      {/* UE5 Pixel Stream — loads immediately, behind everything */}
+      {hasStream ? (
+        <iframe
+          id={streamMode === "vagon" ? "vagonFrame" : undefined}
+          title="Vagon UE5 Stream"
+          src={streamUrl}
+          className="absolute inset-0 h-full w-full"
+          allow={iframeAllow}
+        />
+      ) : (
+        <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-slate-900 via-black to-slate-950 text-white/70">
+          Set NEXT_PUBLIC_VAGON_STREAM_URL to render the live UE5 background here.
+        </div>
+      )}
+
+      {/* Login intro overlay — sits on top of iframe, hides UE5 while loading */}
+      {showLoginOverlay && <LoginOverlay onComplete={handleIntroComplete} />}
+
+      {/* Main experience (avatar, panels, etc.) — only after intro completes */}
+      {introComplete && isAuthenticated && (
+        <>
+          {!sessionToken ? (
+            <div className="relative z-10 flex min-h-screen items-center justify-center">
+              {error ? (
+                <div className="text-center text-sm text-red-300">{error}</div>
+              ) : (
+                <div className="text-white/80 text-sm">
+                  {ue5Ready ? "Launching avatar..." : "Waiting for UE5 stream..."}
+                </div>
+              )}
+            </div>
+          ) : (
+            <LiveAvatarContextProvider sessionAccessToken={sessionToken}>
+              <HomePageContent />
+            </LiveAvatarContextProvider>
+          )}
+        </>
+      )}
+    </div>
   )
 }
 
