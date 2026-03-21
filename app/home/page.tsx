@@ -637,7 +637,7 @@ function HomePageContent() {
   // Render
   // -----------------------------------------------------------------------
   return (
-    <div className="relative min-h-screen w-full overflow-hidden">
+    <div className="pointer-events-none relative min-h-screen w-full overflow-hidden">
       {/* Fade overlay for scene transitions */}
       {ue5.showFadeOverlay && (
         <div
