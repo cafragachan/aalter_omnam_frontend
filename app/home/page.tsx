@@ -482,8 +482,8 @@ export default function HomePage() {
       {/* Main experience (avatar, panels, etc.) — only after intro completes */}
       {introComplete && isAuthenticated && (
         <>
-          {!sessionToken ? (
-            <div className="relative z-10 flex min-h-screen items-center justify-center">
+          {/* {!sessionToken && (
+            <div className="pointer-events-none relative z-10 flex min-h-screen items-center justify-center">
               {error ? (
                 <div className="text-center text-sm text-red-300">{error}</div>
               ) : (
@@ -492,7 +492,8 @@ export default function HomePage() {
                 </div>
               )}
             </div>
-          ) : (
+          )} */}
+          {sessionToken && (
             <LiveAvatarContextProvider sessionAccessToken={sessionToken}>
               <HomePageContent />
             </LiveAvatarContextProvider>

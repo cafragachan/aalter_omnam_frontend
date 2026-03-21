@@ -15,7 +15,7 @@ export function HotelRoomCard({ room, onClick, recommended }: HotelRoomCardProps
     >
       <div className="relative aspect-video overflow-hidden bg-gradient-to-br from-primary/20 to-accent/20">
         {recommended && (
-          <div className="absolute top-3 right-3 z-10 rounded-full bg-white/90 px-3 py-1 text-xs font-semibold uppercase tracking-wider text-black shadow-lg">
+          <div className="absolute top-1.5 right-1.5 z-10 rounded-full bg-white/90 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-black shadow-lg">
             Recommended
           </div>
         )}
@@ -25,16 +25,16 @@ export function HotelRoomCard({ room, onClick, recommended }: HotelRoomCardProps
           className="absolute inset-0 h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
         />
         <div className="absolute inset-0 bg-black/30" />
-        <div className="relative flex h-full items-center justify-center p-6 text-center">
-          <h3 className="text-xl font-bold text-white">{room.name}</h3>
+        <div className="relative flex h-full items-center justify-center p-3 text-center">
+          <h3 className="text-xs font-bold text-white">{room.name}</h3>
         </div>
       </div>
-      <div className="flex items-center justify-between p-4">
+      <div className="flex items-center justify-between p-2">
         <div>
-          <p className="text-sm font-semibold text-white">{room.name}</p>
-          <p className="mt-1 text-xs text-white/60">Occupancy: {room.occupancy}</p>
+          <p className="text-[10px] font-semibold text-white">{room.name}</p>
+          <p className="mt-0.5 text-[9px] text-white/60">Occupancy: {room.occupancy}</p>
         </div>
-        <p className="text-lg font-bold text-white">${room.price}</p>
+        <p className="text-sm font-bold text-white">${room.price}</p>
       </div>
     </Card>
   )

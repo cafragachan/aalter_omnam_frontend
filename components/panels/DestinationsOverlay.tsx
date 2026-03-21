@@ -17,35 +17,35 @@ export function DestinationsOverlay({ visible, onSelectHotel, onClose }: Destina
 
   return (
     <div className="fixed inset-0 z-20 flex items-center justify-center px-4 py-10 pointer-events-none">
-      <GlassPanel className="relative z-10 w-full max-w-5xl space-y-6 px-8 py-10 pointer-events-auto">
-        <div className="flex items-center gap-4">
+      <GlassPanel className="relative z-10 w-full max-w-2xl space-y-3 px-4 py-5 pointer-events-auto">
+        <div className="flex items-center gap-2">
           <Button
             variant="ghost"
             size="icon"
-            className="text-white hover:bg-white/10"
+            className="h-7 w-7 text-white hover:bg-white/10"
             onClick={onClose}
           >
-            <ArrowLeft className="h-5 w-5" />
+            <ArrowLeft className="h-3.5 w-3.5" />
           </Button>
-          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.2em] text-white/60">
-            <MapPin className="h-4 w-4" />
+          <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.2em] text-white/60">
+            <MapPin className="h-3 w-3" />
             Explore Digital Twins
           </div>
           <div className="ml-auto">
             <Button
               variant="ghost"
               size="icon"
-              className="text-white hover:bg-white/10"
+              className="h-7 w-7 text-white hover:bg-white/10"
               onClick={onClose}
             >
-              <X className="h-4 w-4" />
+              <X className="h-3 w-3" />
             </Button>
           </div>
         </div>
 
-        <h1 className="text-3xl font-semibold text-white">Destinations</h1>
+        <h1 className="text-lg font-semibold text-white">Destinations</h1>
 
-        <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {hotels.map((hotel) => (
             <Card
               key={hotel.id}
@@ -67,15 +67,15 @@ export function DestinationsOverlay({ visible, onSelectHotel, onClose }: Destina
                   className="absolute inset-0 h-full w-full object-cover"
                 />
                 <div className="absolute inset-0 bg-black/30" />
-                <div className="relative flex h-full items-center justify-center p-6 text-center">
-                  <h3 className="text-xl font-bold text-white transition-transform group-hover:scale-105">
+                <div className="relative flex h-full items-center justify-center p-3 text-center">
+                  <h3 className="text-sm font-bold text-white transition-transform group-hover:scale-105">
                     {hotel.name}
                   </h3>
                 </div>
               </div>
-              <div className="p-4">
-                <p className="text-sm text-white/70">{hotel.location}</p>
-                <p className="mt-1 text-xs text-white/50">{hotel.description}</p>
+              <div className="p-2">
+                <p className="text-xs text-white/70">{hotel.location}</p>
+                <p className="mt-0.5 text-[10px] text-white/50">{hotel.description}</p>
               </div>
             </Card>
           ))}
