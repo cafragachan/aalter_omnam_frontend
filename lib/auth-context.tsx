@@ -18,6 +18,8 @@ import {
 } from "firebase/auth"
 import { ref, set, get } from "firebase/database"
 import { auth, database } from "@/lib/firebase"
+import { loadReturningUser } from "@/lib/firebase/user-profile-service"
+import type { ReturningUserData } from "@/lib/firebase/types"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -40,6 +42,8 @@ interface AuthContextValue {
   firebaseUser: User | null
   /** User profile from Realtime Database */
   userProfile: UserDBProfile | null
+  /** Returning user personality + preferences (loaded on login) */
+  returningUserData: ReturningUserData | null
   /** True once onAuthStateChanged has fired at least once */
   isAuthReady: boolean
   /** Convenience: firebaseUser !== null */
@@ -109,6 +113,7 @@ const AuthContext = createContext<AuthContextValue | null>(null)
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null)
   const [userProfile, setUserProfile] = useState<UserDBProfile | null>(null)
+  const [returningUserData, setReturningUserData] = useState<ReturningUserData | null>(null)
   const [isAuthReady, setIsAuthReady] = useState(false)
 
   // Listen to Firebase auth state
@@ -122,9 +127,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (user) {
         const profile = await fetchUserProfile(user.uid)
         setUserProfile(profile)
-        if (profile) await updateLastSeen(user.uid)
+        if (profile) {
+          await updateLastSeen(user.uid)
+          // Load returning user personality + preferences
+          try {
+            const returning = await loadReturningUser(user.uid)
+            setReturningUserData(returning)
+          } catch {
+            // Non-critical — proceed without returning data
+          }
+        }
       } else {
         setUserProfile(null)
+        setReturningUserData(null)
       }
       setIsAuthReady(true)
     })
@@ -135,7 +150,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!auth) throw new Error("Firebase auth not configured")
     const credential = await signInWithEmailAndPassword(auth, email.trim(), password)
     const profile = await fetchUserProfile(credential.user.uid)
-    if (profile) await updateLastSeen(credential.user.uid)
+    if (profile) {
+      await updateLastSeen(credential.user.uid)
+      try {
+        const returning = await loadReturningUser(credential.user.uid)
+        setReturningUserData(returning)
+      } catch {
+        // Non-critical
+      }
+    }
     setUserProfile(profile)
     return profile!
   }, [])
@@ -158,13 +181,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     () => ({
       firebaseUser,
       userProfile,
+      returningUserData,
       isAuthReady,
       isAuthenticated: firebaseUser !== null,
       login,
       register,
       logout,
     }),
-    [firebaseUser, userProfile, isAuthReady, login, register, logout],
+    [firebaseUser, userProfile, returningUserData, isAuthReady, login, register, logout],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

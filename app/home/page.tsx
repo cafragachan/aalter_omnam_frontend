@@ -24,6 +24,8 @@ import { useUE5WebSocket } from "@/lib/useUE5WebSocket"
 import { GlassPanel } from "@/components/glass-panel"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { useSessionPersistence } from "@/lib/firebase/useSessionPersistence"
+import { SessionState } from "@heygen/liveavatar-web-sdk"
 
 // ---------------------------------------------------------------------------
 // Typewriter intro constants & component
@@ -581,12 +583,13 @@ function MicToggle() {
 // ---------------------------------------------------------------------------
 
 export default function HomePage() {
-  const { isAuthenticated } = useAuth()
+  const { isAuthenticated, userProfile, returningUserData } = useAuth()
   // Track initial auth state — if already logged in on mount, skip the intro entirely
   const [wasAuthOnMount] = useState(isAuthenticated)
   const [introComplete, setIntroComplete] = useState(wasAuthOnMount)
   const [ue5Ready, setUe5Ready] = useState(false)
   const [sessionToken, setSessionToken] = useState<string | null>(null)
+  const [contextId, setContextId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   // The overlay stays until introComplete — auth state changes mid-intro don't dismiss it
@@ -599,24 +602,35 @@ export default function HomePage() {
     onUnitSelected: handleFirstUE5Message,
   })
 
-  // Only fetch HeyGen session token once UE5 has sent its first message
+  // Fetch HeyGen session token once BOTH UE5 is ready AND user is authenticated
   useEffect(() => {
-    if (!ue5Ready) return
+    if (!ue5Ready || !isAuthenticated || !userProfile) return
     const startSandboxSession = async () => {
       try {
-        const res = await fetch("/api/start-sandbox-session", { method: "POST" })
+        const body = {
+          identity: userProfile,
+          personality: returningUserData?.personality ?? null,
+          preferences: returningUserData?.preferences ?? null,
+          loyalty: returningUserData?.loyalty ?? null,
+        }
+        const res = await fetch("/api/start-sandbox-session", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        })
         if (!res.ok) {
           const resp = await res.json().catch(() => ({}))
           throw new Error(resp?.error ?? "Failed to start sandbox session")
         }
-        const { session_token } = await res.json()
-        setSessionToken(session_token)
+        const data = await res.json()
+        setSessionToken(data.session_token)
+        setContextId(data.context_id ?? null)
       } catch (err) {
         setError((err as Error).message)
       }
     }
     startSandboxSession()
-  }, [ue5Ready])
+  }, [ue5Ready, isAuthenticated, userProfile, returningUserData])
 
   // --- Stream config ---
   const streamMode = process.env.NEXT_PUBLIC_STREAM_MODE || "local"
@@ -668,7 +682,7 @@ export default function HomePage() {
           )} */}
           {sessionToken && (
             <LiveAvatarContextProvider sessionAccessToken={sessionToken}>
-              <HomePageContent />
+              <HomePageContent ephemeralContextId={contextId} />
             </LiveAvatarContextProvider>
           )}
         </>
@@ -681,10 +695,29 @@ export default function HomePage() {
 // HomePageContent — thin layout shell (all hooks available)
 // ---------------------------------------------------------------------------
 
-function HomePageContent() {
+function HomePageContent({ ephemeralContextId }: { ephemeralContextId: string | null }) {
   const { selectHotel, selectedHotel } = useApp()
   const { profile, journeyStage, setJourneyStage, updateProfile } = useUserProfileContext()
   const emit = useEmit()
+  const { sessionState } = useLiveAvatarContext()
+  const { persistSession } = useSessionPersistence()
+  const { returningUserData } = useAuth()
+
+  // --- Pre-populate profile from returning user's persisted preferences ---
+  const hasHydratedRef = useRef(false)
+  useEffect(() => {
+    if (hasHydratedRef.current || !returningUserData) return
+    hasHydratedRef.current = true
+    const { personality, preferences } = returningUserData
+    updateProfile({
+      interests: personality?.interests ?? [],
+      travelPurpose: personality?.travelPurposes?.[0] ?? undefined,
+      budgetRange: personality?.budgetTendency ?? undefined,
+      dietaryRestrictions: personality?.dietaryRestrictions ?? [],
+      accessibilityNeeds: personality?.accessibilityNeeds ?? [],
+      amenityPriorities: preferences?.preferredAmenities ?? [],
+    })
+  }, [returningUserData, updateProfile])
 
   // --- UI panel visibility (local state, driven by orchestrator callbacks) ---
   const [showRoomsPanel, setShowRoomsPanel] = useState(false)
@@ -755,9 +788,26 @@ function HomePageContent() {
     onResetToDefault: handleResetToDefault,
     onFadeTransition: ue5.fadeTransition,
     onSelectHotel: handleAutoSelectHotel,
+    onPersistSession: persistSession,
     amenities,
     rooms,
   })
+
+  // --- Persist session + cleanup ephemeral context on HeyGen disconnect ---
+  useEffect(() => {
+    if (sessionState === SessionState.DISCONNECTED) {
+      persistSession()
+      if (ephemeralContextId) {
+        fetch("/api/cleanup-context", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ context_id: ephemeralContextId }),
+        }).catch(() => {
+          // Non-critical — fire and forget
+        })
+      }
+    }
+  }, [sessionState, persistSession, ephemeralContextId])
 
   // --- Reset sun position when hotel changes ---
   useEffect(() => {

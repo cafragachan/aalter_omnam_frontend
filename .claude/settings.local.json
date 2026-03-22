@@ -13,7 +13,15 @@
       "Bash(grep -r Firebase /c/Users/CesarFragachan/Documents/Repos/aalter_omnam_frontend --include=*.ts --include=*.tsx --include=*.json)",
       "Bash(grep -r \"useGuestIntelligence\\\\|GuestIntelligenceProvider\" /c/Users/CesarFragachan/Documents/Repos/aalter_omnam_frontend --include=*.ts --include=*.tsx)",
       "Bash(grep -r \"downloadUserData\\\\|DOWNLOAD_DATA\" /c/Users/CesarFragachan/Documents/Repos/aalter_omnam_frontend --include=*.ts --include=*.tsx)",
-      "Bash(npm install:*)"
+      "Bash(npm install:*)",
+      "Bash(curl -s -L https://docs.liveavatar.com/docs)",
+      "Bash(curl -s -L https://docs.heygen.com/docs/streaming-api)",
+      "Bash(curl -s -L https://docs.heygen.com/reference/new-session)",
+      "WebFetch(domain:docs.liveavatar.com)",
+      "WebSearch",
+      "WebFetch(domain:help.heygen.com)",
+      "WebFetch(domain:docs.heygen.com)",
+      "WebFetch(domain:www.npmjs.com)"
     ]
   }
 }

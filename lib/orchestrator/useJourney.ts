@@ -28,6 +28,8 @@ type UseJourneyOptions = {
   amenities: Amenity[]
   /** Rooms for the currently selected hotel (needed for booking URL resolution) */
   rooms: Room[]
+  /** Persist session data to Firebase (called on download/disconnect) */
+  onPersistSession?: () => Promise<void>
 }
 
 export function useJourney(options: UseJourneyOptions) {
@@ -130,6 +132,7 @@ export function useJourney(options: UseJourneyOptions) {
           break
         case "DOWNLOAD_DATA":
           downloadUserData()
+          options.onPersistSession?.()
           onUE5Command("downloadData", "downloadData")
           break
         case "SELECT_HOTEL":
