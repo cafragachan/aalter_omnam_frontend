@@ -3,7 +3,7 @@
 import type React from "react"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { Mic, MicOff, Lock, Mail, LogIn, User, Phone, Calendar } from "lucide-react"
+import { Mic, MicOff, Lock, Mail, LogIn, User, Phone, Calendar, UserPlus, ArrowLeft, Globe } from "lucide-react"
 import { DebugHud, SandboxSessionPlayer } from "@/components/liveavatar/SandboxLiveAvatar"
 import { LiveAvatarContextProvider, useLiveAvatarContext } from "@/lib/liveavatar"
 import { SunToggle, type SunState } from "@/components/SunToggle"
@@ -14,6 +14,7 @@ import { RoomsPanel } from "@/components/panels/RoomsPanel"
 import { UnitDetailPanel } from "@/components/panels/UnitDetailPanel"
 import { useUserProfileContext } from "@/lib/context"
 import { useApp } from "@/lib/store"
+import { useAuth } from "@/lib/auth-context"
 import { useEmit } from "@/lib/events"
 import { useJourney } from "@/lib/orchestrator"
 import { useUE5Bridge } from "@/lib/ue5/bridge"
@@ -23,7 +24,6 @@ import { useUE5WebSocket } from "@/lib/useUE5WebSocket"
 import { GlassPanel } from "@/components/glass-panel"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { useToast } from "@/hooks/use-toast"
 
 // ---------------------------------------------------------------------------
 // Typewriter intro constants & component
@@ -93,23 +93,31 @@ function TypewriterText({
 // LoginOverlay — video + typewriter + login form, overlaid on top of UE5
 // ---------------------------------------------------------------------------
 
+type AuthMode = "login" | "register"
+
 function LoginOverlay({ onComplete }: { onComplete: () => void }) {
   const [phase, setPhase] = useState<IntroPhase>("video")
   const [messageIndex, setMessageIndex] = useState(0)
   const [farewellIndex, setFarewellIndex] = useState(0)
   const [messageFading, setMessageFading] = useState(false)
   const [typing, setTyping] = useState(false)
-  const [showLogin, setShowLogin] = useState(false)
+  const [showForm, setShowForm] = useState(false)
 
-  const [firstName, setFirstName] = useState("")
-  const [lastName, setLastName] = useState("")
+  // Auth mode: login (email+password only) vs register (all fields)
+  const [authMode, setAuthMode] = useState<AuthMode>("login")
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
+  const [confirmPassword, setConfirmPassword] = useState("")
+  const [firstName, setFirstName] = useState("")
+  const [lastName, setLastName] = useState("")
   const [phoneNumber, setPhoneNumber] = useState("")
   const [dateOfBirth, setDateOfBirth] = useState("")
-  const { login } = useApp()
+  const [nationality, setNationality] = useState("")
+  const [authError, setAuthError] = useState<string | null>(null)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+
+  const { login, register } = useAuth()
   const { updateProfile, setJourneyStage } = useUserProfileContext()
-  const { toast } = useToast()
 
   // Start messages phase after 1s of video
   useEffect(() => {
@@ -133,7 +141,7 @@ function LoginOverlay({ onComplete }: { onComplete: () => void }) {
             setTyping(true)
           } else {
             setPhase("login")
-            setTimeout(() => setShowLogin(true), 200)
+            setTimeout(() => setShowForm(true), 200)
           }
         } else if (phase === "farewell") {
           if (farewellIndex < FAREWELL_MESSAGES.length - 1) {
@@ -150,45 +158,109 @@ function LoginOverlay({ onComplete }: { onComplete: () => void }) {
     return () => clearTimeout(fadeOutTimer)
   }, [messageIndex, farewellIndex, phase, onComplete])
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!firstName.trim() || !lastName.trim() || !email || !password) {
-      toast({
-        title: "Error",
-        description: "Please enter your name, surname, email, and password",
-        variant: "destructive",
-      })
-      return
-    }
-
-    try {
-      await login(email, password)
+  /** After successful auth, sync profile and transition to farewell */
+  const completeAuth = useCallback(
+    (profile: { firstName: string; lastName: string; email: string; phoneNumber: string; dateOfBirth: string; nationality: string; languagePreference: string }) => {
       updateProfile({
-        firstName: firstName.trim(),
-        lastName: lastName.trim(),
-        email,
+        firstName: profile.firstName,
+        lastName: profile.lastName,
+        email: profile.email,
         familySize: 1,
-        phoneNumber: phoneNumber.trim() || undefined,
-        dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : undefined,
+        phoneNumber: profile.phoneNumber || undefined,
+        dateOfBirth: profile.dateOfBirth ? new Date(profile.dateOfBirth) : undefined,
+        nationality: profile.nationality || undefined,
+        languagePreference: profile.languagePreference || undefined,
       })
       setJourneyStage("PROFILE_COLLECTION")
-      // Transition to farewell messages
-      setShowLogin(false)
+      setShowForm(false)
       setTimeout(() => {
         setPhase("farewell")
         setFarewellIndex(0)
         setTyping(true)
       }, 400)
-    } catch (error) {
-      toast({
-        title: "Error",
-        description: "Login failed",
-        variant: "destructive",
+    },
+    [updateProfile, setJourneyStage],
+  )
+
+  const switchMode = useCallback((mode: AuthMode) => {
+    setAuthMode(mode)
+    setAuthError(null)
+  }, [])
+
+  /** Handle login form submission */
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!email || !password) {
+      setAuthError("Please enter your email and password.")
+      return
+    }
+    setAuthError(null)
+    setIsSubmitting(true)
+    try {
+      const profile = await login(email, password)
+      completeAuth(profile)
+    } catch (err: unknown) {
+      const code = (err as { code?: string }).code
+      if (code === "auth/user-not-found" || code === "auth/invalid-credential") {
+        setAuthError("No account found with this email. Please register.")
+      } else if (code === "auth/wrong-password") {
+        setAuthError("Incorrect password. Please try again.")
+      } else if (code === "auth/too-many-requests") {
+        setAuthError("Too many failed attempts. Please try again later.")
+      } else {
+        setAuthError("Login failed. Please try again.")
+      }
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  /** Handle register form submission */
+  const handleRegister = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!firstName.trim() || !lastName.trim() || !email || !password) {
+      setAuthError("Please fill in all required fields.")
+      return
+    }
+    if (password.length < 8 || !/[^A-Za-z0-9]/.test(password)) {
+      setAuthError("Password must be at least 8 characters with a special character.")
+      return
+    }
+    if (password !== confirmPassword) {
+      setAuthError("Passwords do not match.")
+      return
+    }
+    setAuthError(null)
+    setIsSubmitting(true)
+    try {
+      const profile = await register({
+        email,
+        password,
+        firstName: firstName.trim(),
+        lastName: lastName.trim(),
+        phoneNumber: phoneNumber.trim(),
+        dateOfBirth,
+        nationality: nationality.trim(),
+        languagePreference: "",
       })
+      completeAuth(profile)
+    } catch (err: unknown) {
+      const code = (err as { code?: string }).code
+      if (code === "auth/email-already-in-use") {
+        setAuthError("This email is already registered. Please sign in.")
+      } else if (code === "auth/weak-password") {
+        setAuthError("Password is too weak. Use at least 8 characters with a special character.")
+      } else {
+        setAuthError("Registration failed. Please try again.")
+      }
+    } finally {
+      setIsSubmitting(false)
     }
   }
 
   if (phase === "done") return null
+
+  const inputClass = "border-white/60 bg-white/25 pl-10 text-slate-900 placeholder:text-slate-600"
 
   return (
     <div className="absolute inset-0 z-20 flex items-center justify-center p-4">
@@ -254,116 +326,217 @@ function LoginOverlay({ onComplete }: { onComplete: () => void }) {
         </div>
       )}
 
-      {/* Login modal */}
+      {/* Auth form (login or register) */}
       <div
         className={`relative z-10 w-full max-w-md transition-all duration-600 ease-out ${
-          showLogin
+          showForm
             ? "translate-y-0 opacity-100"
             : "pointer-events-none translate-y-3 opacity-0"
         }`}
       >
-        <GlassPanel className="w-full space-y-8 px-8 py-10">
-          <div className="space-y-2 text-center">
-            <h1 className="text-3xl tracking-tight text-white">Login</h1>
-          </div>
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-white/90">Name</label>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="relative">
-                  <User className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
-                  <Input
-                    id="firstName"
-                    type="text"
-                    placeholder="First name"
-                    value={firstName}
-                    onChange={(e) => setFirstName(e.target.value)}
-                    className="border-white/60 bg-white/25 pl-10 text-slate-900 placeholder:text-slate-600"
-                  />
+        <GlassPanel className="w-full space-y-6 px-8 py-10">
+          {/* --- LOGIN MODE --- */}
+          {authMode === "login" && (
+            <>
+              <div className="space-y-2 text-center">
+                <h1 className="text-3xl tracking-tight text-white">Welcome Back</h1>
+                <p className="text-sm text-white/60">Sign in to continue</p>
+              </div>
+              <form onSubmit={handleLogin} className="space-y-4">
+                <div className="space-y-2">
+                  <label htmlFor="login-email" className="text-sm font-medium text-white/90">Email</label>
+                  <div className="relative">
+                    <Mail className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+                    <Input
+                      id="login-email"
+                      type="email"
+                      placeholder="Enter your email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      className={inputClass}
+                    />
+                  </div>
                 </div>
-                <div className="relative">
-                  <User className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
-                  <Input
-                    id="lastName"
-                    type="text"
-                    placeholder="Surname"
-                    value={lastName}
-                    onChange={(e) => setLastName(e.target.value)}
-                    className="border-white/60 bg-white/25 pl-10 text-slate-900 placeholder:text-slate-600"
-                  />
+                <div className="space-y-2">
+                  <label htmlFor="login-password" className="text-sm font-medium text-white/90">Password</label>
+                  <div className="relative">
+                    <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+                    <Input
+                      id="login-password"
+                      type="password"
+                      placeholder="Enter your password"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      className={inputClass}
+                    />
+                  </div>
                 </div>
+
+                {authError && (
+                  <p className="text-sm text-red-400">{authError}</p>
+                )}
+
+                <Button type="submit" size="lg" className="w-full" disabled={isSubmitting}>
+                  <LogIn className="h-4 w-4" />
+                  {isSubmitting ? "Signing in..." : "Sign In"}
+                </Button>
+              </form>
+              <p className="text-center text-sm text-white/60">
+                Don&apos;t have an account?{" "}
+                <button
+                  type="button"
+                  onClick={() => switchMode("register")}
+                  className="text-white underline underline-offset-2 hover:text-white/80"
+                >
+                  Register
+                </button>
+              </p>
+            </>
+          )}
+
+          {/* --- REGISTER MODE --- */}
+          {authMode === "register" && (
+            <>
+              <div className="space-y-2 text-center">
+                <h1 className="text-3xl tracking-tight text-white">Create Account</h1>
+                <p className="text-sm text-white/60">A few details to get started</p>
               </div>
-            </div>
-            <div className="space-y-2">
-              <label htmlFor="email" className="text-sm font-medium text-white/90">
-                Email
-              </label>
-              <div className="relative">
-                <Mail className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
-                <Input
-                  id="email"
-                  type="email"
-                  placeholder="Enter your email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="border-white/60 bg-white/25 pl-10 text-slate-900 placeholder:text-slate-600"
-                />
-              </div>
-            </div>
-            <div className="space-y-2">
-              <label htmlFor="password" className="text-sm font-medium text-white/90">
-                Password
-              </label>
-              <div className="relative">
-                <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
-                <Input
-                  id="password"
-                  type="password"
-                  placeholder="Enter your password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="border-white/60 bg-white/25 pl-10 text-slate-900 placeholder:text-slate-600"
-                />
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-2">
-                <label htmlFor="phone" className="text-sm font-medium text-white/90">
-                  Phone
-                </label>
-                <div className="relative">
-                  <Phone className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
-                  <Input
-                    id="phone"
-                    type="tel"
-                    placeholder="+1 234 567 890"
-                    value={phoneNumber}
-                    onChange={(e) => setPhoneNumber(e.target.value)}
-                    className="border-white/60 bg-white/25 pl-10 text-slate-900 placeholder:text-slate-600"
-                  />
+              <form onSubmit={handleRegister} className="space-y-4">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-white/90">Name *</label>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="relative">
+                      <User className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+                      <Input
+                        type="text"
+                        placeholder="First name"
+                        value={firstName}
+                        onChange={(e) => setFirstName(e.target.value)}
+                        className={inputClass}
+                      />
+                    </div>
+                    <div className="relative">
+                      <User className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+                      <Input
+                        type="text"
+                        placeholder="Surname"
+                        value={lastName}
+                        onChange={(e) => setLastName(e.target.value)}
+                        className={inputClass}
+                      />
+                    </div>
+                  </div>
                 </div>
-              </div>
-              <div className="space-y-2">
-                <label htmlFor="dob" className="text-sm font-medium text-white/90">
-                  Date of Birth
-                </label>
-                <div className="relative">
-                  <Calendar className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
-                  <Input
-                    id="dob"
-                    type="date"
-                    value={dateOfBirth}
-                    onChange={(e) => setDateOfBirth(e.target.value)}
-                    className="border-white/60 bg-white/25 pl-10 text-slate-900 placeholder:text-slate-600"
-                  />
+                <div className="space-y-2">
+                  <label htmlFor="reg-email" className="text-sm font-medium text-white/90">Email *</label>
+                  <div className="relative">
+                    <Mail className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+                    <Input
+                      id="reg-email"
+                      type="email"
+                      placeholder="Enter your email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      className={inputClass}
+                    />
+                  </div>
                 </div>
-              </div>
-            </div>
-            <Button type="submit" size="lg" className="w-full">
-              <LogIn className="h-4 w-4" />
-              Login
-            </Button>
-          </form>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-2">
+                    <label htmlFor="reg-password" className="text-sm font-medium text-white/90">Password *</label>
+                    <div className="relative">
+                      <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+                      <Input
+                        id="reg-password"
+                        type="password"
+                        placeholder="Min 8 chars"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        className={inputClass}
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <label htmlFor="reg-confirm" className="text-sm font-medium text-white/90">Confirm *</label>
+                    <div className="relative">
+                      <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+                      <Input
+                        id="reg-confirm"
+                        type="password"
+                        placeholder="Confirm password"
+                        value={confirmPassword}
+                        onChange={(e) => setConfirmPassword(e.target.value)}
+                        className={inputClass}
+                      />
+                    </div>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-2">
+                    <label htmlFor="reg-phone" className="text-sm font-medium text-white/90">Phone</label>
+                    <div className="relative">
+                      <Phone className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+                      <Input
+                        id="reg-phone"
+                        type="tel"
+                        placeholder="+1 234 567 890"
+                        value={phoneNumber}
+                        onChange={(e) => setPhoneNumber(e.target.value)}
+                        className={inputClass}
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <label htmlFor="reg-dob" className="text-sm font-medium text-white/90">Date of Birth</label>
+                    <div className="relative">
+                      <Calendar className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+                      <Input
+                        id="reg-dob"
+                        type="date"
+                        value={dateOfBirth}
+                        onChange={(e) => setDateOfBirth(e.target.value)}
+                        className={inputClass}
+                      />
+                    </div>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <label htmlFor="reg-nationality" className="text-sm font-medium text-white/90">Nationality</label>
+                  <div className="relative">
+                    <Globe className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+                    <Input
+                      id="reg-nationality"
+                      type="text"
+                      placeholder="e.g. British"
+                      value={nationality}
+                      onChange={(e) => setNationality(e.target.value)}
+                      className={inputClass}
+                    />
+                  </div>
+                </div>
+
+                {authError && (
+                  <p className="text-sm text-red-400">{authError}</p>
+                )}
+
+                <Button type="submit" size="lg" className="w-full" disabled={isSubmitting}>
+                  <UserPlus className="h-4 w-4" />
+                  {isSubmitting ? "Creating account..." : "Create Account"}
+                </Button>
+              </form>
+              <p className="text-center text-sm text-white/60">
+                Already have an account?{" "}
+                <button
+                  type="button"
+                  onClick={() => switchMode("login")}
+                  className="text-white underline underline-offset-2 hover:text-white/80"
+                >
+                  <ArrowLeft className="mr-1 inline h-3 w-3" />
+                  Sign In
+                </button>
+              </p>
+            </>
+          )}
         </GlassPanel>
       </div>
     </div>
@@ -408,7 +581,7 @@ function MicToggle() {
 // ---------------------------------------------------------------------------
 
 export default function HomePage() {
-  const { isAuthenticated } = useApp()
+  const { isAuthenticated } = useAuth()
   // Track initial auth state — if already logged in on mount, skip the intro entirely
   const [wasAuthOnMount] = useState(isAuthenticated)
   const [introComplete, setIntroComplete] = useState(wasAuthOnMount)

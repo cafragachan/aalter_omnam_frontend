@@ -7,7 +7,13 @@
       "Bash(npx next build)",
       "Bash(npx tsc --noEmit)",
       "Bash(python3 -c \":*)",
-      "Bash(python -c \":*)"
+      "Bash(python -c \":*)",
+      "Read(//c/Users/CesarFragachan/Documents/Repos/aalter_web_app/**)",
+      "Bash(grep -r firebase /c/Users/CesarFragachan/Documents/Repos/aalter_omnam_frontend --include=*.ts --include=*.tsx --include=*.json)",
+      "Bash(grep -r Firebase /c/Users/CesarFragachan/Documents/Repos/aalter_omnam_frontend --include=*.ts --include=*.tsx --include=*.json)",
+      "Bash(grep -r \"useGuestIntelligence\\\\|GuestIntelligenceProvider\" /c/Users/CesarFragachan/Documents/Repos/aalter_omnam_frontend --include=*.ts --include=*.tsx)",
+      "Bash(grep -r \"downloadUserData\\\\|DOWNLOAD_DATA\" /c/Users/CesarFragachan/Documents/Repos/aalter_omnam_frontend --include=*.ts --include=*.tsx)",
+      "Bash(npm install:*)"
     ]
   }
 }

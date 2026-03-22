@@ -23,8 +23,6 @@ interface Booking {
 }
 
 interface AppState {
-  isAuthenticated: boolean
-  user: { email: string } | null
   searchCriteria: SearchCriteria
   selectedHotel: string | null
   bookings: Booking[]
@@ -32,8 +30,6 @@ interface AppState {
 }
 
 interface AppContextType extends AppState {
-  login: (email: string, password: string) => Promise<void>
-  logout: () => void
   updateSearchCriteria: (criteria: Partial<SearchCriteria>) => void
   selectHotel: (slug: string) => void
   addBooking: (booking: Omit<Booking, "id" | "createdAt">) => void
@@ -44,8 +40,6 @@ const AppContext = createContext<AppContextType | undefined>(undefined)
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AppState>({
-    isAuthenticated: false,
-    user: null,
     searchCriteria: {
       destination: "",
       checkIn: null,
@@ -58,26 +52,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     bookings: [],
     isLoading: false,
   })
-
-  const login = async (email: string, password: string) => {
-    setState((prev) => ({ ...prev, isLoading: true }))
-    // Mock authentication
-    await new Promise((resolve) => setTimeout(resolve, 1500))
-    setState((prev) => ({
-      ...prev,
-      isAuthenticated: true,
-      user: { email },
-      isLoading: false,
-    }))
-  }
-
-  const logout = () => {
-    setState((prev) => ({
-      ...prev,
-      isAuthenticated: false,
-      user: null,
-    }))
-  }
 
   const updateSearchCriteria = (criteria: Partial<SearchCriteria>) => {
     setState((prev) => ({
@@ -110,8 +84,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     <AppContext.Provider
       value={{
         ...state,
-        login,
-        logout,
         updateSearchCriteria,
         selectHotel,
         addBooking,

@@ -6,6 +6,7 @@ import "./globals.css"
 import { AppProvider } from "@/lib/store"
 import { Toaster } from "@/components/ui/toaster"
 import { UserProfileProvider } from "@/lib/context"
+import { AuthProvider } from "@/lib/auth-context"
 import { EventBusProvider } from "@/lib/events"
 import { GuestIntelligenceProvider } from "@/lib/guest-intelligence"
 
@@ -47,23 +48,25 @@ export default function RootLayout({
         <Script src="https://app.vagon.io/vagonsdk.js" strategy="beforeInteractive" />
       </head>
       <body className={`${manrope.variable} ${jetbrainsMono.variable} ${openSans.variable} font-sans antialiased`}>
-        <UserProfileProvider>
-          <AppProvider>
-            <EventBusProvider>
-            <GuestIntelligenceProvider>
-            {children}
-            <Toaster />
-            <div className="pointer-events-none fixed bottom-8 right-8 z-50">
-              <img
-                src="/omnam-logo-white.png"
-                alt="Omnam"
-                className="h-10 w-auto opacity-75"
-              />
-            </div>
-            </GuestIntelligenceProvider>
-            </EventBusProvider>
-          </AppProvider>
-        </UserProfileProvider>
+        <AuthProvider>
+          <UserProfileProvider>
+            <AppProvider>
+              <EventBusProvider>
+              <GuestIntelligenceProvider>
+              {children}
+              <Toaster />
+              <div className="pointer-events-none fixed bottom-8 right-8 z-50">
+                <img
+                  src="/omnam-logo-white.png"
+                  alt="Omnam"
+                  className="h-10 w-auto opacity-75"
+                />
+              </div>
+              </GuestIntelligenceProvider>
+              </EventBusProvider>
+            </AppProvider>
+          </UserProfileProvider>
+        </AuthProvider>
       </body>
     </html>
   )
