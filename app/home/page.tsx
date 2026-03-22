@@ -583,16 +583,23 @@ function MicToggle() {
 // ---------------------------------------------------------------------------
 
 export default function HomePage() {
-  const { isAuthenticated, userProfile, returningUserData } = useAuth()
-  // Track initial auth state — if already logged in on mount, skip the intro entirely
+  const { isAuthenticated, userProfile, returningUserData, firebaseUser } = useAuth()
+  // Track initial auth state — if already logged in on mount, skip the login overlay
   const [wasAuthOnMount] = useState(isAuthenticated)
-  const [introComplete, setIntroComplete] = useState(wasAuthOnMount)
+  const [introComplete, setIntroComplete] = useState(false)
   const [ue5Ready, setUe5Ready] = useState(false)
   const [sessionToken, setSessionToken] = useState<string | null>(null)
   const [contextId, setContextId] = useState<string | null>(null)
   const contextIdRef = useRef<string | null>(null)
-  const sessionFetchedRef = useRef(false)
+  const sessionUserIdRef = useRef<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+
+  // Auto-complete intro for already-authenticated users (skip login overlay)
+  useEffect(() => {
+    if (wasAuthOnMount && isAuthenticated) {
+      setIntroComplete(true)
+    }
+  }, [wasAuthOnMount, isAuthenticated])
 
   // Cleanup ephemeral context on tab close / navigation away
   useEffect(() => {
@@ -620,11 +627,13 @@ export default function HomePage() {
     onUnitSelected: handleFirstUE5Message,
   })
 
-  // Fetch HeyGen session token once BOTH UE5 is ready AND user is authenticated
+  // Fetch HeyGen session token once UE5 is ready, user is authenticated, AND intro is complete.
+  // Reset if the user identity changes (logout + re-login on same page mount).
   useEffect(() => {
-    if (!ue5Ready || !isAuthenticated || !userProfile) return
-    if (sessionFetchedRef.current) return
-    sessionFetchedRef.current = true
+    if (!ue5Ready || !introComplete || !isAuthenticated || !userProfile) return
+    const currentUid = firebaseUser?.uid ?? null
+    if (sessionUserIdRef.current === currentUid) return
+    sessionUserIdRef.current = currentUid
     const startSandboxSession = async () => {
       try {
         const body = {
@@ -652,7 +661,7 @@ export default function HomePage() {
       }
     }
     startSandboxSession()
-  }, [ue5Ready, isAuthenticated, userProfile, returningUserData])
+  }, [ue5Ready, introComplete, isAuthenticated, userProfile, returningUserData, firebaseUser])
 
   // --- Stream config ---
   const streamMode = process.env.NEXT_PUBLIC_STREAM_MODE || "local"
