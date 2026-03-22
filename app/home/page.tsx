@@ -590,7 +590,25 @@ export default function HomePage() {
   const [ue5Ready, setUe5Ready] = useState(false)
   const [sessionToken, setSessionToken] = useState<string | null>(null)
   const [contextId, setContextId] = useState<string | null>(null)
+  const contextIdRef = useRef<string | null>(null)
+  const sessionFetchedRef = useRef(false)
   const [error, setError] = useState<string | null>(null)
+
+  // Cleanup ephemeral context on tab close / navigation away
+  useEffect(() => {
+    const handleUnload = () => {
+      if (!contextIdRef.current) return
+      navigator.sendBeacon(
+        "/api/cleanup-context",
+        new Blob(
+          [JSON.stringify({ context_id: contextIdRef.current })],
+          { type: "application/json" },
+        ),
+      )
+    }
+    window.addEventListener("beforeunload", handleUnload)
+    return () => window.removeEventListener("beforeunload", handleUnload)
+  }, [])
 
   // The overlay stays until introComplete — auth state changes mid-intro don't dismiss it
   const showLoginOverlay = !introComplete
@@ -605,6 +623,8 @@ export default function HomePage() {
   // Fetch HeyGen session token once BOTH UE5 is ready AND user is authenticated
   useEffect(() => {
     if (!ue5Ready || !isAuthenticated || !userProfile) return
+    if (sessionFetchedRef.current) return
+    sessionFetchedRef.current = true
     const startSandboxSession = async () => {
       try {
         const body = {
@@ -624,7 +644,9 @@ export default function HomePage() {
         }
         const data = await res.json()
         setSessionToken(data.session_token)
-        setContextId(data.context_id ?? null)
+        const newContextId = data.context_id ?? null
+        setContextId(newContextId)
+        contextIdRef.current = newContextId
       } catch (err) {
         setError((err as Error).message)
       }

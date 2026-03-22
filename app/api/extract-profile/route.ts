@@ -3,7 +3,7 @@ import { z } from "zod"
 const GuestCompositionSchema = z.object({
   adults: z.number(),
   children: z.number(),
-  childrenAges: z.array(z.number()).optional(),
+  childrenAges: z.array(z.number()).nullable().optional(),
 }).nullable().optional()
 
 const ExtractedProfileSchema = z.object({

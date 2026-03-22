@@ -14,7 +14,9 @@ export async function POST(request: Request) {
   }
 
   try {
-    const { context_id } = (await request.json()) as { context_id?: string }
+    const body = await request.json()
+    console.log("[cleanup-context] Called with body:", JSON.stringify(body))
+    const { context_id } = body as { context_id?: string }
     if (!context_id) {
       return new Response(JSON.stringify({ ok: true, skipped: true }), {
         status: 200,
@@ -28,7 +30,10 @@ export async function POST(request: Request) {
     })
 
     if (!res.ok) {
-      console.error("[cleanup-context] Failed to delete context:", context_id, res.status)
+      const errBody = await res.text().catch(() => "")
+      console.error("[cleanup-context] Failed to delete context:", context_id, res.status, errBody)
+    } else {
+      console.log("[cleanup-context] Successfully deleted context:", context_id)
     }
 
     return new Response(JSON.stringify({ ok: true }), {

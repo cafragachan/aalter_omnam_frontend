@@ -12,7 +12,7 @@ type SessionResponse = {
 
 type ContextResponse = {
   data: {
-    context_id: string
+    id: string
   }
 }
 
@@ -45,12 +45,13 @@ async function createEphemeralContext(
     })
 
     if (!res.ok) {
-      console.error("[start-sandbox-session] Failed to create ephemeral context:", res.status)
+      const errBody = await res.text().catch(() => "")
+      console.error("[start-sandbox-session] Failed to create ephemeral context:", res.status, errBody)
       return null
     }
 
     const data = (await res.json()) as ContextResponse
-    return data?.data?.context_id ?? null
+    return data?.data?.id ?? null
   } catch (err) {
     console.error("[start-sandbox-session] Error creating ephemeral context:", err)
     return null
@@ -108,7 +109,6 @@ export async function POST(request: Request) {
         contextId = created
         ephemeralContextId = created
       }
-      // If creation failed, fall back to static context
     }
 
     // Request session token from HeyGen

@@ -262,19 +262,27 @@ function buildGuestIntelligenceBlock(input: ContextInput): string {
   }
 
   // --- Personality ---
+  const traits = personality?.traits ?? []
+  const travelDrivers = personality?.travelDrivers ?? []
+  const travelPurposes = personality?.travelPurposes ?? []
+  const objections = personality?.topObjectionTopics ?? []
+  const pInterests = personality?.interests ?? []
+  const pDietary = personality?.dietaryRestrictions ?? []
+  const pAccessibility = personality?.accessibilityNeeds ?? []
+
   lines.push("")
   lines.push("Personality Profile:")
-  if (personality && personality.traits.length > 0) {
-    lines.push(`- Traits: ${personality.traits.join(", ")}`)
+  if (traits.length > 0) {
+    lines.push(`- Traits: ${traits.join(", ")}`)
 
     // Derive behavioral guidance from traits
-    if (personality.traits.includes("decisive")) {
+    if (traits.includes("decisive")) {
       lines.push("- Makes decisions quickly — don't over-explain, give clean choices.")
     }
-    if (personality.traits.includes("detail-oriented")) {
+    if (traits.includes("detail-oriented")) {
       lines.push("- Appreciates specifics and detail — include room sizes, floor levels, exact features.")
     }
-    if (personality.traits.includes("warm")) {
+    if (traits.includes("warm")) {
       lines.push("- Appreciates warmth and personal touches. Mirror their energy.")
     }
   } else {
@@ -291,12 +299,12 @@ function buildGuestIntelligenceBlock(input: ContextInput): string {
   // --- Travel Motivation ---
   lines.push("")
   lines.push("Travel Motivation:")
-  if (personality && (personality.travelDrivers.length > 0 || personality.travelPurposes.length > 0)) {
-    if (personality.travelDrivers.length > 0) {
-      lines.push(`- Primary drivers: ${personality.travelDrivers.join(", ")}`)
+  if (travelDrivers.length > 0 || travelPurposes.length > 0) {
+    if (travelDrivers.length > 0) {
+      lines.push(`- Primary drivers: ${travelDrivers.join(", ")}`)
     }
-    if (personality.travelPurposes.length > 0) {
-      lines.push(`- Typical purpose: ${personality.travelPurposes.join(", ")}`)
+    if (travelPurposes.length > 0) {
+      lines.push(`- Typical purpose: ${travelPurposes.join(", ")}`)
     }
     if (preferences?.typicalGuestComposition) {
       const comp = preferences.typicalGuestComposition
@@ -305,7 +313,7 @@ function buildGuestIntelligenceBlock(input: ContextInput): string {
     if (preferences?.typicalStayLength) {
       lines.push(`- Typical stay: ${preferences.typicalStayLength} nights`)
     }
-    if (personality.budgetTendency) {
+    if (personality?.budgetTendency) {
       lines.push(`- Budget tendency: ${personality.budgetTendency} — ${personality.budgetTendency === "premium" || personality.budgetTendency === "luxury" ? "comfortable with luxury pricing. Present premium options first." : "price-conscious. Lead with value and mid-range options."}`)
     }
   } else {
@@ -327,43 +335,43 @@ function buildGuestIntelligenceBlock(input: ContextInput): string {
   } else {
     lines.push("- No upsell data available. Start with mid-range options and gauge interest.")
   }
-  if (personality?.topObjectionTopics && personality.topObjectionTopics.length > 0) {
-    lines.push(`- Known objections: ${personality.topObjectionTopics.join(", ")} — proactively address these when presenting rooms.`)
+  if (objections.length > 0) {
+    lines.push(`- Known objections: ${objections.join(", ")} — proactively address these when presenting rooms.`)
   }
-  if (!personality || (personality.traits.length === 0 && personality.upsellReceptivity == null)) {
+  if (!personality || (traits.length === 0 && personality.upsellReceptivity == null)) {
     lines.push("- Be attentive to verbal cues that reveal budget comfort and preferences.")
     lines.push("- Focus on building rapport first — this is their introduction to the Omnam experience.")
   }
 
   // --- Known Preferences ---
+  const prefRooms = preferences?.preferredRoomTypes ?? []
+  const prefAmenities = preferences?.preferredAmenities ?? []
+  const prefDestinations = preferences?.preferredDestinations ?? []
+
   lines.push("")
   lines.push("Known Preferences:")
-  const hasPrefs = preferences && (
-    preferences.preferredRoomTypes.length > 0 ||
-    preferences.preferredAmenities.length > 0 ||
-    preferences.preferredDestinations.length > 0
-  )
+  const hasPrefs = prefRooms.length > 0 || prefAmenities.length > 0 || prefDestinations.length > 0
   if (hasPrefs) {
-    if (preferences!.preferredRoomTypes.length > 0) {
-      lines.push(`- Preferred rooms: ${preferences!.preferredRoomTypes.join(", ")} — reference these naturally.`)
+    if (prefRooms.length > 0) {
+      lines.push(`- Preferred rooms: ${prefRooms.join(", ")} — reference these naturally.`)
     }
-    if (preferences!.preferredAmenities.length > 0) {
-      lines.push(`- Preferred amenities: ${preferences!.preferredAmenities.join(", ")} — suggest these during exploration.`)
+    if (prefAmenities.length > 0) {
+      lines.push(`- Preferred amenities: ${prefAmenities.join(", ")} — suggest these during exploration.`)
     }
-    if (preferences!.preferredDestinations.length > 0) {
-      lines.push(`- Preferred destinations: ${preferences!.preferredDestinations.join(", ")}`)
+    if (prefDestinations.length > 0) {
+      lines.push(`- Preferred destinations: ${prefDestinations.join(", ")}`)
     }
   }
-  if (personality?.interests && personality.interests.length > 0) {
-    lines.push(`- Interests: ${personality.interests.join(", ")} — weave these into commentary naturally.`)
+  if (pInterests.length > 0) {
+    lines.push(`- Interests: ${pInterests.join(", ")} — weave these into commentary naturally.`)
   }
-  if (personality?.dietaryRestrictions && personality.dietaryRestrictions.length > 0) {
-    lines.push(`- Dietary: ${personality.dietaryRestrictions.join(", ")} — mention relevant options proactively if dining comes up.`)
+  if (pDietary.length > 0) {
+    lines.push(`- Dietary: ${pDietary.join(", ")} — mention relevant options proactively if dining comes up.`)
   }
-  if (personality?.accessibilityNeeds && personality.accessibilityNeeds.length > 0) {
-    lines.push(`- Accessibility: ${personality.accessibilityNeeds.join(", ")}`)
+  if (pAccessibility.length > 0) {
+    lines.push(`- Accessibility: ${pAccessibility.join(", ")}`)
   }
-  if (!hasPrefs && (!personality?.interests || personality.interests.length === 0)) {
+  if (!hasPrefs && pInterests.length === 0) {
     lines.push("- None yet — this is a discovery session. Ask naturally about interests during exploration.")
   }
 
