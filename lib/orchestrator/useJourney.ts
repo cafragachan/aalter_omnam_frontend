@@ -28,8 +28,6 @@ type UseJourneyOptions = {
   amenities: Amenity[]
   /** Rooms for the currently selected hotel (needed for booking URL resolution) */
   rooms: Room[]
-  /** Persist session data to Firebase (called on download/disconnect) */
-  onPersistSession?: () => Promise<void>
 }
 
 export function useJourney(options: UseJourneyOptions) {
@@ -46,7 +44,7 @@ export function useJourney(options: UseJourneyOptions) {
 
   const { profile, journeyStage, setJourneyStage, updateProfile } = useUserProfileContext()
   const { profile: derivedProfile, isExtractionPending, userMessages } = useUserProfile()
-  const { repeat, interrupt } = useAvatarActions("FULL")
+  const { repeat, interrupt, stopListening } = useAvatarActions("FULL")
   const eventBus = useEventBus()
   const guestIntelligence = useGuestIntelligence()
   const { trackQuestion, trackRoomExplored, trackAmenityExplored, trackRequirement, startRoomTimer, startAmenityTimer, stopExplorationTimer, setBookingOutcome } = guestIntelligence
@@ -132,11 +130,13 @@ export function useJourney(options: UseJourneyOptions) {
           break
         case "DOWNLOAD_DATA":
           downloadUserData()
-          options.onPersistSession?.()
           onUE5Command("downloadData", "downloadData")
           break
         case "SELECT_HOTEL":
           onSelectHotel(effect.slug)
+          break
+        case "STOP_LISTENING":
+          stopListening()
           break
         case "OPEN_BOOKING_URL": {
           const roomId = currentRoomIdRef.current
@@ -151,7 +151,7 @@ export function useJourney(options: UseJourneyOptions) {
         }
       }
     }
-  }, [interrupt, repeat, onUE5Command, onOpenPanel, onClosePanels, onFadeTransition, setJourneyStage, onResetToDefault, onSelectHotel, downloadUserData, rooms, setBookingOutcome])
+  }, [interrupt, repeat, stopListening, onUE5Command, onOpenPanel, onClosePanels, onFadeTransition, setJourneyStage, onResetToDefault, onSelectHotel, downloadUserData, rooms, setBookingOutcome])
 
   // --- Dispatch helper ---
   const dispatch = useCallback((action: JourneyAction) => {

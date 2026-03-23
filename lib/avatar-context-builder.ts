@@ -159,12 +159,30 @@ Data collection strategy:
 
 During PROFILE_COLLECTION: Remind the guest they are previewing the Lake Como property.
 
-Ask ONE open-ended question to capture:
-- travel dates
-- guest composition
+You must collect THREE things before the system advances — in this order:
 
-Example tone:
+1. Travel dates — when they're coming
+2. Guest composition — how many guests, and how many are adults vs children
+3. Travel purpose — why they're traveling (leisure, business, honeymoon, celebration, family vacation, adventure, etc.)
+
+Start with ONE open-ended question to capture dates and guests together:
 "Tell me about your trip to Lake Como — when are you thinking of traveling and who will be joining you?"
+
+Then naturally follow up for anything still missing. Ask ONE question at a time.
+
+Guest composition follow-up (IMPORTANT):
+When the guest gives a total guest count (e.g., "5 guests", "there will be 4 of us") but does NOT specify how many are adults vs children, you MUST naturally follow up to get the breakdown before moving on. This is critical for room recommendations.
+- For 2 guests: "Lovely — just the two of you, or will any little ones be joining?"
+- For 3+ guests: "And of the [number], are any of them children?"
+- If they say something like "just adults" or "no kids", that counts — move on.
+- If they explicitly mention children (e.g., "me, my wife and 2 kids"), no follow-up needed.
+Do NOT skip this step. Do NOT assume all guests are adults.
+
+Travel purpose follow-up (IMPORTANT):
+Once you have dates AND guest composition, ask about the purpose of their trip if the guest hasn't already mentioned it. Keep it natural:
+- "Lovely. And is this more of a leisure trip, or are you traveling for a special occasion?"
+- "Sounds wonderful. What's the occasion — just a getaway, or celebrating something special?"
+Do NOT skip this step. The system needs the travel purpose to personalize the hotel experience.
 
 During HOTEL_EXPLORATION: collect data through contextual observations, not direct questions:
 When the guest selects a room: "The lake views from the upper floors are extraordinary. Do you prefer a higher floor, or ground level with garden access?" (→ roomTypePreference)
@@ -309,6 +327,9 @@ function buildGuestIntelligenceBlock(input: ContextInput): string {
     if (preferences?.typicalGuestComposition) {
       const comp = preferences.typicalGuestComposition
       lines.push(`- Typical party: ${comp.adults} adult${comp.adults !== 1 ? "s" : ""}${comp.children > 0 ? `, ${comp.children} child${comp.children !== 1 ? "ren" : ""}` : ""}`)
+      if (comp.children > 0) {
+        lines.push("- Usually travels with children — ask about kid-friendly needs naturally (family rooms, child amenities, activities).")
+      }
     }
     if (preferences?.typicalStayLength) {
       lines.push(`- Typical stay: ${preferences.typicalStayLength} nights`)
@@ -401,20 +422,23 @@ export function buildOpeningText(input: ContextInput): string {
   if (loyalty && loyalty.totalSessions > 0) {
     const parts: string[] = [`Welcome back, ${name}. It's lovely to see you again.`]
 
-    // Reference a past preference
-    if (preferences?.preferredRoomTypes && preferences.preferredRoomTypes.length > 0) {
-      parts.push(`I remember you enjoyed the ${preferences.preferredRoomTypes[0]} last time — we have some wonderful options for you today.`)
-    } else if (preferences?.preferredDestinations && preferences.preferredDestinations.length > 0) {
-      parts.push(`Great to have you back exploring ${preferences.preferredDestinations[0]}.`)
-    }
+    // // Reference a past preference
+    // if (preferences?.preferredRoomTypes && preferences.preferredRoomTypes.length > 0) {
+    //   parts.push(`I remember you enjoyed the ${preferences.preferredRoomTypes[0]} last time — we have some wonderful options for you today.`)
+    // } else if (preferences?.preferredDestinations && preferences.preferredDestinations.length > 0) {
+    //   parts.push(`Great to have you back exploring ${preferences.preferredDestinations[0]}.`)
+    // }
 
     // Composition-aware question
     if (preferences?.typicalGuestComposition) {
       const comp = preferences.typicalGuestComposition
+      const total = comp.adults + comp.children
       if (comp.adults === 2 && comp.children === 0) {
         parts.push("When are you thinking of visiting Lake Como, and will it be the two of you again?")
+      } else if (comp.children > 0) {
+        parts.push(`When are you thinking of visiting Lake Como? Will it be the ${total} of you again — ${comp.adults} adults and ${comp.children} little one${comp.children !== 1 ? "s" : ""}?`)
       } else {
-        parts.push("When are you thinking of visiting, and who will be joining you this time?")
+        parts.push(`When are you thinking of visiting Lake Como? Will it be the ${total} of you again?`)
       }
     } else {
       parts.push("Tell me, when are you thinking of traveling and who will be joining you?")

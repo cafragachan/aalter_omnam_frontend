@@ -24,7 +24,7 @@ import { useUE5WebSocket } from "@/lib/useUE5WebSocket"
 import { GlassPanel } from "@/components/glass-panel"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { useSessionPersistence } from "@/lib/firebase/useSessionPersistence"
+import { useIncrementalPersistence } from "@/lib/firebase/useIncrementalPersistence"
 import { SessionState } from "@heygen/liveavatar-web-sdk"
 
 // ---------------------------------------------------------------------------
@@ -583,10 +583,10 @@ function MicToggle() {
 // ---------------------------------------------------------------------------
 
 export default function HomePage() {
-  const { isAuthenticated, userProfile, returningUserData, firebaseUser } = useAuth()
-  // Track initial auth state — if already logged in on mount, skip the login overlay
-  const [wasAuthOnMount] = useState(isAuthenticated)
+  const { isAuthenticated, isAuthReady, userProfile, returningUserData, firebaseUser } = useAuth()
   const [introComplete, setIntroComplete] = useState(false)
+  // Track whether we've already evaluated the "skip overlay" decision
+  const hasCheckedAuthRef = useRef(false)
   const [ue5Ready, setUe5Ready] = useState(false)
   const [sessionToken, setSessionToken] = useState<string | null>(null)
   const [contextId, setContextId] = useState<string | null>(null)
@@ -594,12 +594,15 @@ export default function HomePage() {
   const sessionUserIdRef = useRef<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  // Auto-complete intro for already-authenticated users (skip login overlay)
+  // Auto-complete intro for already-authenticated users (skip login overlay).
+  // Wait until isAuthReady so we don't read a stale isAuthenticated value.
   useEffect(() => {
-    if (wasAuthOnMount && isAuthenticated) {
+    if (!isAuthReady || hasCheckedAuthRef.current) return
+    hasCheckedAuthRef.current = true
+    if (isAuthenticated) {
       setIntroComplete(true)
     }
-  }, [wasAuthOnMount, isAuthenticated])
+  }, [isAuthReady, isAuthenticated])
 
   // Cleanup ephemeral context on tab close / navigation away
   useEffect(() => {
@@ -731,7 +734,7 @@ function HomePageContent({ ephemeralContextId }: { ephemeralContextId: string | 
   const { profile, journeyStage, setJourneyStage, updateProfile } = useUserProfileContext()
   const emit = useEmit()
   const { sessionState } = useLiveAvatarContext()
-  const { persistSession } = useSessionPersistence()
+  const { writeEndOfSessionSnapshot } = useIncrementalPersistence()
   const { returningUserData } = useAuth()
 
   // --- Pre-populate profile from returning user's persisted preferences ---
@@ -819,15 +822,14 @@ function HomePageContent({ ephemeralContextId }: { ephemeralContextId: string | 
     onResetToDefault: handleResetToDefault,
     onFadeTransition: ue5.fadeTransition,
     onSelectHotel: handleAutoSelectHotel,
-    onPersistSession: persistSession,
     amenities,
     rooms,
   })
 
-  // --- Persist session + cleanup ephemeral context on HeyGen disconnect ---
+  // --- End-of-session snapshot + cleanup ephemeral context on HeyGen disconnect ---
   useEffect(() => {
     if (sessionState === SessionState.DISCONNECTED) {
-      persistSession()
+      writeEndOfSessionSnapshot()
       if (ephemeralContextId) {
         fetch("/api/cleanup-context", {
           method: "POST",
@@ -838,7 +840,11 @@ function HomePageContent({ ephemeralContextId }: { ephemeralContextId: string | 
         })
       }
     }
-  }, [sessionState, persistSession, ephemeralContextId])
+  }, [sessionState, writeEndOfSessionSnapshot, ephemeralContextId])
+
+  // NOTE: visibilitychange persistence is now handled inside useIncrementalPersistence.
+  // Data is written incrementally throughout the session, so closing the tab only
+  // needs to flush the endedAt timestamp and any pending debounced profile writes.
 
   // --- Reset sun position when hotel changes ---
   useEffect(() => {

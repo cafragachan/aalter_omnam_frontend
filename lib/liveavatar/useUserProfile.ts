@@ -407,6 +407,26 @@ const extractWithRegex = (
         }
       }
     }
+
+    // Detect "no children" / "all adults" / "just us" / "just the two of us" responses
+    if (!result.guestComposition && result.partySize) {
+      const noChildrenPattern = /(?:no|zero|none|without)\s*(?:kids?|children|child)|(?:all|only|just)\s*adults?|just\s*(?:us|the\s*two(?:\s*of\s*us)?)|(?:no\s*little\s*ones)|(?:couple|just\s*(?:me\s*and\s*)?(?:my\s*)?(?:wife|husband|partner|spouse))/i
+      if (noChildrenPattern.test(lower)) {
+        result.guestComposition = {
+          adults: result.partySize,
+          children: 0,
+        }
+      }
+    }
+
+    // Also detect implicit couple patterns even without partySize
+    if (!result.guestComposition && !result.partySize) {
+      const coupleMatch = lower.match(/(?:me\s*and\s*my\s*(?:wife|husband|partner|spouse))|(?:just\s*(?:the\s*)?two\s*of\s*us)/i)
+      if (coupleMatch) {
+        result.partySize = 2
+        result.guestComposition = { adults: 2, children: 0 }
+      }
+    }
   })
 
   result.interests = Array.from(interestSet)

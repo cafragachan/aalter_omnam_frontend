@@ -52,6 +52,9 @@ Rules:
 - For dates, use the current year if not specified
 - For party size, include the speaker (e.g., "me and my wife" = 2)
 - For guestComposition, extract adult/child split and children's ages if mentioned (e.g., "me and my wife and two kids, 5 and 8" → { adults: 2, children: 2, childrenAges: [5, 8] })
+- If the user gives a total guest count without specifying adults vs children (e.g., "5 guests"), set partySize but leave guestComposition as null — the system will ask a follow-up
+- If the user explicitly says no children (e.g., "no kids", "all adults", "just us", "just me and my wife"), set guestComposition with children: 0 and adults equal to partySize
+- "Just me and my wife/husband/partner" → partySize: 2, guestComposition: { adults: 2, children: 0, childrenAges: null }
 - For nationality, extract from phrases like "traveling from London", "based in Germany", "coming from Dubai"
 - Be conservative — don't infer information that isn't clearly stated
 

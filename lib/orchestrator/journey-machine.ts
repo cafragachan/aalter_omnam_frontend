@@ -33,7 +33,7 @@ export function buildAmenityNarrative(name: string, scene: string): string {
 type ProfileCollectionAwaiting = Extract<JourneyState, { stage: "PROFILE_COLLECTION" }>["awaiting"]
 
 function profileCollectionAwaiting(
-  profile: { partySize?: number; startDate?: Date | null; endDate?: Date | null; travelPurpose?: string; interests: string[] },
+  profile: { partySize?: number; startDate?: Date | null; endDate?: Date | null; travelPurpose?: string; interests: string[]; guestComposition?: { adults: number; children: number } },
 ): ProfileCollectionAwaiting {
   const missingDates = !profile.startDate || !profile.endDate
   const missingGuests = !profile.partySize
@@ -41,6 +41,7 @@ function profileCollectionAwaiting(
   if (missingDates && missingGuests) return "dates_and_guests"
   if (missingDates) return "dates"
   if (missingGuests) return "guests"
+  if (profile.partySize && !profile.guestComposition) return "guest_breakdown"
   if (!profile.travelPurpose) return "travel_purpose"
   return "ready"
 }
@@ -201,6 +202,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
       if (PILOT_MODE) {
         effects.push({ type: "SELECT_HOTEL", ...PILOT_HOTEL })
         effects.push({ type: "SET_JOURNEY_STAGE", stage: "VIRTUAL_LOUNGE" })
+        effects.push({ type: "STOP_LISTENING" })
         effects.push({
           type: "SPEAK",
           text: "Wonderful! Before we head to the hotel, would you like to explore our virtual lounge? We have some exclusive artwork and unique retail offerings on display.",
@@ -225,6 +227,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           // Pilot: skip destination selection, offer virtual lounge exploration
           effects.push({ type: "SELECT_HOTEL", ...PILOT_HOTEL })
           effects.push({ type: "SET_JOURNEY_STAGE", stage: "VIRTUAL_LOUNGE" })
+          effects.push({ type: "STOP_LISTENING" })
           effects.push({
             type: "SPEAK",
             text: "Wonderful! Before we head to the hotel, would you like to explore our virtual lounge? We have some exclusive artwork and unique retail offerings on display.",
@@ -252,6 +255,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
       const narrative = `${description.charAt(0).toLowerCase()}${description.slice(1)}`
 
       effects.push({ type: "SET_JOURNEY_STAGE", stage: "VIRTUAL_LOUNGE" })
+      effects.push({ type: "STOP_LISTENING" })
       effects.push({
         type: "SPEAK",
         text: `Excellent choice — the ${hotelName}, ${narrative}. Before we head there, would you like to explore our virtual lounge? We have some exclusive artwork and unique retail offerings on display.`,

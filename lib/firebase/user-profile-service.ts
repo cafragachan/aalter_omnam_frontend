@@ -1,5 +1,7 @@
-import { ref, get, set } from "firebase/database"
+import { ref, get, set, update } from "firebase/database"
 import { database } from "@/lib/firebase"
+import type { UserProfile } from "@/lib/context"
+import type { GuestIntelligence } from "@/lib/guest-intelligence"
 import type {
   SessionSnapshot,
   PersistedPersonality,
@@ -50,7 +52,7 @@ export async function mergePersonality(
   const merged: PersistedPersonality = {
     traits: unionSet(existing?.traits, gi.personalityTraits),
     travelDrivers: unionSet(existing?.travelDrivers, gi.travelDriver ? [gi.travelDriver] : []),
-    travelPurposes: unionSet(existing?.travelPurposes, snapshot.profile.travelPurpose ? [snapshot.profile.travelPurpose] : []),
+    travelPurposes: snapshot.profile.travelPurpose ? [snapshot.profile.travelPurpose] : existing?.travelPurposes ?? [],
     budgetTendency: snapshot.profile.budgetRange ?? existing?.budgetTendency ?? null,
     upsellReceptivity: gi.upsellReceptivity ?? existing?.upsellReceptivity ?? null,
     interests: unionSet(existing?.interests, snapshot.profile.interests),
@@ -159,7 +161,7 @@ export async function loadReturningUser(userId: string): Promise<ReturningUserDa
 }
 
 // ---------------------------------------------------------------------------
-// Orchestrator — persist all session data in parallel
+// Orchestrator — persist all session data in parallel (end-of-session)
 // ---------------------------------------------------------------------------
 
 export async function persistSessionData(
@@ -180,4 +182,112 @@ export async function persistSessionData(
       console.error("[user-profile-service] Partial failure:", result.reason)
     }
   }
+}
+
+// ===========================================================================
+// INCREMENTAL PERSISTENCE — called throughout the session
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// Merge personality from live profile + GI data (no full snapshot needed)
+// ---------------------------------------------------------------------------
+
+export async function mergePersonalityIncremental(
+  userId: string,
+  profile: UserProfile,
+  gi: GuestIntelligence,
+): Promise<void> {
+  const existing = await readNode<PersistedPersonality>(userId, "personality")
+
+  const merged: PersistedPersonality = {
+    traits: unionSet(existing?.traits, gi.personalityTraits),
+    travelDrivers: unionSet(existing?.travelDrivers, gi.travelDriver ? [gi.travelDriver] : []),
+    travelPurposes: unionSet(existing?.travelPurposes, profile.travelPurpose ? [profile.travelPurpose] : []),
+    budgetTendency: profile.budgetRange ?? existing?.budgetTendency ?? null,
+    upsellReceptivity: gi.upsellReceptivity ?? existing?.upsellReceptivity ?? null,
+    interests: unionSet(existing?.interests, profile.interests),
+    dietaryRestrictions: unionSet(existing?.dietaryRestrictions, profile.dietaryRestrictions),
+    accessibilityNeeds: unionSet(existing?.accessibilityNeeds, profile.accessibilityNeeds),
+    amenityPriorities: unionSet(
+      existing?.amenityPriorities,
+      [...gi.amenitiesExplored].sort((a, b) => b.timeSpentMs - a.timeSpentMs).map((a) => a.name),
+    ),
+    topObjectionTopics: unionSet(existing?.topObjectionTopics, gi.objections.map((o) => o.topic)),
+    updatedAt: new Date().toISOString(),
+  }
+
+  await writeNode(userId, "personality", merged)
+}
+
+// ---------------------------------------------------------------------------
+// Merge preferences from live profile + GI data (no full snapshot needed)
+// ---------------------------------------------------------------------------
+
+export async function mergePreferencesIncremental(
+  userId: string,
+  profile: UserProfile,
+  gi: GuestIntelligence,
+): Promise<void> {
+  const existing = await readNode<PersistedPreferences>(userId, "preferences")
+
+  const roomNames = [...gi.roomsExplored]
+    .sort((a, b) => b.timeSpentMs - a.timeSpentMs)
+    .map((r) => r.roomId)
+  const amenityNames = [...gi.amenitiesExplored]
+    .sort((a, b) => b.timeSpentMs - a.timeSpentMs)
+    .map((a) => a.name)
+
+  const guestComp = profile.guestComposition
+    ? { adults: profile.guestComposition.adults ?? 1, children: profile.guestComposition.children ?? 0 }
+    : existing?.typicalGuestComposition ?? null
+
+  const merged: PersistedPreferences = {
+    preferredRoomTypes: unionSet(roomNames, existing?.preferredRoomTypes),
+    preferredDestinations: unionSet(
+      profile.destination ? [profile.destination] : [],
+      existing?.preferredDestinations,
+    ),
+    preferredAmenities: unionSet(amenityNames, existing?.preferredAmenities),
+    typicalGuestComposition: guestComp,
+    typicalStayLength: existing?.typicalStayLength ?? null,
+    updatedAt: new Date().toISOString(),
+  }
+
+  await writeNode(userId, "preferences", merged)
+}
+
+// ---------------------------------------------------------------------------
+// Increment totalSessions atomically (called once at session start)
+// ---------------------------------------------------------------------------
+
+export async function incrementTotalSessions(userId: string): Promise<void> {
+  if (!database) return
+  const existing = await readNode<PersistedLoyalty>(userId, "loyalty")
+  const now = new Date().toISOString()
+
+  const updates: Record<string, unknown> = {
+    totalSessions: (existing?.totalSessions ?? 0) + 1,
+    lastSessionAt: now,
+  }
+  if (!existing?.firstSessionAt) {
+    updates.firstSessionAt = now
+  }
+  // Initialize fields that might not exist yet
+  if (existing?.tier === undefined) updates.tier = null
+  if (existing?.totalBookings === undefined) updates.totalBookings = 0
+  if (existing?.lifetimeValue === undefined) updates.lifetimeValue = 0
+
+  await update(ref(database, dbPath(userId, "loyalty")), updates)
+}
+
+// ---------------------------------------------------------------------------
+// Increment totalBookings (called when bookingOutcome becomes "booked")
+// ---------------------------------------------------------------------------
+
+export async function incrementTotalBookings(userId: string): Promise<void> {
+  if (!database) return
+  const existing = await readNode<PersistedLoyalty>(userId, "loyalty")
+  await update(ref(database, dbPath(userId, "loyalty")), {
+    totalBookings: (existing?.totalBookings ?? 0) + 1,
+  })
 }
