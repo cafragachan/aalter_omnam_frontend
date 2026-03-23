@@ -138,6 +138,9 @@ export function useJourney(options: UseJourneyOptions) {
         case "STOP_LISTENING":
           stopListening()
           break
+        case "SET_DISTRIBUTION":
+          updateProfile({ distributionPreference: effect.preference })
+          break
         case "OPEN_BOOKING_URL": {
           const roomId = currentRoomIdRef.current
           if (roomId) {
@@ -201,6 +204,26 @@ export function useJourney(options: UseJourneyOptions) {
       allAmenities: amenityRefs,
     })
   }, [amenities, amenityRefs, trackAmenityExplored, startAmenityTimer, getVisitedAmenityNames, interrupt, repeat, dispatch])
+
+  /** Check if we should ask the distribution question before showing rooms */
+  const needsDistributionQuestion = useCallback((): boolean => {
+    // Already answered
+    if (profile.distributionPreference) return false
+
+    const partySize = profile.familySize ?? derivedProfile.partySize
+    if (!partySize || partySize <= 0) return false
+
+    // Find the max single-room occupancy
+    const maxOccupancy = rooms.length > 0
+      ? Math.max(...rooms.map((r) => parseInt(r.occupancy)))
+      : 0
+
+    // Ask if party doesn't fit in a single room, or if it's a business trip with 2+ people
+    const needsMultiRoom = partySize > maxOccupancy
+    const businessTrip = (profile.travelPurpose ?? derivedProfile.travelPurpose ?? "").toLowerCase().includes("business") && partySize > 1
+
+    return needsMultiRoom || businessTrip
+  }, [profile, derivedProfile, rooms])
 
   /** Dispatch LIST_AMENITIES action with pre-computed hotel data */
   const dispatchListAmenities = useCallback(() => {
@@ -376,8 +399,24 @@ export function useJourney(options: UseJourneyOptions) {
       }
     }
 
+    // --- Intercept ROOMS/BOOK intent to ask distribution question when needed ---
+    if (
+      (intent.type === "ROOMS" || intent.type === "BOOK" || (intent.type === "AFFIRMATIVE" && currentState.stage === "HOTEL_EXPLORATION" && (currentState.lastProposal === "rooms" || currentState.lastProposal === "book"))) &&
+      currentState.stage === "HOTEL_EXPLORATION" &&
+      currentState.subState !== "asking_distribution" &&
+      needsDistributionQuestion()
+    ) {
+      const size = profile.familySize ?? derivedProfile.partySize ?? 0
+      interrupt()
+      repeat(
+        `For your group of ${size}, would you prefer to share rooms together, have separate rooms for each person, or shall I recommend the best layout?`,
+      ).catch(() => undefined)
+      stateRef.current = { stage: "HOTEL_EXPLORATION", subState: "asking_distribution" }
+      return
+    }
+
     dispatch({ type: "USER_INTENT", intent })
-  }, [userMessages, dispatch, trackQuestion, trackRequirement, dispatchListAmenities, navigateToAmenityByName, startRoomTimer, stopExplorationTimer])
+  }, [userMessages, dispatch, trackQuestion, trackRequirement, dispatchListAmenities, navigateToAmenityByName, startRoomTimer, stopExplorationTimer, profile, derivedProfile, rooms, interrupt, repeat])
 
   // --- Announce destination overlay when stage transitions ---
   useEffect(() => {
@@ -413,6 +452,22 @@ export function useJourney(options: UseJourneyOptions) {
     stopExplorationTimer()
     trackRoomExplored(event.roomId)
     currentRoomIdRef.current = event.roomId
+
+    // Validate: warn if the user taps a room that can't hold their full party in a single room
+    // (this is informational — we still allow the tap since multi-room plans handle this)
+    const partySize = profile.familySize ?? derivedProfile.partySize
+    const roomCapacity = parseInt(event.occupancy)
+    if (partySize && partySize > roomCapacity && !profile.distributionPreference) {
+      // Room can't hold the party and they haven't chosen a distribution — warn them
+      dispatch({
+        type: "ROOM_CARD_TAPPED_INVALID",
+        roomName: event.roomName,
+        roomCapacity,
+        partySize,
+      })
+      return
+    }
+
     dispatch({
       type: "ROOM_CARD_TAPPED",
       roomName: event.roomName,

@@ -1,4 +1,4 @@
-import type { JourneyStage } from "@/lib/context"
+import type { JourneyStage, DistributionPreference } from "@/lib/context"
 import type { UserIntent } from "./intents"
 import type { AvatarDerivedProfile } from "@/lib/liveavatar/useUserProfile"
 
@@ -16,7 +16,7 @@ export type JourneyState =
   | { stage: "PROFILE_COLLECTION"; awaiting: "dates_and_guests" | "dates" | "guests" | "guest_breakdown" | "travel_purpose" | "interests" | "extracting" | "ready" }
   | { stage: "DESTINATION_SELECT" }
   | { stage: "VIRTUAL_LOUNGE"; subState: "asking" | "exploring" }
-  | { stage: "HOTEL_EXPLORATION"; subState: "announcing" | "awaiting_intent" | "panel_open"; lastProposal?: LastProposal; suggestedAmenityName?: string }
+  | { stage: "HOTEL_EXPLORATION"; subState: "announcing" | "awaiting_intent" | "panel_open" | "asking_distribution"; lastProposal?: LastProposal; suggestedAmenityName?: string }
   | { stage: "ROOM_SELECTED"; awaiting: "view_choice"; lastProposal?: LastProposal }
   | {
       stage: "AMENITY_VIEWING"
@@ -54,6 +54,8 @@ export type JourneyAction =
       travelPurpose?: string
       recommendedAmenityName?: string
     }
+  | { type: "DISTRIBUTION_ANSWERED"; preference: DistributionPreference }
+  | { type: "ROOM_CARD_TAPPED_INVALID"; roomName: string; roomCapacity: number; partySize: number }
 
 // ---------------------------------------------------------------------------
 // Effects produced by the reducer — executed by useJourney
@@ -71,6 +73,7 @@ export type JourneyEffect =
   | { type: "OPEN_BOOKING_URL" }
   | { type: "SELECT_HOTEL"; slug: string; hotelName: string; location: string; description: string }
   | { type: "STOP_LISTENING" }
+  | { type: "SET_DISTRIBUTION"; preference: DistributionPreference }
 
 // ---------------------------------------------------------------------------
 // Reducer result

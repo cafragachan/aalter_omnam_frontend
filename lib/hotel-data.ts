@@ -193,3 +193,236 @@ export function getRecommendedRoomId(
   fitting.sort((a, b) => a.price - b.price)
   return fitting[0].id
 }
+
+// ---------------------------------------------------------------------------
+// Multi-room recommendation engine
+// ---------------------------------------------------------------------------
+
+export type DistributionPreference = "together" | "separate" | "auto"
+
+export type RoomPlanEntry = {
+  roomId: string
+  roomName: string
+  quantity: number
+  pricePerNight: number
+  occupancy: number
+}
+
+export type RoomPlan = {
+  entries: RoomPlanEntry[]
+  totalCapacity: number
+  totalPricePerNight: number
+}
+
+type GuestCompositionInput = { adults: number; children: number; childrenAges?: number[] }
+
+/**
+ * Infer the best distribution strategy from travel purpose + explicit preference.
+ * - Business trips default to separate rooms (1-2 per room).
+ * - Family/romantic trips default to minimizing room count.
+ * - "auto" uses heuristics when no preference is stated.
+ */
+function resolveDistribution(
+  preference: DistributionPreference | undefined,
+  travelPurpose: string | undefined,
+  partySize: number,
+): "pack" | "spread" {
+  if (preference === "together") return "pack"
+  if (preference === "separate") return "spread"
+
+  // Auto-resolve based on travel purpose
+  const purpose = travelPurpose?.toLowerCase() ?? ""
+  if (purpose.includes("business")) return "spread"
+  if (
+    purpose.includes("family") || purpose.includes("romantic") ||
+    purpose.includes("honeymoon") || purpose.includes("couple")
+  ) return "pack"
+
+  // Default: pack for small groups, spread for large
+  return partySize <= 4 ? "pack" : "spread"
+}
+
+function parseBudgetNumber(budgetRange: string | undefined): number | null {
+  if (!budgetRange) return null
+  const num = parseInt(budgetRange.replace(/[^0-9]/g, ""))
+  return num > 0 ? num : null
+}
+
+/**
+ * Generate all valid multi-room plans that accommodate the given party size.
+ * Uses a bounded greedy approach — tries combinations with each room type as primary.
+ */
+function generateCandidatePlans(rooms: Room[], partySize: number): RoomPlan[] {
+  const plans: RoomPlan[] = []
+  const sortedRooms = [...rooms].sort((a, b) => parseInt(b.occupancy) - parseInt(a.occupancy))
+
+  // Strategy 1: Fill with a single room type (when possible)
+  for (const room of sortedRooms) {
+    const cap = parseInt(room.occupancy)
+    const qty = Math.ceil(partySize / cap)
+    plans.push(buildPlan([{ room, qty }]))
+  }
+
+  // Strategy 2: Mixed — use the largest room first, fill remainder with smallest
+  if (sortedRooms.length >= 2) {
+    const largest = sortedRooms[0]
+    const smallest = sortedRooms[sortedRooms.length - 1]
+    const largeCap = parseInt(largest.occupancy)
+    const smallCap = parseInt(smallest.occupancy)
+
+    if (largest.id !== smallest.id) {
+      // Try 1 large + remainder in small
+      const remaining = partySize - largeCap
+      if (remaining > 0) {
+        const smallQty = Math.ceil(remaining / smallCap)
+        plans.push(buildPlan([{ room: largest, qty: 1 }, { room: smallest, qty: smallQty }]))
+      }
+
+      // Try combinations with increasing large rooms
+      for (let largeQty = 2; largeQty * largeCap < partySize + largeCap; largeQty++) {
+        const rem = partySize - largeQty * largeCap
+        if (rem <= 0) {
+          plans.push(buildPlan([{ room: largest, qty: largeQty }]))
+          break
+        }
+        const sQty = Math.ceil(rem / smallCap)
+        plans.push(buildPlan([{ room: largest, qty: largeQty }, { room: smallest, qty: sQty }]))
+      }
+    }
+
+    // Try mid-sized room + smallest for variety
+    if (sortedRooms.length >= 3) {
+      const mid = sortedRooms[1]
+      const midCap = parseInt(mid.occupancy)
+      if (mid.id !== smallest.id) {
+        for (let midQty = 1; midQty * midCap < partySize + midCap; midQty++) {
+          const rem = partySize - midQty * midCap
+          if (rem <= 0) {
+            plans.push(buildPlan([{ room: mid, qty: midQty }]))
+            break
+          }
+          const sQty = Math.ceil(rem / smallCap)
+          plans.push(buildPlan([{ room: mid, qty: midQty }, { room: smallest, qty: sQty }]))
+        }
+      }
+    }
+  }
+
+  return plans
+}
+
+function buildPlan(items: { room: Room; qty: number }[]): RoomPlan {
+  const entries: RoomPlanEntry[] = items.map(({ room, qty }) => ({
+    roomId: room.id,
+    roomName: room.name,
+    quantity: qty,
+    pricePerNight: room.price,
+    occupancy: parseInt(room.occupancy),
+  }))
+
+  return {
+    entries,
+    totalCapacity: entries.reduce((sum, e) => sum + e.occupancy * e.quantity, 0),
+    totalPricePerNight: entries.reduce((sum, e) => sum + e.pricePerNight * e.quantity, 0),
+  }
+}
+
+/**
+ * Recommend an optimal multi-room plan for a party.
+ *
+ * Returns the best RoomPlan considering distribution preference, guest composition,
+ * travel purpose, and budget. Returns null only if no rooms are available.
+ */
+export function getRecommendedRoomPlan(
+  rooms: Room[],
+  partySize: number | undefined,
+  guestComposition: GuestCompositionInput | undefined,
+  travelPurpose: string | undefined,
+  budgetRange: string | undefined,
+  distributionPreference: DistributionPreference | undefined,
+): RoomPlan | null {
+  if (!partySize || partySize <= 0 || rooms.length === 0) return null
+
+  const strategy = resolveDistribution(distributionPreference, travelPurpose, partySize)
+  const budgetNum = parseBudgetNumber(budgetRange)
+
+  // Check if any single room fits the entire party
+  const maxOccupancy = Math.max(...rooms.map((r) => parseInt(r.occupancy)))
+  const fitsInOne = maxOccupancy >= partySize
+
+  // For "spread" strategy, target 1-2 guests per room (business-style)
+  if (strategy === "spread") {
+    const smallestRooms = [...rooms].sort((a, b) => parseInt(a.occupancy) - parseInt(b.occupancy))
+    const smallest = smallestRooms[0]
+    const smallCap = parseInt(smallest.occupancy)
+
+    // Each person gets their own room (or 2 per room if budget-conscious)
+    const adults = guestComposition?.adults ?? partySize
+    const children = guestComposition?.children ?? 0
+
+    // Adults get individual rooms; children share with adults
+    const adultRoomCount = adults
+    const childrenNeedingRoom = Math.max(0, children - adults) // extra children beyond 1-per-adult
+    const extraRooms = childrenNeedingRoom > 0 ? Math.ceil(childrenNeedingRoom / smallCap) : 0
+    const totalRooms = adultRoomCount + extraRooms
+
+    // Pick the smallest room type for spread
+    const plan = buildPlan([{ room: smallest, qty: totalRooms }])
+
+    // If budget is specified and plan is too expensive, try 2-per-room
+    if (budgetNum && plan.totalPricePerNight > budgetNum * 1.5) {
+      const pairedRooms = Math.ceil(partySize / smallCap)
+      const budgetPlan = buildPlan([{ room: smallest, qty: pairedRooms }])
+      return budgetPlan
+    }
+
+    return plan
+  }
+
+  // For "pack" strategy, minimize room count
+  if (fitsInOne) {
+    // Single room can hold everyone — pick the best one
+    const fitting = rooms.filter((r) => parseInt(r.occupancy) >= partySize)
+    if (fitting.length > 0) {
+      let best: Room
+      if (budgetNum && budgetNum > 0) {
+        best = [...fitting].sort((a, b) => Math.abs(a.price - budgetNum) - Math.abs(b.price - budgetNum))[0]
+      } else {
+        best = [...fitting].sort((a, b) => a.price - b.price)[0]
+      }
+      return buildPlan([{ room: best, qty: 1 }])
+    }
+  }
+
+  // Need multiple rooms — generate candidates and score them
+  const candidates = generateCandidatePlans(rooms, partySize)
+  if (candidates.length === 0) return null
+
+  // Score: lower is better
+  const scored = candidates.map((plan) => {
+    const waste = plan.totalCapacity - partySize // unused bed slots
+    const roomCount = plan.entries.reduce((sum, e) => sum + e.quantity, 0)
+    const budgetDiff = budgetNum ? Math.abs(plan.totalPricePerNight - budgetNum) : 0
+
+    // Pack strategy: strongly prefer fewer rooms, then less waste, then budget match
+    const score = roomCount * 10000 + waste * 100 + budgetDiff
+    return { plan, score }
+  })
+
+  scored.sort((a, b) => a.score - b.score)
+  return scored[0].plan
+}
+
+/**
+ * Validate whether a party can fit into a single room.
+ * Returns a warning message if not, or null if it fits.
+ */
+export function validateRoomForParty(
+  room: Room,
+  partySize: number | undefined,
+): string | null {
+  if (!partySize) return null
+  const capacity = parseInt(room.occupancy)
+  if (partySize <= capacity) return null
+  return `The ${room.name} accommodates up to ${capacity} guests, but your group has ${partySize}. Would you like me to suggest a combination that works?`
+}

@@ -5,9 +5,11 @@ interface HotelRoomCardProps {
   room: Room
   onClick?: () => void
   recommended?: boolean
+  /** How many of this room type are in the recommended plan (e.g. 2 = "x2") */
+  recommendedQuantity?: number
 }
 
-export function HotelRoomCard({ room, onClick, recommended }: HotelRoomCardProps) {
+export function HotelRoomCard({ room, onClick, recommended, recommendedQuantity }: HotelRoomCardProps) {
   return (
     <Card
       className={`group h-full w-full cursor-pointer overflow-hidden border-white/20 bg-white/12 backdrop-blur-xl transition-all hover:bg-white/18 hover:shadow-[0_30px_70px_-40px_rgba(0,0,0,0.9)] ${recommended ? "ring-2 ring-white/70" : ""}`}
@@ -15,8 +17,15 @@ export function HotelRoomCard({ room, onClick, recommended }: HotelRoomCardProps
     >
       <div className="relative aspect-video overflow-hidden bg-gradient-to-br from-primary/20 to-accent/20">
         {recommended && (
-          <div className="absolute top-1.5 right-1.5 z-10 rounded-full bg-white/90 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-black shadow-lg">
-            Recommended
+          <div className="absolute top-1.5 right-1.5 z-10 flex items-center gap-1">
+            <span className="rounded-full bg-white/90 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-black shadow-lg">
+              Recommended
+            </span>
+            {recommendedQuantity != null && recommendedQuantity > 1 && (
+              <span className="rounded-full bg-white/80 px-1.5 py-0.5 text-[9px] font-bold text-black shadow-lg">
+                x{recommendedQuantity}
+              </span>
+            )}
           </div>
         )}
         <img

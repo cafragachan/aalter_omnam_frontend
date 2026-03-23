@@ -20,6 +20,7 @@ export type AvatarDerivedProfile = {
   nationality?: string
   arrivalTime?: string
   guestComposition?: { adults: number; children: number; childrenAges?: number[] }
+  distributionPreference?: "together" | "separate" | "auto"
 }
 
 type AIExtractedProfile = {
@@ -38,6 +39,7 @@ type AIExtractedProfile = {
   nationality?: string | null
   arrivalTime?: string | null
   guestComposition?: { adults: number; children: number; childrenAges?: number[] } | null
+  distributionPreference?: "together" | "separate" | "auto" | null
 }
 
 const clean = (text: string) => text.trim().replace(/\s+/g, " ")
@@ -427,6 +429,21 @@ const extractWithRegex = (
         result.guestComposition = { adults: 2, children: 0 }
       }
     }
+
+    // Room distribution preference
+    if (!result.distributionPreference) {
+      const togetherPattern = /\b(shar(?:e|ing)\s+rooms?|together|same\s+room|fewer\s+rooms?|all\s+together|one\s+(?:big\s+)?room|minimize\s+rooms?)\b/i
+      const separatePattern = /\b(separate\s+rooms?|own\s+room|individual\s+rooms?|each\s+(?:their|our)\s+own|one\s+each|(?:a\s+)?room\s+each|private\s+rooms?|my\s+own\s+room)\b/i
+      const autoPattern = /\b(you\s+decide|recommend|suggest|up\s+to\s+you|whatever\s+works|your\s+(?:call|choice|recommendation)|best\s+(?:option|layout))\b/i
+
+      if (separatePattern.test(lower)) {
+        result.distributionPreference = "separate"
+      } else if (togetherPattern.test(lower)) {
+        result.distributionPreference = "together"
+      } else if (autoPattern.test(lower)) {
+        result.distributionPreference = "auto"
+      }
+    }
   })
 
   result.interests = Array.from(interestSet)
@@ -491,6 +508,7 @@ export const useUserProfile = (): {
       nationality: aiProfile.nationality ?? regexProfile.nationality,
       arrivalTime: aiProfile.arrivalTime ?? regexProfile.arrivalTime,
       guestComposition: aiProfile.guestComposition ?? regexProfile.guestComposition,
+      distributionPreference: aiProfile.distributionPreference ?? regexProfile.distributionPreference,
     }
   }, [regexProfile, aiProfile])
 

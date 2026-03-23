@@ -319,6 +319,42 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
   // HOTEL_EXPLORATION
   // -----------------------------------------------------------------------
   if (state.stage === "HOTEL_EXPLORATION") {
+    // --- Handle distribution question response (asking_distribution sub-state) ---
+    if (state.subState === "asking_distribution") {
+      if (action.type === "USER_INTENT") {
+        const { intent } = action
+        if (intent.type === "ROOM_TOGETHER") {
+          effects.push({ type: "SET_DISTRIBUTION", preference: "together" })
+          effects.push({ type: "SPEAK", text: "Great, I'll look for the fewest rooms to keep everyone close together." })
+          effects.push({ type: "OPEN_PANEL", panel: "rooms" })
+          return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
+        }
+        if (intent.type === "ROOM_SEPARATE") {
+          effects.push({ type: "SET_DISTRIBUTION", preference: "separate" })
+          effects.push({ type: "SPEAK", text: "Perfect, I'll set up individual rooms for everyone." })
+          effects.push({ type: "OPEN_PANEL", panel: "rooms" })
+          return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
+        }
+        if (intent.type === "ROOM_AUTO" || intent.type === "AFFIRMATIVE") {
+          effects.push({ type: "SET_DISTRIBUTION", preference: "auto" })
+          effects.push({ type: "SPEAK", text: "Leave it with me — I'll suggest the best layout for your group." })
+          effects.push({ type: "OPEN_PANEL", panel: "rooms" })
+          return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
+        }
+        // Any other intent while asking → treat as "auto" and proceed
+        if (intent.type === "ROOMS" || intent.type === "BOOK" || intent.type === "UNKNOWN") {
+          effects.push({ type: "SET_DISTRIBUTION", preference: "auto" })
+          effects.push({ type: "OPEN_PANEL", panel: "rooms" })
+          return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
+        }
+      }
+      if (action.type === "DISTRIBUTION_ANSWERED") {
+        effects.push({ type: "SET_DISTRIBUTION", preference: action.preference })
+        effects.push({ type: "OPEN_PANEL", panel: "rooms" })
+        return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
+      }
+    }
+
     if (action.type === "USER_INTENT") {
       const { intent } = action
 
@@ -328,6 +364,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           // Note: suggestedAmenityName "yes" is intercepted in useJourney before reaching here
           const proposal = state.lastProposal ?? "rooms"
           if (proposal === "rooms" || proposal === "book") {
+            // Intercepted in useJourney to check if distribution question is needed
             effects.push({ type: "SPEAK", text: "Let me pull up the available rooms." })
             effects.push({ type: "OPEN_PANEL", panel: "rooms" })
             return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
@@ -347,6 +384,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
         }
 
         case "ROOMS":
+          // Note: useJourney intercepts this to check if distribution question is needed first
           effects.push({ type: "SPEAK", text: "Let me pull up the available rooms. I'll suggest the best fit based on your group size." })
           effects.push({ type: "OPEN_PANEL", panel: "rooms" })
           return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
@@ -392,6 +430,16 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
         default:
           return { nextState: state, effects: [] }
       }
+    }
+
+    // --- Room capacity validation: user tapped a room that can't hold their party ---
+    if (action.type === "ROOM_CARD_TAPPED_INVALID") {
+      const { roomName, roomCapacity, partySize } = action
+      effects.push({
+        type: "SPEAK",
+        text: `The ${roomName} accommodates up to ${roomCapacity} guests, but your group has ${partySize}. I'd recommend choosing a room type from the highlighted suggestions — they're sized for your party.`,
+      })
+      return { nextState: state, effects }
     }
 
     if (action.type === "ROOM_CARD_TAPPED") {

@@ -58,6 +58,46 @@ export function useIncrementalPersistence() {
   const { selectedHotel } = useApp()
 
   // =========================================================================
+  // Shared: build a SessionSnapshot from current state
+  // =========================================================================
+
+  const buildSnapshot = useCallback(
+    (uid: string, giOverride?: ReturnType<typeof guestIntelligence.getDataSnapshot>): SessionSnapshot => {
+      const gi = giOverride ?? guestIntelligence.getDataSnapshot()
+      return {
+        sessionId,
+        userId: uid,
+        startedAt: sessionStartedAtRef.current,
+        endedAt: new Date().toISOString(),
+        profile: serializeProfile(profile),
+        guestIntelligence: gi,
+        journeyStage,
+        conversationMessages: messages.map((m) => ({
+          sender: m.sender,
+          message: m.message,
+          timestamp: m.timestamp,
+        })),
+        hotel: selectedHotel,
+      }
+    },
+    [sessionId, profile, journeyStage, guestIntelligence, messages, selectedHotel],
+  )
+
+  // =========================================================================
+  // Shared: upload snapshot to Storage (fire-and-forget, with logging)
+  // =========================================================================
+
+  const writeSnapshotToStorage = useCallback(
+    (uid: string, giOverride?: ReturnType<typeof guestIntelligence.getDataSnapshot>) => {
+      const snapshot = buildSnapshot(uid, giOverride)
+      uploadSessionSnapshot(uid, sessionId, snapshot).catch((err) =>
+        console.error("[incremental-persist] Failed to write snapshot to Storage:", err),
+      )
+    },
+    [sessionId, buildSnapshot],
+  )
+
+  // =========================================================================
   // 1. Session start — create pointer + increment totalSessions (once)
   // =========================================================================
 
@@ -80,7 +120,7 @@ export function useIncrementalPersistence() {
   }, [sessionId])
 
   // =========================================================================
-  // 2. Journey stage changes → update session pointer
+  // 2. Journey stage changes → update pointer + write snapshot to Storage
   // =========================================================================
 
   useEffect(() => {
@@ -93,10 +133,13 @@ export function useIncrementalPersistence() {
     }).catch((err) =>
       console.error("[incremental-persist] Failed to update journeyStage:", err),
     )
-  }, [sessionId, journeyStage])
+
+    // Write a milestone snapshot to Storage on every stage transition
+    writeSnapshotToStorage(uid)
+  }, [sessionId, journeyStage, writeSnapshotToStorage])
 
   // =========================================================================
-  // 3. Hotel selection → update session pointer
+  // 3. Hotel selection → update pointer + write snapshot to Storage
   // =========================================================================
 
   useEffect(() => {
@@ -108,7 +151,10 @@ export function useIncrementalPersistence() {
     }).catch((err) =>
       console.error("[incremental-persist] Failed to update hotel:", err),
     )
-  }, [sessionId, selectedHotel])
+
+    // Milestone snapshot — hotel selection is a key moment
+    writeSnapshotToStorage(uid)
+  }, [sessionId, selectedHotel, writeSnapshotToStorage])
 
   // =========================================================================
   // 4. Profile changes → debounced merge to personality + preferences (3s)
@@ -189,7 +235,10 @@ export function useIncrementalPersistence() {
         console.error("[incremental-persist] Failed to increment bookings:", err),
       )
     }
-  }, [sessionId, guestIntelligence.data.bookingOutcome])
+
+    // Milestone snapshot — booking outcome change is significant
+    writeSnapshotToStorage(uid)
+  }, [sessionId, guestIntelligence.data.bookingOutcome, writeSnapshotToStorage])
 
   // =========================================================================
   // 7. End-of-session snapshot (final flush with AI analysis)
@@ -254,23 +303,8 @@ export function useIncrementalPersistence() {
       // Update session pointer endedAt
       await updateSessionPointerFields(uid, sessionId, { endedAt: now }).catch(() => {})
 
-      // Upload full snapshot to Storage
-      const snapshot: SessionSnapshot = {
-        sessionId,
-        userId: uid,
-        startedAt: sessionStartedAtRef.current,
-        endedAt: now,
-        profile: serializeProfile(profile),
-        guestIntelligence: giSnapshot,
-        journeyStage,
-        conversationMessages: messages.map((m) => ({
-          sender: m.sender,
-          message: m.message,
-          timestamp: m.timestamp,
-        })),
-        hotel: selectedHotel,
-      }
-
+      // Upload final snapshot to Storage (overwrites milestone snapshots)
+      const snapshot = buildSnapshot(uid, giSnapshot)
       await uploadSessionSnapshot(uid, sessionId, snapshot)
 
       console.log("[incremental-persist] End-of-session snapshot written:", sessionId)
@@ -278,10 +312,10 @@ export function useIncrementalPersistence() {
       console.error("[incremental-persist] Failed end-of-session snapshot:", err)
       endOfSessionDoneRef.current = false
     }
-  }, [sessionId, profile, journeyStage, guestIntelligence, userMessages, messages, selectedHotel])
+  }, [sessionId, profile, journeyStage, guestIntelligence, userMessages, messages, selectedHotel, buildSnapshot])
 
   // =========================================================================
-  // 8. Visibility change — flush endedAt timestamp (data already persisted)
+  // 8. Visibility change — flush pending writes + snapshot to Storage
   // =========================================================================
 
   useEffect(() => {
@@ -304,11 +338,14 @@ export function useIncrementalPersistence() {
       updateSessionPointerFields(uid, sessionId, {
         endedAt: new Date().toISOString(),
       }).catch(() => {})
+
+      // Attempt a snapshot write (may or may not complete before browser kills page)
+      writeSnapshotToStorage(uid)
     }
 
     document.addEventListener("visibilitychange", handleVisibilityChange)
     return () => document.removeEventListener("visibilitychange", handleVisibilityChange)
-  }, [sessionId, profile, guestIntelligence])
+  }, [sessionId, profile, guestIntelligence, writeSnapshotToStorage])
 
   return { sessionId, writeEndOfSessionSnapshot }
 }

@@ -18,7 +18,7 @@ import { useAuth } from "@/lib/auth-context"
 import { useEmit } from "@/lib/events"
 import { useJourney } from "@/lib/orchestrator"
 import { useUE5Bridge } from "@/lib/ue5/bridge"
-import { hotels, getHotelBySlug, getRoomsByHotelId, getAmenitiesByHotelId, getRecommendedRoomId } from "@/lib/hotel-data"
+import { hotels, getHotelBySlug, getRoomsByHotelId, getAmenitiesByHotelId, getRecommendedRoomId, getRecommendedRoomPlan } from "@/lib/hotel-data"
 import type { Room } from "@/lib/hotel-data"
 import { useUE5WebSocket } from "@/lib/useUE5WebSocket"
 import { GlassPanel } from "@/components/glass-panel"
@@ -783,6 +783,18 @@ function HomePageContent({ ephemeralContextId }: { ephemeralContextId: string | 
     [rooms, profile.familySize, profile.budgetRange],
   )
 
+  const recommendedPlan = useMemo(
+    () => getRecommendedRoomPlan(
+      rooms,
+      profile.familySize,
+      profile.guestComposition,
+      profile.travelPurpose,
+      profile.budgetRange,
+      profile.distributionPreference,
+    ),
+    [rooms, profile.familySize, profile.guestComposition, profile.travelPurpose, profile.budgetRange, profile.distributionPreference],
+  )
+
   // --- Panel open/close callbacks (passed to useJourney) ---
   const handleOpenPanel = useCallback((panel: "rooms" | "amenities" | "location") => {
     if (panel === "rooms") {
@@ -964,6 +976,7 @@ function HomePageContent({ ephemeralContextId }: { ephemeralContextId: string | 
         onSelectRoom={handleSelectRoom}
         onClose={closeRoomsPanel}
         recommendedRoomId={recommendedRoomId}
+        recommendedPlan={recommendedPlan}
       />
     </>
   )

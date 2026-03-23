@@ -20,6 +20,9 @@ export type UserIntent =
   | { type: "NEGATIVE" }
   | { type: "TRAVEL_TO_HOTEL" }
   | { type: "OTHER_OPTIONS" }
+  | { type: "ROOM_TOGETHER" }
+  | { type: "ROOM_SEPARATE" }
+  | { type: "ROOM_AUTO" }
   | { type: "UNKNOWN" }
 
 const DOWNLOAD_DATA_RE = /\bdownload\s+user\s+data\b/
@@ -35,6 +38,9 @@ const INTERIOR_RE = /\b(interior|inside|indoor|in)\b/
 const EXTERIOR_RE = /\b(exterior|outside|outdoor|out|view)\b/
 const BACK_RE = /\b(back|return|cancel|nevermind|never mind|go back)\b/
 const OTHER_OPTIONS_RE = /\b(other\s+options|something\s+else|explore\s+(?:other|more)|see\s+(?:other|more)|different\s+option|alternatives|what\s+else|other\s+choices|more\s+options)\b/i
+const ROOM_TOGETHER_RE = /\b(shar(?:e|ing)\s+rooms?|together|same\s+room|fewer\s+rooms?|all\s+together|one\s+(?:big\s+)?room|minimize\s+rooms?)\b/i
+const ROOM_SEPARATE_RE = /\b(separate\s+rooms?|own\s+room|individual\s+rooms?|each\s+(?:their|our)\s+own|one\s+each|(?:a\s+)?room\s+each|private\s+rooms?|my\s+own\s+room)\b/i
+const ROOM_AUTO_RE = /\b(you\s+decide|you\s+recommend|suggest(?:\s+(?:a|one|the))?|up\s+to\s+you|whatever\s+works|your\s+(?:call|choice|recommendation)|best\s+(?:option|layout)|recommend\s+(?:one|a layout))\b/i
 const HOTEL_EXPLORE_RE =
   /(?:\b(explore|tour|see|show|walk around|look around|view)\b.*\bhotel\b|\bhotel\b.*\b(explore|tour|see|show|walk around|look around|view)\b|\bhotel view\b)/
 
@@ -96,6 +102,11 @@ export function classifyIntent(message: string): UserIntent {
   if (amenityNameMatch) {
     return { type: "AMENITY_BY_NAME", amenityName: amenityNameMatch[1] }
   }
+
+  // --- room distribution preferences ---
+  if (ROOM_SEPARATE_RE.test(lower)) return { type: "ROOM_SEPARATE" }
+  if (ROOM_TOGETHER_RE.test(lower)) return { type: "ROOM_TOGETHER" }
+  if (ROOM_AUTO_RE.test(lower)) return { type: "ROOM_AUTO" }
 
   // --- "other options" / "something else" → context-dependent, resolved by journey machine ---
   if (OTHER_OPTIONS_RE.test(lower)) return { type: "OTHER_OPTIONS" }

@@ -8,6 +8,8 @@ export type GuestComposition = {
   childrenAges?: number[]
 }
 
+export type DistributionPreference = "together" | "separate" | "auto"
+
 export type UserProfile = {
   // --- From Login (P0) ---
   firstName?: string
@@ -24,6 +26,7 @@ export type UserProfile = {
   destination?: string
   roomTypePreference?: string
   accessibilityNeeds?: string[]
+  distributionPreference?: DistributionPreference
 
   // --- From Conversation (P1) ---
   interests: string[]
