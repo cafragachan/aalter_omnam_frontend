@@ -4,13 +4,25 @@ import { useCallback, useEffect, useRef } from "react"
 import { useUserProfileContext } from "@/lib/context"
 import { useUserProfile } from "@/lib/liveavatar"
 import { useAvatarActions } from "@/lib/liveavatar/useAvatarActions"
+import { useLiveAvatarContext } from "@/lib/liveavatar/context"
+import { MessageSender } from "@/lib/liveavatar/types"
 import { useEventBus, useEventListener } from "@/lib/events"
 import { useGuestIntelligence } from "@/lib/guest-intelligence"
-import { classifyIntent } from "./intents"
+import { classifyIntent, classifyAvatarProposal } from "./intents"
 import { journeyReducer, INITIAL_JOURNEY_STATE, buildAmenityNarrative } from "./journey-machine"
 import { useIdleDetection } from "./idle-detection"
 import type { JourneyState, JourneyAction, JourneyEffect, AmenityRef } from "./types"
-import { getRecommendedAmenity, type Amenity, type Room } from "@/lib/hotel-data"
+import {
+  getRecommendedAmenity,
+  getRecommendedRoomPlan,
+  getBudgetRoomPlan,
+  getCompactRoomPlan,
+  buildExplicitRoomPlan,
+  parseExplicitRoomRequests,
+  type Amenity,
+  type Room,
+  type RoomPlan,
+} from "@/lib/hotel-data"
 
 // ---------------------------------------------------------------------------
 // useJourney — wires the pure state machine to React
@@ -24,6 +36,8 @@ type UseJourneyOptions = {
   onFadeTransition: () => void
   onSelectHotel: (slug: string) => void
   onUnitSelected?: (roomName: string) => void
+  /** Callback to update the displayed room plan (dynamic adjustments) */
+  onUpdateRoomPlan?: (plan: RoomPlan) => void
   /** Amenities for the currently selected hotel (needed for voice-driven navigation) */
   amenities: Amenity[]
   /** Rooms for the currently selected hotel (needed for booking URL resolution) */
@@ -44,6 +58,7 @@ export function useJourney(options: UseJourneyOptions) {
 
   const { profile, journeyStage, setJourneyStage, updateProfile } = useUserProfileContext()
   const { profile: derivedProfile, isExtractionPending, userMessages } = useUserProfile()
+  const { messages: allMessages } = useLiveAvatarContext()
   const { repeat, interrupt, stopListening } = useAvatarActions("FULL")
   const eventBus = useEventBus()
   const guestIntelligence = useGuestIntelligence()
@@ -56,6 +71,7 @@ export function useJourney(options: UseJourneyOptions) {
   const destinationAnnouncedRef = useRef(false)
   const profileDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const currentRoomIdRef = useRef<string | null>(null)
+  const lastAvatarMessageCountRef = useRef(0)
 
   // --- Admin: download all collected user data as JSON ---
   const downloadUserData = useCallback(async () => {
@@ -141,6 +157,9 @@ export function useJourney(options: UseJourneyOptions) {
         case "SET_DISTRIBUTION":
           updateProfile({ distributionPreference: effect.preference })
           break
+        case "UPDATE_ROOM_PLAN":
+          options.onUpdateRoomPlan?.(effect.plan)
+          break
         case "OPEN_BOOKING_URL": {
           const roomId = currentRoomIdRef.current
           if (roomId) {
@@ -225,6 +244,97 @@ export function useJourney(options: UseJourneyOptions) {
     return needsMultiRoom || businessTrip
   }, [profile, derivedProfile, rooms])
 
+  /** Handle dynamic room plan adjustments (budget, compact, distribution change) */
+  const handlePlanAdjustment = useCallback((
+    mode: "budget" | "compact" | "distribution",
+    _message: string,
+    distributionOverride?: "together" | "separate",
+  ) => {
+    const partySize = profile.familySize ?? derivedProfile.partySize
+    if (!partySize || rooms.length === 0) return
+
+    let newPlan: RoomPlan | null = null
+    let speechText = ""
+
+    if (mode === "budget") {
+      newPlan = getBudgetRoomPlan(rooms, partySize)
+      if (newPlan) {
+        const summary = newPlan.entries
+          .map((e) => `${e.quantity > 1 ? `${e.quantity} ` : ""}${e.roomName}${e.quantity > 1 ? " rooms" : ""}`)
+          .join(" and ")
+        speechText = `Here's a more budget-friendly option: ${summary} at $${newPlan.totalPricePerNight.toLocaleString()} per night. How does that look?`
+      }
+    } else if (mode === "compact") {
+      newPlan = getCompactRoomPlan(rooms, partySize)
+      if (newPlan) {
+        const roomCount = newPlan.entries.reduce((sum, e) => sum + e.quantity, 0)
+        const summary = newPlan.entries
+          .map((e) => `${e.quantity > 1 ? `${e.quantity} ` : ""}${e.roomName}${e.quantity > 1 ? " rooms" : ""}`)
+          .join(" and ")
+        speechText = `I've packed your group into ${roomCount} room${roomCount > 1 ? "s" : ""}: ${summary} at $${newPlan.totalPricePerNight.toLocaleString()} per night. What do you think?`
+      }
+    } else if (mode === "distribution") {
+      const pref = distributionOverride ?? profile.distributionPreference
+      newPlan = getRecommendedRoomPlan(
+        rooms, partySize, profile.guestComposition, profile.travelPurpose, profile.budgetRange, pref,
+      )
+      if (newPlan) {
+        const summary = newPlan.entries
+          .map((e) => `${e.quantity > 1 ? `${e.quantity} ` : ""}${e.roomName}${e.quantity > 1 ? " rooms" : ""}`)
+          .join(" and ")
+        speechText = pref === "together"
+          ? `Here's a layout keeping everyone close: ${summary} at $${newPlan.totalPricePerNight.toLocaleString()} per night.`
+          : `Here's a layout with separate rooms: ${summary} at $${newPlan.totalPricePerNight.toLocaleString()} per night.`
+      }
+    }
+
+    if (newPlan) {
+      interrupt()
+      repeat(speechText).catch(() => undefined)
+      executeEffects([{ type: "UPDATE_ROOM_PLAN", plan: newPlan }])
+      // Ensure the rooms panel is open
+      if (stateRef.current.stage === "HOTEL_EXPLORATION" && stateRef.current.subState !== "panel_open") {
+        executeEffects([{ type: "OPEN_PANEL", panel: "rooms" }])
+        stateRef.current = { stage: "HOTEL_EXPLORATION", subState: "panel_open" }
+      }
+    }
+  }, [profile, derivedProfile, rooms, interrupt, repeat, executeEffects])
+
+  /** Handle explicit room composition from user (e.g., "4 standard rooms and 2 loft suites") */
+  const handleExplicitComposition = useCallback((
+    requests: { roomId: string; quantity: number }[],
+  ) => {
+    const partySize = profile.familySize ?? derivedProfile.partySize
+    const { plan, warning } = buildExplicitRoomPlan(requests, rooms, partySize)
+
+    if (plan.entries.length === 0) {
+      interrupt()
+      repeat("I couldn't quite match those room types. Could you describe the combination you'd like?").catch(() => undefined)
+      return
+    }
+
+    const summary = plan.entries
+      .map((e) => `${e.quantity} ${e.roomName}${e.quantity > 1 ? " rooms" : ""}`)
+      .join(" and ")
+
+    let speechText = `Got it — ${summary} at $${plan.totalPricePerNight.toLocaleString()} per night total.`
+    if (warning) {
+      speechText += ` Just a heads up: ${warning}`
+    } else {
+      speechText += " How does that look?"
+    }
+
+    interrupt()
+    repeat(speechText).catch(() => undefined)
+    executeEffects([{ type: "UPDATE_ROOM_PLAN", plan }])
+
+    // Ensure the rooms panel is open
+    if (stateRef.current.stage === "HOTEL_EXPLORATION" && stateRef.current.subState !== "panel_open") {
+      executeEffects([{ type: "OPEN_PANEL", panel: "rooms" }])
+      stateRef.current = { stage: "HOTEL_EXPLORATION", subState: "panel_open" }
+    }
+  }, [profile, derivedProfile, rooms, interrupt, repeat, executeEffects])
+
   /** Dispatch LIST_AMENITIES action with pre-computed hotel data */
   const dispatchListAmenities = useCallback(() => {
     const recommended = getRecommendedAmenity(amenities, profile.travelPurpose)
@@ -250,21 +360,32 @@ export function useJourney(options: UseJourneyOptions) {
   // --- React to profile changes ---
   useEffect(() => {
     const profileKey = JSON.stringify({
-      partySize: derivedProfile.partySize,
+      partySize: derivedProfile.partySize ?? profile.familySize,
+      guestComposition: derivedProfile.guestComposition ?? profile.guestComposition,
       startDate: derivedProfile.startDate?.toISOString(),
       endDate: derivedProfile.endDate?.toISOString(),
       interests: derivedProfile.interests,
-      travelPurpose: derivedProfile.travelPurpose,
+      travelPurpose: derivedProfile.travelPurpose ?? profile.travelPurpose,
       pending: isExtractionPending,
     })
 
     if (profileKey === lastProfileKeyRef.current) return
     lastProfileKeyRef.current = profileKey
 
+    // Merge conversation-extracted profile with pre-seeded context values
+    // so that returning-user defaults (e.g. guestComposition) are visible
+    // to the journey machine even before the user explicitly restates them.
+    const mergedProfile = {
+      ...derivedProfile,
+      partySize: derivedProfile.partySize ?? profile.familySize,
+      guestComposition: derivedProfile.guestComposition ?? profile.guestComposition,
+      travelPurpose: derivedProfile.travelPurpose ?? profile.travelPurpose,
+    }
+
     const doDispatch = () => {
       dispatch({
         type: "PROFILE_UPDATED",
-        profile: derivedProfile,
+        profile: mergedProfile,
         firstName: profile.firstName,
         isExtractionPending,
       })
@@ -276,8 +397,8 @@ export function useJourney(options: UseJourneyOptions) {
     // so HeyGen's AI persona doesn't keep asking follow-up questions.
     if (stateRef.current.stage === "PROFILE_COLLECTION") {
       const profileReady = !isExtractionPending
-        && derivedProfile.startDate && derivedProfile.endDate
-        && derivedProfile.partySize && derivedProfile.travelPurpose
+        && mergedProfile.startDate && mergedProfile.endDate
+        && mergedProfile.partySize && mergedProfile.travelPurpose
 
       if (profileReady) {
         if (profileDebounceRef.current) clearTimeout(profileDebounceRef.current)
@@ -293,7 +414,7 @@ export function useJourney(options: UseJourneyOptions) {
     }
 
     doDispatch()
-  }, [derivedProfile, isExtractionPending, profile.firstName, dispatch])
+  }, [derivedProfile, isExtractionPending, profile.firstName, profile.familySize, profile.guestComposition, profile.travelPurpose, dispatch])
 
   // --- React to new user messages (intent classification + question tracking) ---
   useEffect(() => {
@@ -415,8 +536,56 @@ export function useJourney(options: UseJourneyOptions) {
       return
     }
 
+    // --- Intercept room plan adjustment intents (panel must be open or in exploration) ---
+    const isRoomContext = currentState.stage === "HOTEL_EXPLORATION" || currentState.stage === "ROOM_SELECTED"
+
+    if (isRoomContext && intent.type === "ROOM_PLAN_CHEAPER") {
+      handlePlanAdjustment("budget", latestMessage)
+      return
+    }
+
+    if (isRoomContext && intent.type === "ROOM_PLAN_COMPACT") {
+      handlePlanAdjustment("compact", latestMessage)
+      return
+    }
+
+    // Distribution change while panel is open → recompute plan with new distribution
+    if (isRoomContext && (intent.type === "ROOM_TOGETHER" || intent.type === "ROOM_SEPARATE")) {
+      const newPref = intent.type === "ROOM_TOGETHER" ? "together" as const : "separate" as const
+      updateProfile({ distributionPreference: newPref })
+      handlePlanAdjustment("distribution", latestMessage, newPref)
+      return
+    }
+
+    // --- Try to parse explicit room composition from the raw message ---
+    if (isRoomContext && (intent.type === "UNKNOWN" || intent.type === "ROOMS")) {
+      const explicitRequests = parseExplicitRoomRequests(latestMessage, rooms)
+      if (explicitRequests && explicitRequests.length > 0) {
+        handleExplicitComposition(explicitRequests)
+        return
+      }
+    }
+
     dispatch({ type: "USER_INTENT", intent })
-  }, [userMessages, dispatch, trackQuestion, trackRequirement, dispatchListAmenities, navigateToAmenityByName, startRoomTimer, stopExplorationTimer, profile, derivedProfile, rooms, interrupt, repeat])
+  }, [userMessages, dispatch, trackQuestion, trackRequirement, dispatchListAmenities, navigateToAmenityByName, startRoomTimer, stopExplorationTimer, profile, derivedProfile, rooms, interrupt, repeat, handlePlanAdjustment, handleExplicitComposition])
+
+  // --- React to new avatar messages (proposal classification) ---
+  useEffect(() => {
+    const avatarMessages = allMessages.filter((m) => m.sender === MessageSender.AVATAR)
+    if (avatarMessages.length <= lastAvatarMessageCountRef.current) return
+    lastAvatarMessageCountRef.current = avatarMessages.length
+
+    const latestAvatarMessage = avatarMessages[avatarMessages.length - 1]?.message ?? ""
+
+    // Only classify proposals in stages that use lastProposal
+    const stage = stateRef.current.stage
+    if (stage !== "HOTEL_EXPLORATION" && stage !== "ROOM_SELECTED" && stage !== "AMENITY_VIEWING") return
+
+    const proposal = classifyAvatarProposal(latestAvatarMessage)
+    if (proposal) {
+      dispatch({ type: "AVATAR_PROPOSAL", proposal: proposal.proposal, amenityName: proposal.amenityName })
+    }
+  }, [allMessages, dispatch])
 
   // --- Announce destination overlay when stage transitions ---
   useEffect(() => {

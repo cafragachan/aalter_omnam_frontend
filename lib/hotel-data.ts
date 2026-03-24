@@ -426,3 +426,172 @@ export function validateRoomForParty(
   if (partySize <= capacity) return null
   return `The ${room.name} accommodates up to ${capacity} guests, but your group has ${partySize}. Would you like me to suggest a combination that works?`
 }
+
+// ---------------------------------------------------------------------------
+// Alternative plan generators (used for dynamic plan adjustments)
+// ---------------------------------------------------------------------------
+
+/**
+ * Generate the cheapest possible plan that accommodates the party.
+ * Prioritizes lowest total price, then fewest rooms, then least waste.
+ */
+export function getBudgetRoomPlan(
+  rooms: Room[],
+  partySize: number,
+): RoomPlan | null {
+  if (partySize <= 0 || rooms.length === 0) return null
+
+  const candidates = generateCandidatePlans(rooms, partySize)
+  if (candidates.length === 0) return null
+
+  const scored = candidates.map((plan) => {
+    const waste = plan.totalCapacity - partySize
+    const roomCount = plan.entries.reduce((sum, e) => sum + e.quantity, 0)
+    // Budget: lowest price first, then fewer rooms, then less waste
+    const score = plan.totalPricePerNight * 1000 + roomCount * 100 + waste
+    return { plan, score }
+  })
+
+  scored.sort((a, b) => a.score - b.score)
+  return scored[0].plan
+}
+
+/**
+ * Generate the most compact plan (fewest rooms possible).
+ */
+export function getCompactRoomPlan(
+  rooms: Room[],
+  partySize: number,
+): RoomPlan | null {
+  if (partySize <= 0 || rooms.length === 0) return null
+
+  const candidates = generateCandidatePlans(rooms, partySize)
+  if (candidates.length === 0) return null
+
+  const scored = candidates.map((plan) => {
+    const waste = plan.totalCapacity - partySize
+    const roomCount = plan.entries.reduce((sum, e) => sum + e.quantity, 0)
+    // Compact: fewest rooms first, then least waste, then cheapest
+    const score = roomCount * 100000 + waste * 1000 + plan.totalPricePerNight
+    return { plan, score }
+  })
+
+  scored.sort((a, b) => a.score - b.score)
+  return scored[0].plan
+}
+
+/**
+ * Build a plan from explicit user-specified room quantities.
+ * Returns the plan and a warning if total capacity doesn't cover the party.
+ *
+ * @param requests Array of { roomId, quantity } the user asked for
+ * @param rooms All available rooms (for price/name lookup)
+ * @param partySize Total guests (for capacity validation)
+ */
+export function buildExplicitRoomPlan(
+  requests: { roomId: string; quantity: number }[],
+  rooms: Room[],
+  partySize: number | undefined,
+): { plan: RoomPlan; warning: string | null } {
+  const items: { room: Room; qty: number }[] = []
+  for (const req of requests) {
+    const room = rooms.find((r) => r.id === req.roomId)
+    if (room) {
+      items.push({ room, qty: req.quantity })
+    }
+  }
+
+  if (items.length === 0) {
+    return {
+      plan: { entries: [], totalCapacity: 0, totalPricePerNight: 0 },
+      warning: "I couldn't find those room types. Could you try again?",
+    }
+  }
+
+  const plan = buildPlan(items)
+
+  let warning: string | null = null
+  if (partySize && plan.totalCapacity < partySize) {
+    warning = `That combination holds ${plan.totalCapacity} guests, but your group has ${partySize}. You might need an additional room to fit everyone.`
+  }
+
+  return { plan, warning }
+}
+
+/**
+ * Try to match room names/types from a user's free-text message.
+ * Returns an array of { roomId, quantity } or null if no rooms matched.
+ *
+ * Handles patterns like:
+ * - "4 standard rooms and 2 loft suites"
+ * - "3 of the lake view and 1 penthouse"
+ * - "two mountain view rooms"
+ */
+export function parseExplicitRoomRequests(
+  message: string,
+  rooms: Room[],
+): { roomId: string; quantity: number }[] | null {
+  const lower = message.toLowerCase()
+  const results: { roomId: string; quantity: number }[] = []
+
+  const wordToNum: Record<string, number> = {
+    one: 1, two: 2, three: 3, four: 4, five: 5,
+    six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+  }
+
+  for (const room of rooms) {
+    // Build match keywords from room name
+    const nameLower = room.name.toLowerCase()
+    const nameWords = nameLower.split(/\s+/)
+
+    // Check if any distinguishing part of the room name appears in the message
+    // Use the most specific match (e.g., "standard lake view" > "standard")
+    let matched = false
+    if (lower.includes(nameLower)) {
+      matched = true
+    } else {
+      // Try partial matches: "lake view", "mountain view", "penthouse", "loft suite", "standard"
+      const partials = [
+        nameWords.slice(0, 2).join(" "), // e.g., "standard lake"
+        nameWords.slice(1).join(" "),     // e.g., "lake view"
+        nameWords[0],                     // e.g., "standard"
+        nameWords[nameWords.length - 1],  // e.g., "view"
+      ].filter((p) => p.length > 3) // skip very short words
+
+      for (const partial of partials) {
+        if (lower.includes(partial)) {
+          matched = true
+          break
+        }
+      }
+    }
+
+    if (!matched) continue
+
+    // Find the quantity preceding or near the room name mention
+    // Pattern: "4 standard" or "four lake view" or "2 of the penthouse"
+    const qtyPatterns = [
+      new RegExp(`(\\d+)\\s+(?:of\\s+(?:the\\s+)?)?(?:${nameWords.join("[\\s-]*")})`, "i"),
+      new RegExp(`(\\d+)\\s+(?:of\\s+(?:the\\s+)?)?(?:${nameWords.slice(0, 2).join("[\\s-]*")})`, "i"),
+      new RegExp(`(\\d+)\\s+(?:of\\s+(?:the\\s+)?)?(?:${nameWords[0]})`, "i"),
+      // Word numbers: "two standard"
+      new RegExp(`(one|two|three|four|five|six|seven|eight|nine|ten)\\s+(?:of\\s+(?:the\\s+)?)?(?:${nameWords[0]})`, "i"),
+    ]
+
+    let qty = 1 // default to 1 if name mentioned but no number
+    for (const pattern of qtyPatterns) {
+      const match = lower.match(pattern)
+      if (match?.[1]) {
+        const parsed = wordToNum[match[1].toLowerCase()] ?? parseInt(match[1])
+        if (parsed > 0) {
+          qty = parsed
+          break
+        }
+      }
+    }
+
+    results.push({ roomId: room.id, quantity: qty })
+  }
+
+  return results.length > 0 ? results : null
+}

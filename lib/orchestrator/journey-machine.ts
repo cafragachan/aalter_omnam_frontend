@@ -182,6 +182,30 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
   }
 
   // -----------------------------------------------------------------------
+  // AVATAR_PROPOSAL — update lastProposal based on what the avatar said
+  // -----------------------------------------------------------------------
+  if (action.type === "AVATAR_PROPOSAL") {
+    if (state.stage === "HOTEL_EXPLORATION") {
+      return {
+        nextState: {
+          ...state,
+          lastProposal: action.proposal,
+          suggestedAmenityName: action.amenityName ?? state.suggestedAmenityName,
+        },
+        effects: [],
+      }
+    }
+    if (state.stage === "ROOM_SELECTED") {
+      return {
+        nextState: { ...state, lastProposal: action.proposal },
+        effects: [],
+      }
+    }
+    // AMENITY_VIEWING tracks suggestedNext via its own mechanism
+    return { nextState: state, effects: [] }
+  }
+
+  // -----------------------------------------------------------------------
   // DOWNLOAD_DATA — admin command, works from any stage
   // -----------------------------------------------------------------------
   if (action.type === "USER_INTENT" && action.intent.type === "DOWNLOAD_DATA") {

@@ -54,6 +54,7 @@ export type JourneyAction =
       travelPurpose?: string
       recommendedAmenityName?: string
     }
+  | { type: "AVATAR_PROPOSAL"; proposal: LastProposal; amenityName?: string }
   | { type: "DISTRIBUTION_ANSWERED"; preference: DistributionPreference }
   | { type: "ROOM_CARD_TAPPED_INVALID"; roomName: string; roomCapacity: number; partySize: number }
 
@@ -74,6 +75,7 @@ export type JourneyEffect =
   | { type: "SELECT_HOTEL"; slug: string; hotelName: string; location: string; description: string }
   | { type: "STOP_LISTENING" }
   | { type: "SET_DISTRIBUTION"; preference: DistributionPreference }
+  | { type: "UPDATE_ROOM_PLAN"; plan: import("@/lib/hotel-data").RoomPlan; warning?: string }
 
 // ---------------------------------------------------------------------------
 // Reducer result

@@ -118,7 +118,7 @@ function LoginOverlay({ onComplete }: { onComplete: () => void }) {
   const [authError, setAuthError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
 
-  const { login, register } = useAuth()
+  const { login, register, isAuthenticated, isAuthReady, userProfile } = useAuth()
   const { updateProfile, setJourneyStage } = useUserProfileContext()
 
   // Start messages phase after 1s of video
@@ -141,6 +141,22 @@ function LoginOverlay({ onComplete }: { onComplete: () => void }) {
           if (messageIndex < INTRO_MESSAGES.length - 1) {
             setMessageIndex((prev) => prev + 1)
             setTyping(true)
+          } else if (isAuthReady && isAuthenticated && userProfile) {
+            // Already authenticated — skip login form, sync profile, go to farewell
+            updateProfile({
+              firstName: userProfile.firstName,
+              lastName: userProfile.lastName,
+              email: userProfile.email,
+              familySize: 1,
+              phoneNumber: userProfile.phoneNumber || undefined,
+              dateOfBirth: userProfile.dateOfBirth ? new Date(userProfile.dateOfBirth) : undefined,
+              nationality: userProfile.nationality || undefined,
+              languagePreference: userProfile.languagePreference || undefined,
+            })
+            setJourneyStage("PROFILE_COLLECTION")
+            setPhase("farewell")
+            setFarewellIndex(0)
+            setTyping(true)
           } else {
             setPhase("login")
             setTimeout(() => setShowForm(true), 200)
@@ -158,7 +174,7 @@ function LoginOverlay({ onComplete }: { onComplete: () => void }) {
       return () => clearTimeout(nextTimer)
     }, HOLD_AFTER_TYPING)
     return () => clearTimeout(fadeOutTimer)
-  }, [messageIndex, farewellIndex, phase, onComplete])
+  }, [messageIndex, farewellIndex, phase, onComplete, isAuthReady, isAuthenticated, userProfile, updateProfile, setJourneyStage])
 
   /** After successful auth, sync profile and transition to farewell */
   const completeAuth = useCallback(
@@ -583,10 +599,8 @@ function MicToggle() {
 // ---------------------------------------------------------------------------
 
 export default function HomePage() {
-  const { isAuthenticated, isAuthReady, userProfile, returningUserData, firebaseUser } = useAuth()
+  const { isAuthenticated, userProfile, returningUserData, firebaseUser } = useAuth()
   const [introComplete, setIntroComplete] = useState(false)
-  // Track whether we've already evaluated the "skip overlay" decision
-  const hasCheckedAuthRef = useRef(false)
   const [ue5Ready, setUe5Ready] = useState(false)
   const [sessionToken, setSessionToken] = useState<string | null>(null)
   const [contextId, setContextId] = useState<string | null>(null)
@@ -594,15 +608,6 @@ export default function HomePage() {
   const sessionUserIdRef = useRef<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  // Auto-complete intro for already-authenticated users (skip login overlay).
-  // Wait until isAuthReady so we don't read a stale isAuthenticated value.
-  useEffect(() => {
-    if (!isAuthReady || hasCheckedAuthRef.current) return
-    hasCheckedAuthRef.current = true
-    if (isAuthenticated) {
-      setIntroComplete(true)
-    }
-  }, [isAuthReady, isAuthenticated])
 
   // Cleanup ephemeral context on tab close / navigation away
   useEffect(() => {
@@ -743,6 +748,7 @@ function HomePageContent({ ephemeralContextId }: { ephemeralContextId: string | 
     if (hasHydratedRef.current || !returningUserData) return
     hasHydratedRef.current = true
     const { personality, preferences } = returningUserData
+    const comp = preferences?.typicalGuestComposition ?? undefined
     updateProfile({
       interests: personality?.interests ?? [],
       travelPurpose: personality?.travelPurposes?.[0] ?? undefined,
@@ -750,6 +756,8 @@ function HomePageContent({ ephemeralContextId }: { ephemeralContextId: string | 
       dietaryRestrictions: personality?.dietaryRestrictions ?? [],
       accessibilityNeeds: personality?.accessibilityNeeds ?? [],
       amenityPriorities: preferences?.preferredAmenities ?? [],
+      guestComposition: comp,
+      familySize: comp ? comp.adults + comp.children : undefined,
     })
   }, [returningUserData, updateProfile])
 
@@ -783,7 +791,7 @@ function HomePageContent({ ephemeralContextId }: { ephemeralContextId: string | 
     [rooms, profile.familySize, profile.budgetRange],
   )
 
-  const recommendedPlan = useMemo(
+  const computedPlan = useMemo(
     () => getRecommendedRoomPlan(
       rooms,
       profile.familySize,
@@ -794,6 +802,11 @@ function HomePageContent({ ephemeralContextId }: { ephemeralContextId: string | 
     ),
     [rooms, profile.familySize, profile.guestComposition, profile.travelPurpose, profile.budgetRange, profile.distributionPreference],
   )
+
+  // Mutable plan override — set by dynamic adjustments (budget, compact, explicit composition)
+  // Falls back to computedPlan when null. Reset when the rooms panel closes.
+  const [planOverride, setPlanOverride] = useState<import("@/lib/hotel-data").RoomPlan | null>(null)
+  const recommendedPlan = planOverride ?? computedPlan
 
   // --- Panel open/close callbacks (passed to useJourney) ---
   const handleOpenPanel = useCallback((panel: "rooms" | "amenities" | "location") => {
@@ -826,6 +839,11 @@ function HomePageContent({ ephemeralContextId }: { ephemeralContextId: string | 
     selectHotel(slug)
   }, [selectHotel, updateProfile])
 
+  // --- Room plan update callback (dynamic adjustments from voice) ---
+  const handleUpdateRoomPlan = useCallback((plan: import("@/lib/hotel-data").RoomPlan) => {
+    setPlanOverride(plan)
+  }, [])
+
   // --- Journey orchestrator (runs as a hook, not a component) ---
   const { dispatch: journeyDispatch } = useJourney({
     onOpenPanel: handleOpenPanel,
@@ -834,6 +852,7 @@ function HomePageContent({ ephemeralContextId }: { ephemeralContextId: string | 
     onResetToDefault: handleResetToDefault,
     onFadeTransition: ue5.fadeTransition,
     onSelectHotel: handleAutoSelectHotel,
+    onUpdateRoomPlan: handleUpdateRoomPlan,
     amenities,
     rooms,
   })
@@ -895,6 +914,7 @@ function HomePageContent({ ephemeralContextId }: { ephemeralContextId: string | 
   // --- Panel close handlers ---
   const closeRoomsPanel = useCallback(() => {
     setShowRoomsPanel(false)
+    setPlanOverride(null) // reset dynamic plan override when panel closes
     ue5.resetToDefault()
   }, [ue5])
 
