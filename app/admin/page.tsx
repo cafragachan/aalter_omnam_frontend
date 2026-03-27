@@ -687,7 +687,7 @@ export default function AdminPage() {
           <div className="flex items-center gap-3">
             <img src="/omnam-logo-white.png" alt="Omnam" className="h-6 w-auto opacity-75" />
             <Separator orientation="vertical" className="h-5 bg-white/20" />
-            <h1 className="text-sm font-semibold text-white/80">Back of House</h1>
+            <h1 className="text-sm font-semibold text-white/80">Admin Portal</h1>
           </div>
           <p className="text-xs text-white/30">{firebaseUser?.email}</p>
         </div>
