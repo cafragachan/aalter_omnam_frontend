@@ -121,26 +121,12 @@ function LoginOverlay({ onComplete, skipIntro = false }: { onComplete: () => voi
   const { login, register, isAuthenticated, isAuthReady, userProfile } = useAuth()
   const { updateProfile, setJourneyStage } = useUserProfileContext()
 
-  // Local mode: skip intro animations entirely
+  // Local mode: skip intro animations, always show login form
+  const didSkipRef = useRef(false)
   useEffect(() => {
-    if (!skipIntro) return
-    if (isAuthReady && isAuthenticated && userProfile) {
-      // Already authenticated — sync profile and complete immediately
-      updateProfile({
-        firstName: userProfile.firstName,
-        lastName: userProfile.lastName,
-        email: userProfile.email,
-        familySize: 1,
-        phoneNumber: userProfile.phoneNumber || undefined,
-        dateOfBirth: userProfile.dateOfBirth ? new Date(userProfile.dateOfBirth) : undefined,
-        nationality: userProfile.nationality || undefined,
-        languagePreference: userProfile.languagePreference || undefined,
-      })
-      setJourneyStage("PROFILE_COLLECTION")
-      setPhase("done")
-      onComplete()
-    } else if (isAuthReady && !isAuthenticated) {
-      // Not authenticated — jump straight to login form
+    if (!skipIntro || didSkipRef.current) return
+    if (isAuthReady) {
+      didSkipRef.current = true
       setPhase("login")
       setShowForm(true)
     }
@@ -215,20 +201,14 @@ function LoginOverlay({ onComplete, skipIntro = false }: { onComplete: () => voi
         languagePreference: profile.languagePreference || undefined,
       })
       setJourneyStage("PROFILE_COLLECTION")
-      if (skipIntro) {
-        // Local mode — skip farewell messages, complete immediately
-        setPhase("done")
-        onComplete()
-      } else {
-        setShowForm(false)
-        setTimeout(() => {
-          setPhase("farewell")
-          setFarewellIndex(0)
-          setTyping(true)
-        }, 400)
-      }
+      setShowForm(false)
+      setTimeout(() => {
+        setPhase("farewell")
+        setFarewellIndex(0)
+        setTyping(true)
+      }, 400)
     },
-    [updateProfile, setJourneyStage, skipIntro, onComplete],
+    [updateProfile, setJourneyStage],
   )
 
   const switchMode = useCallback((mode: AuthMode) => {

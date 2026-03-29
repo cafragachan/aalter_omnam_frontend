@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /c/Users/CesarFragachan/Documents/Repos/aalter_omnam_frontend -name *avatar-context-builder* -o -name *context-builder*)"
+    ]
+  }
+}

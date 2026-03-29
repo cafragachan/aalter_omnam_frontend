@@ -11,6 +11,7 @@ import { useGuestIntelligence } from "@/lib/guest-intelligence"
 import { classifyIntent, classifyAvatarProposal } from "./intents"
 import { journeyReducer, INITIAL_JOURNEY_STATE, buildAmenityNarrative } from "./journey-machine"
 import { useIdleDetection } from "./idle-detection"
+import { buildProfileNudge } from "./profile-nudge"
 import type { JourneyState, JourneyAction, JourneyEffect, AmenityRef } from "./types"
 import {
   getRecommendedAmenity,
@@ -59,7 +60,7 @@ export function useJourney(options: UseJourneyOptions) {
   const { profile, journeyStage, setJourneyStage, updateProfile } = useUserProfileContext()
   const { profile: derivedProfile, isExtractionPending, userMessages } = useUserProfile()
   const { messages: allMessages } = useLiveAvatarContext()
-  const { repeat, interrupt, stopListening } = useAvatarActions("FULL")
+  const { repeat, interrupt, stopListening, message } = useAvatarActions("FULL")
   const eventBus = useEventBus()
   const guestIntelligence = useGuestIntelligence()
   const { trackQuestion, trackRoomExplored, trackAmenityExplored, trackRequirement, startRoomTimer, startAmenityTimer, stopExplorationTimer, setBookingOutcome } = guestIntelligence
@@ -72,6 +73,12 @@ export function useJourney(options: UseJourneyOptions) {
   const profileDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const currentRoomIdRef = useRef<string | null>(null)
   const lastAvatarMessageCountRef = useRef(0)
+
+  // --- Profile nudge tracking ---
+  const nudgeAwaitingRef = useRef<string | null>(null)
+  const nudgeCountRef = useRef(0)
+  const nudgeLastSentRef = useRef(0)
+  const avatarMsgsSinceProfileChangeRef = useRef(0)
 
   // --- Admin: download all collected user data as JSON ---
   const downloadUserData = useCallback(async () => {
@@ -372,6 +379,9 @@ export function useJourney(options: UseJourneyOptions) {
     if (profileKey === lastProfileKeyRef.current) return
     lastProfileKeyRef.current = profileKey
 
+    // Profile changed — reset nudge counters so HeyGen gets fresh runway
+    avatarMsgsSinceProfileChangeRef.current = 0
+
     // Merge conversation-extracted profile with pre-seeded context values
     // so that returning-user defaults (e.g. guestComposition) are visible
     // to the journey machine even before the user explicitly restates them.
@@ -572,23 +582,56 @@ export function useJourney(options: UseJourneyOptions) {
     dispatch({ type: "USER_INTENT", intent })
   }, [userMessages, dispatch, trackQuestion, trackRequirement, dispatchListAmenities, navigateToAmenityByName, startRoomTimer, stopExplorationTimer, profile, derivedProfile, rooms, interrupt, repeat, handlePlanAdjustment, handleExplicitComposition])
 
-  // --- React to new avatar messages (proposal classification) ---
+  // --- React to new avatar messages (proposal classification + profile nudges) ---
   useEffect(() => {
     const avatarMessages = allMessages.filter((m) => m.sender === MessageSender.AVATAR)
     if (avatarMessages.length <= lastAvatarMessageCountRef.current) return
     lastAvatarMessageCountRef.current = avatarMessages.length
 
     const latestAvatarMessage = avatarMessages[avatarMessages.length - 1]?.message ?? ""
+    const currentState = stateRef.current
 
-    // Only classify proposals in stages that use lastProposal
-    const stage = stateRef.current.stage
+    // --- Profile nudge: steer HeyGen back when it forgets missing fields ---
+    if (currentState.stage === "PROFILE_COLLECTION" && currentState.awaiting !== "ready" && currentState.awaiting !== "extracting") {
+      avatarMsgsSinceProfileChangeRef.current++
+
+      // Reset nudge escalation when the awaiting field changes (new data captured)
+      if (nudgeAwaitingRef.current !== currentState.awaiting) {
+        nudgeAwaitingRef.current = currentState.awaiting
+        nudgeCountRef.current = 0
+      }
+
+      const now = Date.now()
+      const cooldownMs = 15_000
+      const avatarMsgsThreshold = 2
+
+      if (
+        avatarMsgsSinceProfileChangeRef.current >= avatarMsgsThreshold &&
+        now - nudgeLastSentRef.current > cooldownMs
+      ) {
+        const nudgeText = buildProfileNudge(
+          currentState.awaiting,
+          derivedProfile,
+          nudgeCountRef.current,
+        )
+        if (nudgeText) {
+          message(nudgeText)
+          nudgeLastSentRef.current = now
+          nudgeCountRef.current++
+          avatarMsgsSinceProfileChangeRef.current = 0
+        }
+      }
+    }
+
+    // --- Proposal classification (only in stages that use lastProposal) ---
+    const stage = currentState.stage
     if (stage !== "HOTEL_EXPLORATION" && stage !== "ROOM_SELECTED" && stage !== "AMENITY_VIEWING") return
 
     const proposal = classifyAvatarProposal(latestAvatarMessage)
     if (proposal) {
       dispatch({ type: "AVATAR_PROPOSAL", proposal: proposal.proposal, amenityName: proposal.amenityName })
     }
-  }, [allMessages, dispatch])
+  }, [allMessages, dispatch, derivedProfile, message])
 
   // --- Announce destination overlay when stage transitions ---
   useEffect(() => {

@@ -36,11 +36,20 @@ export const useAvatarActions = (mode: "FULL" | "CUSTOM" = "FULL") => {
     return sessionRef.current?.stopListening()
   }, [sessionRef])
 
+  /** Send a text message to the avatar's LLM (as if the user typed it). */
+  const message = useCallback(
+    (text: string) => {
+      sessionRef.current?.message(text)
+    },
+    [sessionRef],
+  )
+
   return {
     interrupt,
     repeat,
     startListening,
     stopListening,
+    message,
   }
 }
 
