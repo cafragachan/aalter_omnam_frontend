@@ -380,6 +380,7 @@ export function useJourney(options: UseJourneyOptions) {
       partySize: derivedProfile.partySize ?? profile.familySize,
       guestComposition: derivedProfile.guestComposition ?? profile.guestComposition,
       travelPurpose: derivedProfile.travelPurpose ?? profile.travelPurpose,
+      distributionPreference: derivedProfile.distributionPreference ?? profile.distributionPreference,
     }
 
     const doDispatch = () => {
@@ -398,7 +399,9 @@ export function useJourney(options: UseJourneyOptions) {
     if (stateRef.current.stage === "PROFILE_COLLECTION") {
       const profileReady = !isExtractionPending
         && mergedProfile.startDate && mergedProfile.endDate
-        && mergedProfile.partySize && mergedProfile.travelPurpose
+        && mergedProfile.partySize && mergedProfile.guestComposition
+        && mergedProfile.travelPurpose
+        && ((mergedProfile.partySize ?? 1) <= 1 || mergedProfile.distributionPreference)
 
       if (profileReady) {
         if (profileDebounceRef.current) clearTimeout(profileDebounceRef.current)

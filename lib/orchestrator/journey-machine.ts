@@ -33,7 +33,12 @@ export function buildAmenityNarrative(name: string, scene: string): string {
 type ProfileCollectionAwaiting = Extract<JourneyState, { stage: "PROFILE_COLLECTION" }>["awaiting"]
 
 function profileCollectionAwaiting(
-  profile: { partySize?: number; startDate?: Date | null; endDate?: Date | null; travelPurpose?: string; interests: string[]; guestComposition?: { adults: number; children: number } },
+  profile: {
+    partySize?: number; startDate?: Date | null; endDate?: Date | null;
+    travelPurpose?: string; interests: string[];
+    guestComposition?: { adults: number; children: number };
+    distributionPreference?: "together" | "separate" | "auto";
+  },
 ): ProfileCollectionAwaiting {
   const missingDates = !profile.startDate || !profile.endDate
   const missingGuests = !profile.partySize
@@ -43,6 +48,8 @@ function profileCollectionAwaiting(
   if (missingGuests) return "guests"
   if (profile.partySize && !profile.guestComposition) return "guest_breakdown"
   if (!profile.travelPurpose) return "travel_purpose"
+  // Solo travelers don't need room distribution
+  if ((profile.partySize ?? 1) > 1 && !profile.distributionPreference) return "bed_distribution"
   return "ready"
 }
 

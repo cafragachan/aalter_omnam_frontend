@@ -13,7 +13,7 @@ export type LastProposal = "rooms" | "amenities" | "location" | "book" | "interi
 export type AmenityRef = { id: string; name: string; scene: string }
 
 export type JourneyState =
-  | { stage: "PROFILE_COLLECTION"; awaiting: "dates_and_guests" | "dates" | "guests" | "guest_breakdown" | "travel_purpose" | "interests" | "extracting" | "ready" }
+  | { stage: "PROFILE_COLLECTION"; awaiting: "dates_and_guests" | "dates" | "guests" | "guest_breakdown" | "travel_purpose" | "bed_distribution" | "interests" | "extracting" | "ready" }
   | { stage: "DESTINATION_SELECT" }
   | { stage: "VIRTUAL_LOUNGE"; subState: "asking" | "exploring" }
   | { stage: "HOTEL_EXPLORATION"; subState: "announcing" | "awaiting_intent" | "panel_open" | "asking_distribution"; lastProposal?: LastProposal; suggestedAmenityName?: string }
