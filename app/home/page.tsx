@@ -97,7 +97,7 @@ function TypewriterText({
 
 type AuthMode = "login" | "register"
 
-function LoginOverlay({ onComplete }: { onComplete: () => void }) {
+function LoginOverlay({ onComplete, skipIntro = false }: { onComplete: () => void; skipIntro?: boolean }) {
   const [phase, setPhase] = useState<IntroPhase>("video")
   const [messageIndex, setMessageIndex] = useState(0)
   const [farewellIndex, setFarewellIndex] = useState(0)
@@ -121,9 +121,34 @@ function LoginOverlay({ onComplete }: { onComplete: () => void }) {
   const { login, register, isAuthenticated, isAuthReady, userProfile } = useAuth()
   const { updateProfile, setJourneyStage } = useUserProfileContext()
 
+  // Local mode: skip intro animations entirely
+  useEffect(() => {
+    if (!skipIntro) return
+    if (isAuthReady && isAuthenticated && userProfile) {
+      // Already authenticated — sync profile and complete immediately
+      updateProfile({
+        firstName: userProfile.firstName,
+        lastName: userProfile.lastName,
+        email: userProfile.email,
+        familySize: 1,
+        phoneNumber: userProfile.phoneNumber || undefined,
+        dateOfBirth: userProfile.dateOfBirth ? new Date(userProfile.dateOfBirth) : undefined,
+        nationality: userProfile.nationality || undefined,
+        languagePreference: userProfile.languagePreference || undefined,
+      })
+      setJourneyStage("PROFILE_COLLECTION")
+      setPhase("done")
+      onComplete()
+    } else if (isAuthReady && !isAuthenticated) {
+      // Not authenticated — jump straight to login form
+      setPhase("login")
+      setShowForm(true)
+    }
+  }, [skipIntro, isAuthReady, isAuthenticated, userProfile, updateProfile, setJourneyStage, onComplete])
+
   // Start messages phase after 1s of video
   useEffect(() => {
-    if (phase !== "video") return
+    if (phase !== "video" || skipIntro) return
     const timer = setTimeout(() => {
       setPhase("messages")
       setTyping(true)
@@ -190,14 +215,20 @@ function LoginOverlay({ onComplete }: { onComplete: () => void }) {
         languagePreference: profile.languagePreference || undefined,
       })
       setJourneyStage("PROFILE_COLLECTION")
-      setShowForm(false)
-      setTimeout(() => {
-        setPhase("farewell")
-        setFarewellIndex(0)
-        setTyping(true)
-      }, 400)
+      if (skipIntro) {
+        // Local mode — skip farewell messages, complete immediately
+        setPhase("done")
+        onComplete()
+      } else {
+        setShowForm(false)
+        setTimeout(() => {
+          setPhase("farewell")
+          setFarewellIndex(0)
+          setTyping(true)
+        }, 400)
+      }
     },
-    [updateProfile, setJourneyStage],
+    [updateProfile, setJourneyStage, skipIntro, onComplete],
   )
 
   const switchMode = useCallback((mode: AuthMode) => {
@@ -703,7 +734,7 @@ export default function HomePage() {
       )}
 
       {/* Login intro overlay — sits on top of iframe, hides UE5 while loading */}
-      {showLoginOverlay && <LoginOverlay onComplete={handleIntroComplete} />}
+      {showLoginOverlay && <LoginOverlay onComplete={handleIntroComplete} skipIntro={streamMode === "local"} />}
 
       {/* Main experience (avatar, panels, etc.) — only after intro completes */}
       {introComplete && isAuthenticated && (
