@@ -118,7 +118,7 @@ function LoginOverlay({ onComplete, skipIntro = false }: { onComplete: () => voi
   const [authError, setAuthError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
 
-  const { login, register, isAuthenticated, isAuthReady, userProfile } = useAuth()
+  const { login, register, isAuthReady } = useAuth()
   const { updateProfile, setJourneyStage } = useUserProfileContext()
 
   // Local mode: skip intro animations, always show login form
@@ -130,7 +130,7 @@ function LoginOverlay({ onComplete, skipIntro = false }: { onComplete: () => voi
       setPhase("login")
       setShowForm(true)
     }
-  }, [skipIntro, isAuthReady, isAuthenticated, userProfile, updateProfile, setJourneyStage, onComplete])
+  }, [skipIntro, isAuthReady])
 
   // Start messages phase after 1s of video
   useEffect(() => {
@@ -152,22 +152,6 @@ function LoginOverlay({ onComplete, skipIntro = false }: { onComplete: () => voi
           if (messageIndex < INTRO_MESSAGES.length - 1) {
             setMessageIndex((prev) => prev + 1)
             setTyping(true)
-          } else if (isAuthReady && isAuthenticated && userProfile) {
-            // Already authenticated — skip login form, sync profile, go to farewell
-            updateProfile({
-              firstName: userProfile.firstName,
-              lastName: userProfile.lastName,
-              email: userProfile.email,
-              familySize: 1,
-              phoneNumber: userProfile.phoneNumber || undefined,
-              dateOfBirth: userProfile.dateOfBirth ? new Date(userProfile.dateOfBirth) : undefined,
-              nationality: userProfile.nationality || undefined,
-              languagePreference: userProfile.languagePreference || undefined,
-            })
-            setJourneyStage("PROFILE_COLLECTION")
-            setPhase("farewell")
-            setFarewellIndex(0)
-            setTyping(true)
           } else {
             setPhase("login")
             setTimeout(() => setShowForm(true), 200)
@@ -185,7 +169,7 @@ function LoginOverlay({ onComplete, skipIntro = false }: { onComplete: () => voi
       return () => clearTimeout(nextTimer)
     }, HOLD_AFTER_TYPING)
     return () => clearTimeout(fadeOutTimer)
-  }, [messageIndex, farewellIndex, phase, onComplete, isAuthReady, isAuthenticated, userProfile, updateProfile, setJourneyStage])
+  }, [messageIndex, farewellIndex, phase, onComplete])
 
   /** After successful auth, sync profile and transition to farewell */
   const completeAuth = useCallback(
