@@ -810,8 +810,9 @@ function HomePageContent({ ephemeralContextId }: { ephemeralContextId: string | 
       profile.travelPurpose,
       profile.budgetRange,
       profile.distributionPreference,
+      profile.roomAllocation,
     ),
-    [rooms, profile.familySize, profile.guestComposition, profile.travelPurpose, profile.budgetRange, profile.distributionPreference],
+    [rooms, profile.familySize, profile.guestComposition, profile.travelPurpose, profile.budgetRange, profile.distributionPreference, profile.roomAllocation],
   )
 
   // Mutable plan override — set by dynamic adjustments (budget, compact, explicit composition)

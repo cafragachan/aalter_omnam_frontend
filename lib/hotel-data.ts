@@ -206,6 +206,8 @@ export type RoomPlanEntry = {
   quantity: number
   pricePerNight: number
   occupancy: number
+  /** How many guests this entry serves (from room allocation) */
+  guestCount?: number
 }
 
 export type RoomPlan = {
@@ -328,10 +330,69 @@ function buildPlan(items: { room: Room; qty: number }[]): RoomPlan {
 }
 
 /**
+ * Given a room allocation (e.g., [4, 2]), find the best room type for each slot.
+ * Each number represents how many guests go in that room.
+ * Groups identical guest counts so e.g. [2, 2] → one entry with qty=2.
+ */
+export function getAllocationBasedRoomPlan(
+  rooms: Room[],
+  roomAllocation: number[],
+  budgetRange?: string,
+): RoomPlan | null {
+  if (roomAllocation.length === 0 || rooms.length === 0) return null
+
+  const budgetNum = parseBudgetNumber(budgetRange)
+
+  // Group identical guest counts: { guestCount → quantity }
+  const allocationCounts = new Map<number, number>()
+  for (const guestCount of roomAllocation) {
+    allocationCounts.set(guestCount, (allocationCounts.get(guestCount) ?? 0) + 1)
+  }
+
+  const entries: RoomPlanEntry[] = []
+
+  for (const [guestCount, qty] of allocationCounts) {
+    // Find rooms that can fit this many guests
+    const fitting = rooms.filter(r => parseInt(r.occupancy) >= guestCount)
+    if (fitting.length === 0) return null // can't accommodate this slot
+
+    let best: Room
+    if (budgetNum && budgetNum > 0) {
+      // Closest to per-room budget
+      best = [...fitting].sort((a, b) =>
+        Math.abs(a.price - budgetNum) - Math.abs(b.price - budgetNum)
+      )[0]
+    } else {
+      // Least capacity waste, then cheapest
+      best = [...fitting].sort((a, b) => {
+        const wasteA = parseInt(a.occupancy) - guestCount
+        const wasteB = parseInt(b.occupancy) - guestCount
+        return wasteA !== wasteB ? wasteA - wasteB : a.price - b.price
+      })[0]
+    }
+
+    entries.push({
+      roomId: best.id,
+      roomName: best.name,
+      quantity: qty,
+      pricePerNight: best.price,
+      occupancy: parseInt(best.occupancy),
+      guestCount,
+    })
+  }
+
+  return {
+    entries,
+    totalCapacity: entries.reduce((sum, e) => sum + e.occupancy * e.quantity, 0),
+    totalPricePerNight: entries.reduce((sum, e) => sum + e.pricePerNight * e.quantity, 0),
+  }
+}
+
+/**
  * Recommend an optimal multi-room plan for a party.
  *
- * Returns the best RoomPlan considering distribution preference, guest composition,
- * travel purpose, and budget. Returns null only if no rooms are available.
+ * When roomAllocation is provided, uses allocation-based matching.
+ * Otherwise falls back to distribution preference heuristics.
  */
 export function getRecommendedRoomPlan(
   rooms: Room[],
@@ -340,7 +401,13 @@ export function getRecommendedRoomPlan(
   travelPurpose: string | undefined,
   budgetRange: string | undefined,
   distributionPreference: DistributionPreference | undefined,
+  roomAllocation?: number[],
 ): RoomPlan | null {
+  // If explicit room allocation is provided, use allocation-based engine
+  if (roomAllocation && roomAllocation.length > 0) {
+    return getAllocationBasedRoomPlan(rooms, roomAllocation, budgetRange)
+  }
+
   if (!partySize || partySize <= 0 || rooms.length === 0) return null
 
   const strategy = resolveDistribution(distributionPreference, travelPurpose, partySize)
@@ -438,8 +505,36 @@ export function validateRoomForParty(
 export function getBudgetRoomPlan(
   rooms: Room[],
   partySize: number,
+  roomAllocation?: number[],
 ): RoomPlan | null {
   if (partySize <= 0 || rooms.length === 0) return null
+
+  // If allocation is provided, find cheapest room for each slot
+  if (roomAllocation && roomAllocation.length > 0) {
+    const allocationCounts = new Map<number, number>()
+    for (const gc of roomAllocation) {
+      allocationCounts.set(gc, (allocationCounts.get(gc) ?? 0) + 1)
+    }
+    const entries: RoomPlanEntry[] = []
+    for (const [guestCount, qty] of allocationCounts) {
+      const fitting = rooms.filter(r => parseInt(r.occupancy) >= guestCount)
+      if (fitting.length === 0) return null
+      const cheapest = [...fitting].sort((a, b) => a.price - b.price)[0]
+      entries.push({
+        roomId: cheapest.id,
+        roomName: cheapest.name,
+        quantity: qty,
+        pricePerNight: cheapest.price,
+        occupancy: parseInt(cheapest.occupancy),
+        guestCount,
+      })
+    }
+    return {
+      entries,
+      totalCapacity: entries.reduce((sum, e) => sum + e.occupancy * e.quantity, 0),
+      totalPricePerNight: entries.reduce((sum, e) => sum + e.pricePerNight * e.quantity, 0),
+    }
+  }
 
   const candidates = generateCandidatePlans(rooms, partySize)
   if (candidates.length === 0) return null

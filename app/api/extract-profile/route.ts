@@ -22,6 +22,7 @@ const ExtractedProfileSchema = z.object({
   nationality: z.string().nullable().optional(),
   arrivalTime: z.string().nullable().optional(),
   guestComposition: GuestCompositionSchema,
+  roomAllocation: z.array(z.number()).nullable().optional(),
 })
 
 type ExtractedProfile = z.infer<typeof ExtractedProfileSchema>
@@ -45,6 +46,7 @@ Extract the following fields when mentioned:
 - amenityPriorities: Amenities the guest values (e.g., ["spa", "pool", "gym", "restaurant"]) in order of importance
 - nationality: Guest's country of origin or where they're traveling from (e.g., "UK", "Germany", "United States")
 - arrivalTime: Expected arrival time if mentioned (e.g., "afternoon", "3pm", "late evening")
+- roomAllocation: How guests are distributed across rooms, as an array of numbers. Each number is the guest count for one room. Example: "2 rooms, 4 and 2" → [4, 2]. "All in one room" with 4 guests → [4]. "Separate rooms" with 3 guests → [1, 1, 1]. "3 rooms, 2 each" → [2, 2, 2]. Only set if the user explicitly describes room distribution.
 
 Rules:
 - Only extract information that is explicitly stated or clearly implied

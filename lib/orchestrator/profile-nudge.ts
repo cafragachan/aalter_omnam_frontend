@@ -14,7 +14,7 @@ type ProfileCollectionAwaiting =
   | "guests"
   | "guest_breakdown"
   | "travel_purpose"
-  | "bed_distribution"
+  | "room_distribution"
   | "interests"
   | "extracting"
   | "ready"
@@ -44,9 +44,9 @@ const GENTLE_REDIRECTS: Record<string, string[]> = {
     "Lovely. And what's the occasion — a getaway, business, or celebrating something special?",
     "Is this more of a leisure trip, or are you traveling for a particular reason?",
   ],
-  bed_distribution: [
-    "For your group, would you prefer to share rooms or have separate rooms? Or I can recommend the best layout.",
-    "One more thing — would you like everyone together, or would separate rooms work better?",
+  room_distribution: [
+    "How many rooms would you like, and how should we split the guests? For example, 4 in one room and 2 in another.",
+    "One more thing — how would you like to divide everyone across rooms?",
   ],
 }
 
@@ -66,8 +66,8 @@ const FIRM_REDIRECTS: Record<string, string[]> = {
   travel_purpose: [
     "To personalize your experience, I need to know the purpose of your trip. Is it leisure, business, a celebration?",
   ],
-  bed_distribution: [
-    "Last thing before we head to the hotel — would you like shared rooms, separate rooms, or shall I recommend?",
+  room_distribution: [
+    "I need to know how to arrange the rooms. How many rooms would you like, and how many guests in each?",
   ],
 }
 

@@ -161,8 +161,8 @@ export function useJourney(options: UseJourneyOptions) {
         case "STOP_LISTENING":
           stopListening()
           break
-        case "SET_DISTRIBUTION":
-          updateProfile({ distributionPreference: effect.preference })
+        case "SET_ROOM_ALLOCATION":
+          updateProfile({ roomAllocation: effect.allocation })
           break
         case "UPDATE_ROOM_PLAN":
           options.onUpdateRoomPlan?.(effect.plan)
@@ -231,31 +231,11 @@ export function useJourney(options: UseJourneyOptions) {
     })
   }, [amenities, amenityRefs, trackAmenityExplored, startAmenityTimer, getVisitedAmenityNames, interrupt, repeat, dispatch])
 
-  /** Check if we should ask the distribution question before showing rooms */
-  const needsDistributionQuestion = useCallback((): boolean => {
-    // Already answered
-    if (profile.distributionPreference) return false
-
-    const partySize = profile.familySize ?? derivedProfile.partySize
-    if (!partySize || partySize <= 0) return false
-
-    // Find the max single-room occupancy
-    const maxOccupancy = rooms.length > 0
-      ? Math.max(...rooms.map((r) => parseInt(r.occupancy)))
-      : 0
-
-    // Ask if party doesn't fit in a single room, or if it's a business trip with 2+ people
-    const needsMultiRoom = partySize > maxOccupancy
-    const businessTrip = (profile.travelPurpose ?? derivedProfile.travelPurpose ?? "").toLowerCase().includes("business") && partySize > 1
-
-    return needsMultiRoom || businessTrip
-  }, [profile, derivedProfile, rooms])
-
   /** Handle dynamic room plan adjustments (budget, compact, distribution change) */
   const handlePlanAdjustment = useCallback((
     mode: "budget" | "compact" | "distribution",
     _message: string,
-    distributionOverride?: "together" | "separate",
+    allocationOverride?: number[],
   ) => {
     const partySize = profile.familySize ?? derivedProfile.partySize
     if (!partySize || rooms.length === 0) return
@@ -264,7 +244,7 @@ export function useJourney(options: UseJourneyOptions) {
     let speechText = ""
 
     if (mode === "budget") {
-      newPlan = getBudgetRoomPlan(rooms, partySize)
+      newPlan = getBudgetRoomPlan(rooms, partySize, profile.roomAllocation)
       if (newPlan) {
         const summary = newPlan.entries
           .map((e) => `${e.quantity > 1 ? `${e.quantity} ` : ""}${e.roomName}${e.quantity > 1 ? " rooms" : ""}`)
@@ -281,17 +261,16 @@ export function useJourney(options: UseJourneyOptions) {
         speechText = `I've packed your group into ${roomCount} room${roomCount > 1 ? "s" : ""}: ${summary} at $${newPlan.totalPricePerNight.toLocaleString()} per night. What do you think?`
       }
     } else if (mode === "distribution") {
-      const pref = distributionOverride ?? profile.distributionPreference
+      const allocation = allocationOverride ?? profile.roomAllocation
       newPlan = getRecommendedRoomPlan(
-        rooms, partySize, profile.guestComposition, profile.travelPurpose, profile.budgetRange, pref,
+        rooms, partySize, profile.guestComposition, profile.travelPurpose, profile.budgetRange, undefined, allocation,
       )
       if (newPlan) {
+        const roomCount = newPlan.entries.reduce((sum, e) => sum + e.quantity, 0)
         const summary = newPlan.entries
           .map((e) => `${e.quantity > 1 ? `${e.quantity} ` : ""}${e.roomName}${e.quantity > 1 ? " rooms" : ""}`)
           .join(" and ")
-        speechText = pref === "together"
-          ? `Here's a layout keeping everyone close: ${summary} at $${newPlan.totalPricePerNight.toLocaleString()} per night.`
-          : `Here's a layout with separate rooms: ${summary} at $${newPlan.totalPricePerNight.toLocaleString()} per night.`
+        speechText = `Here's the updated layout: ${summary} — ${roomCount} room${roomCount > 1 ? "s" : ""} at $${newPlan.totalPricePerNight.toLocaleString()} per night.`
       }
     }
 
@@ -390,7 +369,7 @@ export function useJourney(options: UseJourneyOptions) {
       partySize: derivedProfile.partySize ?? profile.familySize,
       guestComposition: derivedProfile.guestComposition ?? profile.guestComposition,
       travelPurpose: derivedProfile.travelPurpose ?? profile.travelPurpose,
-      distributionPreference: derivedProfile.distributionPreference ?? profile.distributionPreference,
+      roomAllocation: derivedProfile.roomAllocation ?? profile.roomAllocation,
     }
 
     const doDispatch = () => {
@@ -411,7 +390,7 @@ export function useJourney(options: UseJourneyOptions) {
         && mergedProfile.startDate && mergedProfile.endDate
         && mergedProfile.partySize && mergedProfile.guestComposition
         && mergedProfile.travelPurpose
-        && ((mergedProfile.partySize ?? 1) <= 1 || mergedProfile.distributionPreference)
+        && ((mergedProfile.partySize ?? 1) <= 1 || mergedProfile.roomAllocation)
 
       if (profileReady) {
         if (profileDebounceRef.current) clearTimeout(profileDebounceRef.current)
@@ -427,7 +406,7 @@ export function useJourney(options: UseJourneyOptions) {
     }
 
     doDispatch()
-  }, [derivedProfile, isExtractionPending, profile.firstName, profile.familySize, profile.guestComposition, profile.travelPurpose, dispatch])
+  }, [derivedProfile, isExtractionPending, profile.firstName, profile.familySize, profile.guestComposition, profile.travelPurpose, profile.roomAllocation, dispatch])
 
   // --- React to new user messages (intent classification + question tracking) ---
   useEffect(() => {
@@ -533,22 +512,6 @@ export function useJourney(options: UseJourneyOptions) {
       }
     }
 
-    // --- Intercept ROOMS/BOOK intent to ask distribution question when needed ---
-    if (
-      (intent.type === "ROOMS" || intent.type === "BOOK" || (intent.type === "AFFIRMATIVE" && currentState.stage === "HOTEL_EXPLORATION" && (currentState.lastProposal === "rooms" || currentState.lastProposal === "book"))) &&
-      currentState.stage === "HOTEL_EXPLORATION" &&
-      currentState.subState !== "asking_distribution" &&
-      needsDistributionQuestion()
-    ) {
-      const size = profile.familySize ?? derivedProfile.partySize ?? 0
-      interrupt()
-      repeat(
-        `For your group of ${size}, would you prefer to share rooms together, have separate rooms for each person, or shall I recommend the best layout?`,
-      ).catch(() => undefined)
-      stateRef.current = { stage: "HOTEL_EXPLORATION", subState: "asking_distribution" }
-      return
-    }
-
     // --- Intercept room plan adjustment intents (panel must be open or in exploration) ---
     const isRoomContext = currentState.stage === "HOTEL_EXPLORATION" || currentState.stage === "ROOM_SELECTED"
 
@@ -562,11 +525,14 @@ export function useJourney(options: UseJourneyOptions) {
       return
     }
 
-    // Distribution change while panel is open → recompute plan with new distribution
+    // Distribution change while panel is open → convert to allocation and recompute
     if (isRoomContext && (intent.type === "ROOM_TOGETHER" || intent.type === "ROOM_SEPARATE")) {
-      const newPref = intent.type === "ROOM_TOGETHER" ? "together" as const : "separate" as const
-      updateProfile({ distributionPreference: newPref })
-      handlePlanAdjustment("distribution", latestMessage, newPref)
+      const partySize = profile.familySize ?? derivedProfile.partySize ?? 1
+      const newAllocation = intent.type === "ROOM_TOGETHER"
+        ? [partySize]
+        : Array(partySize).fill(1)
+      updateProfile({ roomAllocation: newAllocation })
+      handlePlanAdjustment("distribution", latestMessage, newAllocation)
       return
     }
 
@@ -672,7 +638,7 @@ export function useJourney(options: UseJourneyOptions) {
     // (this is informational — we still allow the tap since multi-room plans handle this)
     const partySize = profile.familySize ?? derivedProfile.partySize
     const roomCapacity = parseInt(event.occupancy)
-    if (partySize && partySize > roomCapacity && !profile.distributionPreference) {
+    if (partySize && partySize > roomCapacity && !profile.roomAllocation) {
       // Room can't hold the party and they haven't chosen a distribution — warn them
       dispatch({
         type: "ROOM_CARD_TAPPED_INVALID",

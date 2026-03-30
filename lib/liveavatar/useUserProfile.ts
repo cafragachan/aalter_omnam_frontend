@@ -21,6 +21,7 @@ export type AvatarDerivedProfile = {
   arrivalTime?: string
   guestComposition?: { adults: number; children: number; childrenAges?: number[] }
   distributionPreference?: "together" | "separate" | "auto"
+  roomAllocation?: number[]
 }
 
 type AIExtractedProfile = {
@@ -40,6 +41,7 @@ type AIExtractedProfile = {
   arrivalTime?: string | null
   guestComposition?: { adults: number; children: number; childrenAges?: number[] } | null
   distributionPreference?: "together" | "separate" | "auto" | null
+  roomAllocation?: number[] | null
 }
 
 const clean = (text: string) => text.trim().replace(/\s+/g, " ")
@@ -430,18 +432,56 @@ const extractWithRegex = (
       }
     }
 
-    // Room distribution preference
-    if (!result.distributionPreference) {
-      const togetherPattern = /\b(shar(?:e|ing)\s+rooms?|together|same\s+room|fewer\s+rooms?|all\s+together|one\s+(?:big\s+)?room|minimize\s+rooms?)\b/i
-      const separatePattern = /\b(separate\s+rooms?|own\s+room|individual\s+rooms?|each\s+(?:their|our)\s+own|one\s+each|(?:a\s+)?room\s+each|private\s+rooms?|my\s+own\s+room)\b/i
-      const autoPattern = /\b(you\s+decide|recommend|suggest|up\s+to\s+you|whatever\s+works|your\s+(?:call|choice|recommendation)|best\s+(?:option|layout))\b/i
+    // Room allocation: how many guests per room
+    if (!result.roomAllocation) {
+      // "2 rooms: 4 and 2" / "2 rooms, 4 and 2" / "2 rooms - 4 and 2"
+      const roomsColonMatch = lower.match(/(\d+)\s*rooms?\s*[:\-,]\s*(\d+)\s*(?:and|,)\s*(\d+)(?:\s*(?:and|,)\s*(\d+))?/i)
+      // "4 in one room, 2 in another" / "4 in one room and 2 in another"
+      const inOneRoomMatch = lower.match(/(\d+)\s*(?:in|for)\s*(?:one|the\s*first|a)\s*room\s*(?:,?\s*(?:and\s*)?)(\d+)\s*(?:in|for)\s*(?:another|the\s*(?:second|other)|a\s*second)\s*room/i)
+      // "a room for 4 and a room for 2"
+      const roomForMatch = lower.match(/(?:a|one)\s*room\s*(?:for|of|with)\s*(\d+)\s*(?:,?\s*(?:and\s*)?)(?:a(?:nother)?|one\s*more)\s*room\s*(?:for|of|with)\s*(\d+)/i)
+      // "split 4 and 2" / "divided 4 and 2"
+      const splitMatch = lower.match(/(?:split|divide|divided)\s*(?:as\s*|in\s*|into\s*)?(\d+)\s*(?:and|,)\s*(\d+)(?:\s*(?:and|,)\s*(\d+))?/i)
+      // "3 rooms, 2 guests each" / "3 rooms, 2 each"
+      const eachMatch = lower.match(/(\d+)\s*rooms?\s*(?:,?\s*)?(\d+)\s*(?:guests?|people|persons?)?\s*each/i)
 
-      if (separatePattern.test(lower)) {
-        result.distributionPreference = "separate"
-      } else if (togetherPattern.test(lower)) {
-        result.distributionPreference = "together"
-      } else if (autoPattern.test(lower)) {
-        result.distributionPreference = "auto"
+      if (roomsColonMatch) {
+        const alloc = [Number(roomsColonMatch[2]), Number(roomsColonMatch[3])]
+        if (roomsColonMatch[4]) alloc.push(Number(roomsColonMatch[4]))
+        result.roomAllocation = alloc.filter(n => n > 0)
+      } else if (inOneRoomMatch) {
+        result.roomAllocation = [Number(inOneRoomMatch[1]), Number(inOneRoomMatch[2])].filter(n => n > 0)
+      } else if (roomForMatch) {
+        result.roomAllocation = [Number(roomForMatch[1]), Number(roomForMatch[2])].filter(n => n > 0)
+      } else if (splitMatch) {
+        const alloc = [Number(splitMatch[1]), Number(splitMatch[2])]
+        if (splitMatch[3]) alloc.push(Number(splitMatch[3]))
+        result.roomAllocation = alloc.filter(n => n > 0)
+      } else if (eachMatch) {
+        const roomCount = Number(eachMatch[1])
+        const guestsPerRoom = Number(eachMatch[2])
+        if (roomCount > 0 && guestsPerRoom > 0) {
+          result.roomAllocation = Array(roomCount).fill(guestsPerRoom)
+        }
+      } else {
+        // Fallback: "together" → all in one room, "separate" → one per person
+        const togetherPattern = /\b(shar(?:e|ing)\s+rooms?|together|same\s+room|all\s+together|one\s+(?:big\s+)?room)\b/i
+        const separatePattern = /\b(separate\s+rooms?|own\s+room|individual\s+rooms?|each\s+(?:their|our)\s+own|one\s+each|(?:a\s+)?room\s+each|private\s+rooms?|my\s+own\s+room)\b/i
+        const autoPattern = /\b(you\s+decide|you\s+recommend|suggest|up\s+to\s+you|whatever\s+works|your\s+(?:call|choice|recommendation)|best\s+(?:option|layout))\b/i
+
+        if (togetherPattern.test(lower) && result.partySize) {
+          result.roomAllocation = [result.partySize]
+        } else if (separatePattern.test(lower) && result.partySize) {
+          result.roomAllocation = Array(result.partySize).fill(1)
+        } else if (autoPattern.test(lower) && result.partySize) {
+          // Auto: default to pairs (2 per room), remainder gets its own
+          const pairs = Math.floor(result.partySize / 2)
+          const remainder = result.partySize % 2
+          result.roomAllocation = [
+            ...Array(pairs).fill(2),
+            ...(remainder ? [1] : []),
+          ]
+        }
       }
     }
   })
@@ -509,6 +549,7 @@ export const useUserProfile = (): {
       arrivalTime: aiProfile.arrivalTime ?? regexProfile.arrivalTime,
       guestComposition: aiProfile.guestComposition ?? regexProfile.guestComposition,
       distributionPreference: aiProfile.distributionPreference ?? regexProfile.distributionPreference,
+      roomAllocation: aiProfile.roomAllocation ?? regexProfile.roomAllocation,
     }
   }, [regexProfile, aiProfile])
 

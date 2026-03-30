@@ -1,4 +1,4 @@
-import type { JourneyStage, DistributionPreference } from "@/lib/context"
+import type { JourneyStage } from "@/lib/context"
 import type { UserIntent } from "./intents"
 import type { AvatarDerivedProfile } from "@/lib/liveavatar/useUserProfile"
 
@@ -13,10 +13,10 @@ export type LastProposal = "rooms" | "amenities" | "location" | "book" | "interi
 export type AmenityRef = { id: string; name: string; scene: string }
 
 export type JourneyState =
-  | { stage: "PROFILE_COLLECTION"; awaiting: "dates_and_guests" | "dates" | "guests" | "guest_breakdown" | "travel_purpose" | "bed_distribution" | "interests" | "extracting" | "ready" }
+  | { stage: "PROFILE_COLLECTION"; awaiting: "dates_and_guests" | "dates" | "guests" | "guest_breakdown" | "travel_purpose" | "room_distribution" | "interests" | "extracting" | "ready" }
   | { stage: "DESTINATION_SELECT" }
   | { stage: "VIRTUAL_LOUNGE"; subState: "asking" | "exploring" }
-  | { stage: "HOTEL_EXPLORATION"; subState: "announcing" | "awaiting_intent" | "panel_open" | "asking_distribution"; lastProposal?: LastProposal; suggestedAmenityName?: string }
+  | { stage: "HOTEL_EXPLORATION"; subState: "announcing" | "awaiting_intent" | "panel_open"; lastProposal?: LastProposal; suggestedAmenityName?: string }
   | { stage: "ROOM_SELECTED"; awaiting: "view_choice"; lastProposal?: LastProposal }
   | {
       stage: "AMENITY_VIEWING"
@@ -55,7 +55,6 @@ export type JourneyAction =
       recommendedAmenityName?: string
     }
   | { type: "AVATAR_PROPOSAL"; proposal: LastProposal; amenityName?: string }
-  | { type: "DISTRIBUTION_ANSWERED"; preference: DistributionPreference }
   | { type: "ROOM_CARD_TAPPED_INVALID"; roomName: string; roomCapacity: number; partySize: number }
 
 // ---------------------------------------------------------------------------
@@ -74,7 +73,7 @@ export type JourneyEffect =
   | { type: "OPEN_BOOKING_URL" }
   | { type: "SELECT_HOTEL"; slug: string; hotelName: string; location: string; description: string }
   | { type: "STOP_LISTENING" }
-  | { type: "SET_DISTRIBUTION"; preference: DistributionPreference }
+  | { type: "SET_ROOM_ALLOCATION"; allocation: number[] }
   | { type: "UPDATE_ROOM_PLAN"; plan: import("@/lib/hotel-data").RoomPlan; warning?: string }
 
 // ---------------------------------------------------------------------------

@@ -37,7 +37,7 @@ function profileCollectionAwaiting(
     partySize?: number; startDate?: Date | null; endDate?: Date | null;
     travelPurpose?: string; interests: string[];
     guestComposition?: { adults: number; children: number };
-    distributionPreference?: "together" | "separate" | "auto";
+    roomAllocation?: number[];
   },
 ): ProfileCollectionAwaiting {
   const missingDates = !profile.startDate || !profile.endDate
@@ -49,7 +49,7 @@ function profileCollectionAwaiting(
   if (profile.partySize && !profile.guestComposition) return "guest_breakdown"
   if (!profile.travelPurpose) return "travel_purpose"
   // Solo travelers don't need room distribution
-  if ((profile.partySize ?? 1) > 1 && !profile.distributionPreference) return "bed_distribution"
+  if ((profile.partySize ?? 1) > 1 && !profile.roomAllocation) return "room_distribution"
   return "ready"
 }
 
@@ -350,42 +350,6 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
   // HOTEL_EXPLORATION
   // -----------------------------------------------------------------------
   if (state.stage === "HOTEL_EXPLORATION") {
-    // --- Handle distribution question response (asking_distribution sub-state) ---
-    if (state.subState === "asking_distribution") {
-      if (action.type === "USER_INTENT") {
-        const { intent } = action
-        if (intent.type === "ROOM_TOGETHER") {
-          effects.push({ type: "SET_DISTRIBUTION", preference: "together" })
-          effects.push({ type: "SPEAK", text: "Great, I'll look for the fewest rooms to keep everyone close together." })
-          effects.push({ type: "OPEN_PANEL", panel: "rooms" })
-          return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
-        }
-        if (intent.type === "ROOM_SEPARATE") {
-          effects.push({ type: "SET_DISTRIBUTION", preference: "separate" })
-          effects.push({ type: "SPEAK", text: "Perfect, I'll set up individual rooms for everyone." })
-          effects.push({ type: "OPEN_PANEL", panel: "rooms" })
-          return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
-        }
-        if (intent.type === "ROOM_AUTO" || intent.type === "AFFIRMATIVE") {
-          effects.push({ type: "SET_DISTRIBUTION", preference: "auto" })
-          effects.push({ type: "SPEAK", text: "Leave it with me — I'll suggest the best layout for your group." })
-          effects.push({ type: "OPEN_PANEL", panel: "rooms" })
-          return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
-        }
-        // Any other intent while asking → treat as "auto" and proceed
-        if (intent.type === "ROOMS" || intent.type === "BOOK" || intent.type === "UNKNOWN") {
-          effects.push({ type: "SET_DISTRIBUTION", preference: "auto" })
-          effects.push({ type: "OPEN_PANEL", panel: "rooms" })
-          return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
-        }
-      }
-      if (action.type === "DISTRIBUTION_ANSWERED") {
-        effects.push({ type: "SET_DISTRIBUTION", preference: action.preference })
-        effects.push({ type: "OPEN_PANEL", panel: "rooms" })
-        return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
-      }
-    }
-
     if (action.type === "USER_INTENT") {
       const { intent } = action
 

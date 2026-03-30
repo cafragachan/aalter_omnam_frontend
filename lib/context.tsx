@@ -27,6 +27,8 @@ export type UserProfile = {
   roomTypePreference?: string
   accessibilityNeeds?: string[]
   distributionPreference?: DistributionPreference
+  /** Room allocation: how many guests per room, e.g. [4, 2] = 2 rooms for 6 guests */
+  roomAllocation?: number[]
 
   // --- From Conversation (P1) ---
   interests: string[]

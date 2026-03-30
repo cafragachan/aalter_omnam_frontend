@@ -37,12 +37,11 @@ export function RoomsPanel({ visible, hotelName, rooms, onSelectRoom, onClose, r
     return roomId === recommendedRoomId
   }
 
-  // Build plan summary text
-  const planSummary = recommendedPlan && recommendedPlan.entries.length > 0
-    ? recommendedPlan.entries
-        .map((e) => `${e.quantity > 1 ? `${e.quantity}x ` : ""}${e.roomName}`)
-        .join(" + ")
-    : null
+  // Build per-room breakdown for booking.com-style summary
+  const hasAllocationPlan = recommendedPlan && recommendedPlan.entries.length > 0
+  const totalRoomCount = hasAllocationPlan
+    ? recommendedPlan!.entries.reduce((sum, e) => sum + e.quantity, 0)
+    : 0
 
   return (
     <div
@@ -66,14 +65,37 @@ export function RoomsPanel({ visible, hotelName, rooms, onSelectRoom, onClose, r
             </div>
           </div>
 
-          {/* Plan summary bar */}
-          {planSummary && (
-            <div className="mb-3 rounded-lg bg-white/8 px-3 py-2 text-[11px] text-white/80">
-              <span className="font-semibold text-white/90">Suggested: </span>
-              {planSummary}
-              <span className="ml-1.5 text-white/60">
-                — ${recommendedPlan!.totalPricePerNight.toLocaleString()}/night total
-              </span>
+          {/* Booking.com-style plan summary */}
+          {hasAllocationPlan && (
+            <div className="mb-3 rounded-lg bg-white/8 px-3 py-2.5">
+              <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.15em] text-white/50">
+                Suggested plan
+              </p>
+              <div className="space-y-1">
+                {recommendedPlan!.entries.map((entry, idx) => (
+                  <div key={`${entry.roomId}-${idx}`} className="flex items-center justify-between text-[11px]">
+                    <span className="text-white/90">
+                      {entry.quantity > 1 ? `${entry.quantity}x ` : ""}{entry.roomName}
+                      {entry.guestCount != null && (
+                        <span className="ml-1 text-white/50">
+                          ({entry.guestCount} guest{entry.guestCount > 1 ? "s" : ""})
+                        </span>
+                      )}
+                    </span>
+                    <span className="text-white/60">
+                      ${(entry.pricePerNight * entry.quantity).toLocaleString()}/night
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-1.5 flex items-center justify-between border-t border-white/10 pt-1.5 text-[11px]">
+                <span className="font-medium text-white/70">
+                  {totalRoomCount} room{totalRoomCount > 1 ? "s" : ""} total
+                </span>
+                <span className="font-semibold text-white/90">
+                  ${recommendedPlan!.totalPricePerNight.toLocaleString()}/night
+                </span>
+              </div>
             </div>
           )}
 

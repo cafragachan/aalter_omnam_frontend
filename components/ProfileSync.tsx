@@ -31,6 +31,7 @@ export function ProfileSync() {
       interests: profile.interests,
       travelPurpose: profile.travelPurpose,
       budgetRange: profile.budgetRange,
+      roomAllocation: profile.roomAllocation,
     })
 
     if (syncKey === lastSyncRef.current) return
@@ -90,6 +91,12 @@ export function ProfileSync() {
       updates.guestComposition = profile.guestComposition
       updates.familySize = profile.guestComposition.adults + profile.guestComposition.children
     }
+    if (profile.roomAllocation) {
+      updates.roomAllocation = profile.roomAllocation
+    }
+    if (profile.distributionPreference) {
+      updates.distributionPreference = profile.distributionPreference
+    }
 
     if (Object.keys(updates).length > 0) {
       updateProfile(updates)
@@ -110,6 +117,8 @@ export function ProfileSync() {
     profile.nationality,
     profile.arrivalTime,
     profile.guestComposition,
+    profile.roomAllocation,
+    profile.distributionPreference,
     storedProfile.firstName,
     storedProfile.lastName,
     updateProfile,
