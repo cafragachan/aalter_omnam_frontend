@@ -958,11 +958,13 @@ function HomePageContent({ ephemeralContextId }: { ephemeralContextId: string | 
           </div>
         </div>
 
-        {/* Debug HUD + Profile Sync (floating, local dev only) */}
+        {/* Profile Sync (functional, no UI — must run in all modes) */}
+        <ProfileSync />
+
+        {/* Debug HUD (floating, local dev only) */}
         {streamMode === "local" && (
           <div className="fixed top-4 right-4 z-30 space-y-3 pointer-events-none">
             <DebugHud />
-            <ProfileSync />
           </div>
         )}
       </div>
