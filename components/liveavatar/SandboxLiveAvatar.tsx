@@ -7,6 +7,43 @@ import { LiveAvatarContextProvider, useLiveAvatarContext, useSession, useUserPro
 import { useAvatarActions } from "@/lib/liveavatar/useAvatarActions"
 import { useUserProfileContext } from "@/lib/context"
 
+export const useDebugLogger = () => {
+  const { profile: derivedProfile, userMessages, isExtracting } = useUserProfile()
+  const { profile, journeyStage } = useUserProfileContext()
+
+  useEffect(() => {
+    console.log("[Omnam Debug]", {
+      journeyStage,
+      contextProfile: {
+        name: [profile.firstName, profile.lastName].filter(Boolean).join(" ") || null,
+        email: profile.email || null,
+        startDate: profile.startDate || null,
+        endDate: profile.endDate || null,
+        familySize: profile.familySize ?? null,
+        destination: profile.destination || null,
+        interests: profile.interests,
+        travelPurpose: profile.travelPurpose || null,
+        budgetRange: profile.budgetRange || null,
+      },
+      avatarDerived: {
+        name: derivedProfile.name ?? null,
+        partySize: derivedProfile.partySize ?? null,
+        destination: derivedProfile.destination ?? null,
+        startDate: derivedProfile.startDate?.toISOString() ?? null,
+        endDate: derivedProfile.endDate?.toISOString() ?? null,
+        interests: derivedProfile.interests,
+        travelPurpose: derivedProfile.travelPurpose ?? null,
+        budgetRange: derivedProfile.budgetRange ?? null,
+        isExtracting,
+      },
+      recentUtterances: userMessages.slice(-3).map((m) => ({
+        message: m.message,
+        timestamp: m.timestamp,
+      })),
+    })
+  }, [profile, derivedProfile, userMessages, isExtracting, journeyStage])
+}
+
 export const DebugHud = () => {
   const { profile: derivedProfile, userMessages, isExtracting } = useUserProfile()
   const { profile, journeyStage } = useUserProfileContext()

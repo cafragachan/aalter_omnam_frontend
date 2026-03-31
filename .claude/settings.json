@@ -2,7 +2,12 @@
   "permissions": {
     "allow": [
       "Bash(find /c/Users/CesarFragachan/Documents/Repos/aalter_omnam_frontend -name *avatar-context-builder* -o -name *context-builder*)",
-      "Bash(echo \"Exit code: $?\")"
+      "Bash(echo \"Exit code: $?\")",
+      "Bash(find /c/Users/CesarFragachan/Documents/Repos/aalter_omnam_frontend -type f \\\\\\(-name .env* -o -name *.config.* \\\\\\))",
+      "Bash(grep -r \"buildAvatarContext\\\\|buildPrompt\" /c/Users/CesarFragachan/Documents/Repos/aalter_omnam_frontend --include=*.ts --include=*.tsx)",
+      "Read(//c/Users/CESARF~1/AppData/Local/Temp/claude/c--Users-CesarFragachan-Documents-Repos-aalter-omnam-frontend/19303c47-6a41-403e-a7e3-a03f0e544812/tasks/**)",
+      "Bash(grep -r \"context_id\\\\|contextId\\\\|ephemeral\" /c/Users/CesarFragachan/Documents/Repos/aalter_omnam_frontend/app --include=*.ts --include=*.tsx)",
+      "Bash(grep -r \"sandbox\\\\|deployment\\\\|SANDBOX\\\\|DEPLOYMENT\" /c/Users/CesarFragachan/Documents/Repos/aalter_omnam_frontend/.env* --include=\"*.local\" --include=\"*.example\")"
     ]
   }
 }

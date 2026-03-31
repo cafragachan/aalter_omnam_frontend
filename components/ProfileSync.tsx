@@ -18,7 +18,15 @@ export function ProfileSync() {
       profile.endDate ||
       profile.interests.length > 0 ||
       profile.travelPurpose ||
-      profile.budgetRange
+      profile.budgetRange ||
+      profile.guestComposition ||
+      profile.distributionPreference ||
+      profile.roomTypePreference ||
+      profile.dietaryRestrictions?.length ||
+      profile.accessibilityNeeds?.length ||
+      profile.amenityPriorities?.length ||
+      profile.nationality ||
+      profile.arrivalTime
 
     if (!hasData) return
 
@@ -32,6 +40,14 @@ export function ProfileSync() {
       travelPurpose: profile.travelPurpose,
       budgetRange: profile.budgetRange,
       roomAllocation: profile.roomAllocation,
+      guestComposition: profile.guestComposition,
+      distributionPreference: profile.distributionPreference,
+      roomTypePreference: profile.roomTypePreference,
+      dietaryRestrictions: profile.dietaryRestrictions,
+      accessibilityNeeds: profile.accessibilityNeeds,
+      amenityPriorities: profile.amenityPriorities,
+      nationality: profile.nationality,
+      arrivalTime: profile.arrivalTime,
     })
 
     if (syncKey === lastSyncRef.current) return

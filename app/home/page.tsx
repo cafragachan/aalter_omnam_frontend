@@ -4,7 +4,7 @@ import type React from "react"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Mic, MicOff, Lock, Mail, LogIn, User, Phone, Calendar, UserPlus, ArrowLeft, Globe } from "lucide-react"
-import { DebugHud, SandboxSessionPlayer } from "@/components/liveavatar/SandboxLiveAvatar"
+import { DebugHud, SandboxSessionPlayer, useDebugLogger } from "@/components/liveavatar/SandboxLiveAvatar"
 import { LiveAvatarContextProvider, useLiveAvatarContext } from "@/lib/liveavatar"
 import { SunToggle, type SunState } from "@/components/SunToggle"
 import { ProfileSync } from "@/components/ProfileSync"
@@ -734,6 +734,7 @@ function HomePageContent({ ephemeralContextId }: { ephemeralContextId: string | 
   const { profile, journeyStage, setJourneyStage, updateProfile } = useUserProfileContext()
   const emit = useEmit()
   const { sessionState } = useLiveAvatarContext()
+  useDebugLogger()
   const { writeEndOfSessionSnapshot } = useIncrementalPersistence()
   const { returningUserData } = useAuth()
 
