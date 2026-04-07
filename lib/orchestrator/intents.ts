@@ -25,8 +25,35 @@ export type UserIntent =
   | { type: "ROOM_AUTO" }
   | { type: "ROOM_PLAN_CHEAPER" }
   | { type: "ROOM_PLAN_COMPACT" }
+  | { type: "END_EXPERIENCE" }
   | { type: "UNKNOWN" }
 
+// END_EXPERIENCE — multi-strategy detection:
+//   1. Explicit farewells: goodbye, bye, farewell, see you later, etc.
+//   2. [exit verb] + [session noun]: "end this session", "close the tour", "leave the experience"
+//   3. [desire phrase] + [exit verb]: "I need to leave", "I want to go", "I have to head out"
+//   4. Standalone closers: "that's all", "I'm done", "wrap up", "nothing else"
+const END_FAREWELL_RE = /\b(goodbye|good\s*bye|farewell|bye\s*bye|bye|see\s+you\s+(?:later|soon|next\s+time|around)|have\s+a\s+(?:good|nice|great)\s+(?:day|night|evening|one)|take\s+care|until\s+next\s+time|good\s+night)\b/i
+const END_EXIT_VERBS = `end|finish|close|stop|leave|exit|quit|terminate|conclude|wrap\\s*up|shut\\s*down|log\\s*(?:off|out)|sign\\s*(?:off|out)`
+const END_SESSION_NOUNS = `session|experience|tour|visit|conversation|chat|call|demo|this`
+const END_VERB_NOUN_RE = new RegExp(
+  `\\b(${END_EXIT_VERBS})\\b.*\\b(${END_SESSION_NOUNS})\\b` +
+  `|\\b(${END_SESSION_NOUNS})\\b.*\\b(${END_EXIT_VERBS})\\b`,
+  "i",
+)
+const END_DESIRE_RE = new RegExp(
+  `\\b(i\\s+(?:need|want|have|got|would\\s+like|'?d\\s+like)\\s+to|i\\s+(?:must|should|gotta)|let\\s+me|i'?m\\s+(?:going\\s+to|gonna))\\s+` +
+  `(?:.*\\b)?(leave|go|head\\s+out|get\\s+going|take\\s+off|run|bounce|dip|step\\s+out|call\\s+it|end\\s+it|stop|sign\\s+off|log\\s+off)\\b`,
+  "i",
+)
+const END_CLOSERS_RE = /\b(that'?s\s+all|i'?m\s+done|i'?m\s+finished|i'?m\s+good\s+for\s+(?:now|today)|nothing\s+(?:else|more)|no\s+more\s+questions|that\s+(?:was|is)\s+(?:everything|all\s+i\s+needed)|all\s+(?:good|set)|we'?re\s+done|thanks?\s+for\s+everything|thank\s+you\s+for\s+everything|i\s+think\s+(?:that'?s\s+it|we'?re\s+done|i'?m\s+done)|call\s+it\s+a\s+day)\b/i
+
+function isEndExperience(text: string): boolean {
+  return END_FAREWELL_RE.test(text)
+    || END_VERB_NOUN_RE.test(text)
+    || END_DESIRE_RE.test(text)
+    || END_CLOSERS_RE.test(text)
+}
 const DOWNLOAD_DATA_RE = /\bdownload\s+user\s+data\b/
 const TRAVEL_TO_HOTEL_RE = /\b(take me to the hotel|go to the hotel|head to the hotel|travel to the hotel|let'?s go to the hotel|ready to go|let'?s travel|bring me to the hotel|hotel please|straight to the hotel|head over)\b/i
 const AFFIRMATIVE_RE = /\b(yes|yeah|sure|absolutely|definitely|love to|why not|let'?s do it|sounds good|okay|ok|of course|i'?d love|please|certainly|yep|yea)\b/i
@@ -160,6 +187,9 @@ export function classifyIntent(message: string): UserIntent {
 
   // --- admin command: download user data ---
   if (DOWNLOAD_DATA_RE.test(lower)) return { type: "DOWNLOAD_DATA" }
+
+  // --- end experience / farewell (high priority, before navigation) ---
+  if (isEndExperience(lower)) return { type: "END_EXPERIENCE" }
 
   // --- highest priority: navigation commands ---
   if (BACK_RE.test(lower)) return { type: "BACK" }

@@ -186,8 +186,8 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
   // IDLE_TIMEOUT — contextual re-engagement (any stage)
   // -----------------------------------------------------------------------
   if (action.type === "IDLE_TIMEOUT") {
-    // During PROFILE_COLLECTION, HeyGen's AI persona handles re-engagement
-    if (state.stage === "PROFILE_COLLECTION") {
+    // Terminal states — no re-engagement
+    if (state.stage === "PROFILE_COLLECTION" || state.stage === "END_CONFIRMING" || state.stage === "END_EXPERIENCE") {
       return { nextState: state, effects: [] }
     }
     const prompt = getReengagePrompt(state)
@@ -229,6 +229,48 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
     })
     effects.push({ type: "DOWNLOAD_DATA" })
     return { nextState: state, effects }
+  }
+
+  // -----------------------------------------------------------------------
+  // END_EXPERIENCE — global handler, reachable from any stage
+  // -----------------------------------------------------------------------
+  if (action.type === "USER_INTENT" && action.intent.type === "END_EXPERIENCE") {
+    if (state.stage === "END_CONFIRMING" || state.stage === "END_EXPERIENCE") {
+      return { nextState: state, effects: [] }
+    }
+    effects.push({ type: "SPEAK", text: "It was lovely having you. Are you sure you'd like to end your experience?" })
+    return { nextState: { stage: "END_CONFIRMING", previousState: state }, effects }
+  }
+
+  // -----------------------------------------------------------------------
+  // END_CONFIRMING — awaiting yes/no confirmation
+  // -----------------------------------------------------------------------
+  if (state.stage === "END_CONFIRMING") {
+    if (action.type === "USER_INTENT") {
+      const { intent } = action
+      if (intent.type === "AFFIRMATIVE") {
+        effects.push({ type: "SPEAK", text: "Thank you for visiting. Good Bye." })
+        effects.push({ type: "STOP_LISTENING" })
+        effects.push({ type: "CLOSE_PANELS" })
+        effects.push({ type: "STOP_AVATAR" })
+        effects.push({ type: "HIDE_UE5_STREAM" })
+        effects.push({ type: "SET_JOURNEY_STAGE", stage: "END_EXPERIENCE" })
+        return { nextState: { stage: "END_EXPERIENCE" }, effects }
+      }
+      if (intent.type === "NEGATIVE") {
+        effects.push({ type: "SPEAK", text: "Of course, I'm still here for you." })
+        return { nextState: state.previousState, effects }
+      }
+    }
+    // Ignore all other actions while confirming
+    return { nextState: state, effects: [] }
+  }
+
+  // -----------------------------------------------------------------------
+  // END_EXPERIENCE — terminal state, no transitions
+  // -----------------------------------------------------------------------
+  if (state.stage === "END_EXPERIENCE") {
+    return { nextState: state, effects: [] }
   }
 
   // -----------------------------------------------------------------------

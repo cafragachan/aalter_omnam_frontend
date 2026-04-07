@@ -92,6 +92,55 @@ function TypewriterText({
 }
 
 // ---------------------------------------------------------------------------
+// EndExperienceOverlay — farewell message over intro video background
+// ---------------------------------------------------------------------------
+
+function EndExperienceOverlay({ firstName }: { firstName?: string }) {
+  const name = firstName ?? "guest"
+  const message = `Thank you ${name}, we hope to see you again soon`
+
+  const [phase, setPhase] = useState<"fade-in" | "typing" | "hold">("fade-in")
+
+  useEffect(() => {
+    const timer = setTimeout(() => setPhase("typing"), 500)
+    return () => clearTimeout(timer)
+  }, [])
+
+  return (
+    <div
+      className={`fixed inset-0 z-50 flex items-center justify-center transition-opacity duration-1000 ${phase === "fade-in" ? "opacity-0" : "opacity-100"}`}
+    >
+      <video
+        autoPlay
+        muted
+        loop
+        playsInline
+        className="absolute inset-0 h-full w-full object-cover"
+        src="/videos/omanmBackground_720.mp4"
+      />
+      <div className="absolute inset-0 bg-black/80" />
+
+      <div className="relative z-10 text-center px-8">
+        {phase === "typing" && (
+          <TypewriterText
+            text={message}
+            onComplete={() => setPhase("hold")}
+          />
+        )}
+        {phase === "hold" && (
+          <span
+            className="text-base tracking-wide text-white md:text-xl"
+            style={{ fontFamily: "var(--font-open-sans)" }}
+          >
+            {message}
+          </span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // LoginOverlay — video + typewriter + login form, overlaid on top of UE5
 // ---------------------------------------------------------------------------
 
@@ -595,8 +644,10 @@ function MicToggle() {
 
 export default function HomePage() {
   const { isAuthenticated, userProfile, returningUserData, firebaseUser } = useAuth()
+  const { profile, journeyStage } = useUserProfileContext()
   const [introComplete, setIntroComplete] = useState(false)
   const [ue5Ready, setUe5Ready] = useState(false)
+  const [ue5Hidden, setUe5Hidden] = useState(false)
   const [sessionToken, setSessionToken] = useState<string | null>(null)
   const [contextId, setContextId] = useState<string | null>(null)
   const contextIdRef = useRef<string | null>(null)
@@ -683,7 +734,7 @@ export default function HomePage() {
   return (
     <div className="relative min-h-screen w-full bg-black overflow-hidden">
       {/* UE5 Pixel Stream — loads immediately, behind everything */}
-      {hasStream ? (
+      {hasStream && !ue5Hidden ? (
         <iframe
           id={streamMode === "vagon" ? "vagonFrame" : undefined}
           title="Vagon UE5 Stream"
@@ -691,14 +742,17 @@ export default function HomePage() {
           className="absolute inset-0 h-full w-full"
           allow={iframeAllow}
         />
-      ) : (
+      ) : !ue5Hidden ? (
         <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-slate-900 via-black to-slate-950 text-white/70">
           Set NEXT_PUBLIC_VAGON_STREAM_URL to render the live UE5 background here.
         </div>
-      )}
+      ) : null}
 
       {/* Login intro overlay — sits on top of iframe, hides UE5 while loading */}
       {showLoginOverlay && <LoginOverlay onComplete={handleIntroComplete} skipIntro={streamMode === "local"} />}
+
+      {/* End experience overlay — farewell message over intro video */}
+      {journeyStage === "END_EXPERIENCE" && <EndExperienceOverlay firstName={profile.firstName} />}
 
       {/* Main experience (avatar, panels, etc.) — only after intro completes */}
       {introComplete && isAuthenticated && (
@@ -716,7 +770,7 @@ export default function HomePage() {
           )} */}
           {sessionToken && (
             <LiveAvatarContextProvider sessionAccessToken={sessionToken}>
-              <HomePageContent ephemeralContextId={contextId} />
+              <HomePageContent ephemeralContextId={contextId} onHideUE5Stream={() => setUe5Hidden(true)} />
             </LiveAvatarContextProvider>
           )}
         </>
@@ -729,11 +783,11 @@ export default function HomePage() {
 // HomePageContent — thin layout shell (all hooks available)
 // ---------------------------------------------------------------------------
 
-function HomePageContent({ ephemeralContextId }: { ephemeralContextId: string | null }) {
+function HomePageContent({ ephemeralContextId, onHideUE5Stream }: { ephemeralContextId: string | null; onHideUE5Stream: () => void }) {
   const { selectHotel, selectedHotel } = useApp()
   const { profile, journeyStage, setJourneyStage, updateProfile } = useUserProfileContext()
   const emit = useEmit()
-  const { sessionState } = useLiveAvatarContext()
+  const { sessionState, sessionRef } = useLiveAvatarContext()
   useDebugLogger()
   const { writeEndOfSessionSnapshot } = useIncrementalPersistence()
   const { returningUserData } = useAuth()
@@ -841,6 +895,11 @@ function HomePageContent({ ephemeralContextId }: { ephemeralContextId: string | 
     setPlanOverride(plan)
   }, [])
 
+  // --- End experience callbacks ---
+  const handleStopAvatar = useCallback(() => {
+    sessionRef.current?.stop()
+  }, [sessionRef])
+
   // --- Journey orchestrator (runs as a hook, not a component) ---
   const { dispatch: journeyDispatch } = useJourney({
     onOpenPanel: handleOpenPanel,
@@ -850,6 +909,8 @@ function HomePageContent({ ephemeralContextId }: { ephemeralContextId: string | 
     onFadeTransition: ue5.fadeTransition,
     onSelectHotel: handleAutoSelectHotel,
     onUpdateRoomPlan: handleUpdateRoomPlan,
+    onStopAvatar: handleStopAvatar,
+    onHideUE5Stream,
     amenities,
     rooms,
   })

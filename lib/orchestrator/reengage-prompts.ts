@@ -94,5 +94,8 @@ export function getReengagePrompt(state: JourneyState): string {
     }
     case "ROOM_SELECTED":
       return pick(ROOM_SELECTED_PROMPTS)
+    case "END_CONFIRMING":
+    case "END_EXPERIENCE":
+      return ""
   }
 }

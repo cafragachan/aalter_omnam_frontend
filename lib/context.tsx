@@ -48,6 +48,7 @@ export type JourneyStage =
   | "DESTINATION_SELECT"
   | "VIRTUAL_LOUNGE"
   | "HOTEL_EXPLORATION"
+  | "END_EXPERIENCE"
 
 type UserProfileContextValue = {
   profile: UserProfile

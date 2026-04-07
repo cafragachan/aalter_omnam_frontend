@@ -40,6 +40,10 @@ type UseJourneyOptions = {
   onUnitSelected?: (roomName: string) => void
   /** Callback to update the displayed room plan (dynamic adjustments) */
   onUpdateRoomPlan?: (plan: RoomPlan) => void
+  /** Callback to stop the HeyGen avatar session */
+  onStopAvatar: () => void
+  /** Callback to hide the UE5 stream iframe */
+  onHideUE5Stream: () => void
   /** Amenities for the currently selected hotel (needed for voice-driven navigation) */
   amenities: Amenity[]
   /** Rooms for the currently selected hotel (needed for booking URL resolution) */
@@ -179,9 +183,16 @@ export function useJourney(options: UseJourneyOptions) {
           }
           break
         }
+        case "STOP_AVATAR":
+          // Delay to let the farewell speech finish before stopping the session
+          setTimeout(() => options.onStopAvatar(), 4000)
+          break
+        case "HIDE_UE5_STREAM":
+          options.onHideUE5Stream()
+          break
       }
     }
-  }, [interrupt, repeat, stopListening, onUE5Command, onOpenPanel, onClosePanels, onFadeTransition, setJourneyStage, onResetToDefault, onSelectHotel, downloadUserData, rooms, setBookingOutcome])
+  }, [interrupt, repeat, stopListening, onUE5Command, onOpenPanel, onClosePanels, onFadeTransition, setJourneyStage, onResetToDefault, onSelectHotel, downloadUserData, rooms, setBookingOutcome, options])
 
   // --- Dispatch helper ---
   const dispatch = useCallback((action: JourneyAction) => {
@@ -441,6 +452,22 @@ export function useJourney(options: UseJourneyOptions) {
         }
         break
       }
+    }
+
+    // --- END_EXPERIENCE intent is global — check before stage-specific routing ---
+    const earlyIntent = classifyIntent(latestMessage)
+    if (earlyIntent.type === "END_EXPERIENCE") {
+      dispatch({ type: "USER_INTENT", intent: earlyIntent })
+      return
+    }
+
+    // --- END_CONFIRMING: intercept yes/no for farewell confirmation ---
+    if (stateRef.current.stage === "END_CONFIRMING") {
+      const confirmIntent = classifyIntent(latestMessage)
+      if (confirmIntent.type === "AFFIRMATIVE" || confirmIntent.type === "NEGATIVE") {
+        dispatch({ type: "USER_INTENT", intent: confirmIntent })
+      }
+      return
     }
 
     // Only classify intent when we're in a stage that cares about voice input

@@ -25,6 +25,8 @@ export type JourneyState =
       suggestedNext?: string
       allAmenities: AmenityRef[]
     }
+  | { stage: "END_CONFIRMING"; previousState: JourneyState }
+  | { stage: "END_EXPERIENCE" }
 
 // ---------------------------------------------------------------------------
 // Actions dispatched into the journey reducer
@@ -74,6 +76,8 @@ export type JourneyEffect =
   | { type: "STOP_LISTENING" }
   | { type: "SET_ROOM_ALLOCATION"; allocation: number[] }
   | { type: "UPDATE_ROOM_PLAN"; plan: import("@/lib/hotel-data").RoomPlan; warning?: string }
+  | { type: "STOP_AVATAR" }
+  | { type: "HIDE_UE5_STREAM" }
 
 // ---------------------------------------------------------------------------
 // Reducer result
