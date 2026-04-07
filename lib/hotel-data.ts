@@ -168,6 +168,73 @@ export function getRecommendedAmenity(
   return amenities.find((a) => a.scene.toLowerCase().includes(targetScene)) ?? null
 }
 
+/**
+ * Match a room from a user's spoken utterance against available room names.
+ *
+ * Uses semantic token matching:
+ * 1. Strips filler words so "show me the standard mountain view please" → ["standard", "mountain"]
+ * 2. Scores each room by what fraction of its *distinguishing* tokens appear in the query
+ * 3. Requires a minimum confidence AND a clear winner (gap to runner-up) to avoid ambiguity
+ *
+ * Returns the best-matching room or null if no confident match is found.
+ */
+export function matchRoomByName(query: string, rooms: Room[]): Room | null {
+  if (!query || rooms.length === 0) return null
+
+  const FILLER = new Set([
+    "the", "a", "an", "to", "me", "i", "id", "we", "us", "my", "our",
+    "show", "take", "let", "see", "go", "with", "like", "want", "check",
+    "out", "look", "at", "can", "could", "would", "please", "that", "this",
+    "one", "room", "rooms", "suite", "suites", "type", "option", "explore",
+    "select", "choose", "pick", "open", "of", "and", "or", "in", "on", "for",
+    "is", "its", "it", "have", "has", "do", "does",
+  ])
+
+  const tokenize = (text: string): string[] =>
+    text.toLowerCase().split(/[\s\-_/]+/).filter((t) => t.length > 1 && !FILLER.has(t))
+
+  const queryTokens = tokenize(query)
+  if (queryTokens.length === 0) return null
+
+  // Score each room
+  type Scored = { room: Room; score: number }
+  const scored: Scored[] = []
+
+  for (const room of rooms) {
+    const nameTokens = tokenize(room.name)
+    if (nameTokens.length === 0) continue
+
+    // Count how many room-name tokens are matched by at least one query token
+    let matched = 0
+    for (const nt of nameTokens) {
+      if (queryTokens.some((qt) => nt.includes(qt) || qt.includes(nt))) {
+        matched++
+      }
+    }
+
+    // Score = fraction of room-name tokens matched
+    const score = matched / nameTokens.length
+    if (matched > 0) {
+      scored.push({ room, score })
+    }
+  }
+
+  if (scored.length === 0) return null
+
+  // Sort best first
+  scored.sort((a, b) => b.score - a.score)
+  const best = scored[0]
+  const runnerUp = scored[1]
+
+  // Require ≥50% of name tokens matched
+  if (best.score < 0.5) return null
+
+  // If there's a runner-up with the same score, the query is ambiguous → no match
+  if (runnerUp && runnerUp.score === best.score) return null
+
+  return best.room
+}
+
 export function getRecommendedRoomId(
   rooms: Room[],
   partySize: number | undefined,

@@ -20,6 +20,7 @@ import {
   getCompactRoomPlan,
   buildExplicitRoomPlan,
   parseExplicitRoomRequests,
+  matchRoomByName,
   type Amenity,
   type Room,
   type RoomPlan,
@@ -464,8 +465,31 @@ export function useJourney(options: UseJourneyOptions) {
       return
     }
 
-    const intent = classifyIntent(latestMessage)
     const currentState = stateRef.current
+
+    // --- Voice-driven room selection (before intent classification) ---
+    // When the rooms panel is open, try to fuzzy-match the raw utterance
+    // against available room names. This lets users say things like
+    // "the mountain view", "show me the penthouse", "loft suite lake" etc.
+    if (
+      currentState.stage === "HOTEL_EXPLORATION" &&
+      currentState.subState === "panel_open"
+    ) {
+      const matched = matchRoomByName(latestMessage, rooms)
+      if (matched) {
+        eventBus.emit({
+          type: "ROOM_CARD_TAPPED",
+          roomId: matched.id,
+          roomName: matched.name,
+          occupancy: matched.occupancy,
+        })
+        return
+      }
+      // No match — fall through to normal intent classification
+      // (the user might be saying "go back", "show amenities", etc.)
+    }
+
+    const intent = classifyIntent(latestMessage)
 
     // --- Exploration timer management ---
     // Start room timer when user begins interior/exterior exploration
