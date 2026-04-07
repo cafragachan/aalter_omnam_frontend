@@ -36,10 +36,18 @@ const BOOK_RE = /\b(book\s*(?:it|this|that|the\s+room|now)?|reserve|make\s+(?:a\
 const AMENITY_RE = /\b(amenity|amenities|facility|facilities)\b/
 const AMENITY_NAME_RE = /\b(lobby|conference|spa|restaurant|pool|gym|bar|lounge|dining)\b/
 const LOCATION_RE = /\b(location|surrounding|surroundings|area|neighbou?rhood|outside|around|nearby|map|walk)\b/
-const INTERIOR_RE = /\b(interior|inside|indoor|in)\b/
-const EXTERIOR_RE = /\b(exterior|outside|outdoor|out|view)\b/
-const BACK_RE = /\b(back|return|cancel|nevermind|never mind|go back)\b/
+const INTERIOR_RE = /\b(interior|inside|indoor)\b/
+const EXTERIOR_RE = /\b(exterior|outside|outdoor)\b/
+const BACK_RE = /\b(go back|take me back|head back|back to|return to|cancel|nevermind|never mind|let'?s go back|bring me back)\b/i
 const OTHER_OPTIONS_RE = /\b(other\s+options|something\s+else|explore\s+(?:other|more)|see\s+(?:other|more)|different\s+option|alternatives|what\s+else|other\s+choices|more\s+options)\b/i
+
+// Question detection — if user is asking a question (not giving a navigation command),
+// skip navigation keyword matching to avoid false triggers like "what's the room area?"
+const QUESTION_RE = /(?:^|\b)(what|how|why|when|where|which|who|is there|are there|can i|can you|could you|tell me|do you|does it|does the|will there|would there)\b|[?]\s*$/i
+
+// Navigation action verbs — when a question contains one of these,
+// it's still a navigation request (e.g., "can you show me the rooms?")
+const NAV_ACTION_RE = /\b(show|take me|go to|see the|let me see|let's see|bring me|head to|navigate|switch to|open|pull up|check out|look at|explore|visit|browse|move to|jump to)\b/i
 const ROOM_TOGETHER_RE = /\b(shar(?:e|ing)\s+rooms?|together|same\s+room|fewer\s+rooms?|all\s+together|one\s+(?:big\s+)?room|minimize\s+rooms?)\b/i
 const ROOM_SEPARATE_RE = /\b(separate\s+rooms?|own\s+room|individual\s+rooms?|each\s+(?:their|our)\s+own|one\s+each|(?:a\s+)?room\s+each|private\s+rooms?|my\s+own\s+room)\b/i
 const ROOM_AUTO_RE = /\b(you\s+decide|you\s+recommend|suggest(?:\s+(?:a|one|the))?|up\s+to\s+you|whatever\s+works|your\s+(?:call|choice|recommendation)|best\s+(?:option|layout)|recommend\s+(?:one|a layout))\b/i
@@ -141,6 +149,28 @@ export function classifyIntent(message: string): UserIntent {
 
   // --- booking intent ---
   if (BOOK_RE.test(lower)) return { type: "BOOK" }
+
+  // --- Question guard: if the user is asking a question without a navigation
+  //     action verb, skip all navigation keyword matching. This prevents
+  //     "what's the room area?" from triggering ROOMS, or "what's the view?"
+  //     from triggering EXTERIOR. Questions WITH action verbs like
+  //     "can you show me the rooms?" still match navigation intents. ---
+  const isQuestion = QUESTION_RE.test(lower)
+  const hasNavAction = NAV_ACTION_RE.test(lower)
+
+  if (isQuestion && !hasNavAction) {
+    // Skip navigation intents — fall through to room plan, distribution,
+    // affirmative/negative, and finally UNKNOWN
+    if (ROOM_PLAN_CHEAPER_RE.test(lower)) return { type: "ROOM_PLAN_CHEAPER" }
+    if (ROOM_PLAN_COMPACT_RE.test(lower)) return { type: "ROOM_PLAN_COMPACT" }
+    if (ROOM_SEPARATE_RE.test(lower)) return { type: "ROOM_SEPARATE" }
+    if (ROOM_TOGETHER_RE.test(lower)) return { type: "ROOM_TOGETHER" }
+    if (ROOM_AUTO_RE.test(lower)) return { type: "ROOM_AUTO" }
+    if (OTHER_OPTIONS_RE.test(lower)) return { type: "OTHER_OPTIONS" }
+    if (AFFIRMATIVE_RE.test(lower)) return { type: "AFFIRMATIVE" }
+    if (NEGATIVE_RE.test(lower)) return { type: "NEGATIVE" }
+    return { type: "UNKNOWN" }
+  }
 
   // --- view commands (interior / exterior) ---
   const wantsInterior = INTERIOR_RE.test(lower)

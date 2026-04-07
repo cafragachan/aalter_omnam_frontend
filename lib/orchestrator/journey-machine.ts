@@ -156,6 +156,13 @@ function buildAmenityListingSpeech(
 }
 
 // ---------------------------------------------------------------------------
+// Consistent UNKNOWN response — used across all stages to avoid hallucination
+// ---------------------------------------------------------------------------
+
+const UNKNOWN_RESPONSE =
+  "Unfortunately I can't help with that at this moment. Let me know if I can assist you with anything else regarding your stay."
+
+// ---------------------------------------------------------------------------
 // Pilot mode — skip destination selection, default to EDITION Lake Como
 // ---------------------------------------------------------------------------
 
@@ -316,7 +323,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           return { nextState: { stage: "VIRTUAL_LOUNGE", subState: "exploring" }, effects }
         }
 
-        // Anything else → go to the hotel (the only alternative to "yes")
+        // Anything else (NEGATIVE, TRAVEL_TO_HOTEL, UNKNOWN, etc.) → go to the hotel
         effects.push({ type: "SET_JOURNEY_STAGE", stage: "HOTEL_EXPLORATION" })
         effects.push({ type: "UE5_COMMAND", command: "startTEST", value: "startTEST" })
         effects.push({ type: "FADE_TRANSITION" })
@@ -339,6 +346,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           })
           return { nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" }, effects }
         }
+
       }
 
       // Any other intent while in the lounge — ignore silently
@@ -414,12 +422,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           return { nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" }, effects }
 
         case "UNKNOWN":
-          if (state.subState === "awaiting_intent") {
-            effects.push({
-              type: "SPEAK",
-              text: "I'm here to help you explore. You can check out the rooms, see the amenities, or look at the surrounding area. What sounds good?",
-            })
-          }
+          effects.push({ type: "SPEAK", text: UNKNOWN_RESPONSE })
           return { nextState: state, effects }
 
         default:
@@ -553,11 +556,8 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
 
         case "UNKNOWN":
-          effects.push({
-            type: "SPEAK",
-            text: "Would you like to book this room, or go back to explore other options?",
-          })
-          return { nextState: { ...state, lastProposal: "book" }, effects }
+          effects.push({ type: "SPEAK", text: UNKNOWN_RESPONSE })
+          return { nextState: state, effects }
 
         default:
           return { nextState: state, effects: [] }
@@ -633,18 +633,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
 
         case "UNKNOWN":
-          // Contextual response prevents HeyGen from filling silence with off-topic speech
-          if (state.suggestedNext) {
-            effects.push({
-              type: "SPEAK",
-              text: `You're currently viewing the ${state.currentAmenity.name}. Would you like to see the ${state.suggestedNext} next, or shall we look at rooms?`,
-            })
-          } else {
-            effects.push({
-              type: "SPEAK",
-              text: `You're exploring the ${state.currentAmenity.name}. Shall we check out the rooms, or see the surrounding area?`,
-            })
-          }
+          effects.push({ type: "SPEAK", text: UNKNOWN_RESPONSE })
           return { nextState: state, effects }
 
         default:
