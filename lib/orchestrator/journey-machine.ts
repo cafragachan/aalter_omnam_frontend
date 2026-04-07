@@ -427,25 +427,15 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
       }
     }
 
-    // --- Room capacity validation: user tapped a room that can't hold their party ---
-    if (action.type === "ROOM_CARD_TAPPED_INVALID") {
-      const { roomName, roomCapacity, partySize } = action
-      effects.push({
-        type: "SPEAK",
-        text: `The ${roomName} accommodates up to ${roomCapacity} guests, but your group has ${partySize}. I'd recommend choosing a room type from the highlighted suggestions — they're sized for your party.`,
-      })
-      return { nextState: state, effects }
-    }
-
     if (action.type === "ROOM_CARD_TAPPED") {
       const { roomName, occupancy, roomId } = action
       effects.push({ type: "CLOSE_PANELS" })
       effects.push({ type: "UE5_COMMAND", command: "selectedRoom", value: roomId })
       effects.push({
         type: "SPEAK",
-        text: `The ${roomName} accommodates up to ${occupancy} guests. Select one of the highlighted units to see it up close.`,
+        text: `The ${roomName} accommodates up to ${occupancy} guests. Select one of the highlighted green units to explore it.`,
       })
-      return { nextState: { stage: "ROOM_SELECTED", awaiting: "view_choice" }, effects }
+      return { nextState: { stage: "ROOM_SELECTED", awaiting: "view_choice", unitSelected: false }, effects }
     }
 
     if (action.type === "UNIT_SELECTED_UE5") {
@@ -454,7 +444,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
         type: "SPEAK",
         text: `Great pick! The ${action.roomName} is a wonderful choice. Would you like to explore the interior or see the exterior view first?`,
       })
-      return { nextState: { stage: "ROOM_SELECTED", awaiting: "view_choice", lastProposal: "interior_or_exterior" }, effects }
+      return { nextState: { stage: "ROOM_SELECTED", awaiting: "view_choice", unitSelected: true, lastProposal: "interior_or_exterior" }, effects }
     }
 
     if (action.type === "AMENITY_CARD_TAPPED") {
@@ -484,9 +474,13 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           if (proposal === "book") {
             effects.push({ type: "SPEAK", text: "I'm opening the booking page for you now. You'll be able to complete your reservation directly on the hotel's website. Is there anything else you'd like to explore?" })
             effects.push({ type: "OPEN_BOOKING_URL" })
-            return { nextState: { stage: "ROOM_SELECTED", awaiting: "view_choice" }, effects }
+            return { nextState: { stage: "ROOM_SELECTED", awaiting: "view_choice", unitSelected: state.unitSelected }, effects }
           }
           if (proposal === "interior_or_exterior") {
+            if (!state.unitSelected) {
+              effects.push({ type: "SPEAK", text: "Please select a unit first by clicking on one of the highlighted options in the view." })
+              return { nextState: state, effects }
+            }
             effects.push({ type: "SPEAK", text: "Stepping inside — take a look around. Feel free to navigate through the space. Let me know if you have any specific requirements, or if you'd like to book this room, just say the word." })
             effects.push({ type: "UE5_COMMAND", command: "unitView", value: "interior" })
             effects.push({ type: "FADE_TRANSITION" })
@@ -496,12 +490,20 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
         }
 
         case "INTERIOR":
+          if (!state.unitSelected) {
+            effects.push({ type: "SPEAK", text: "Please select a unit first by clicking on one of the highlighted options in the view." })
+            return { nextState: state, effects }
+          }
           effects.push({ type: "SPEAK", text: "Stepping inside — take a look around. Feel free to navigate through the space. Let me know if you have any specific requirements, or if you'd like to book this room, just say the word." })
           effects.push({ type: "UE5_COMMAND", command: "unitView", value: "interior" })
           effects.push({ type: "FADE_TRANSITION" })
           return { nextState: { ...state, lastProposal: "book" }, effects }
 
         case "EXTERIOR":
+          if (!state.unitSelected) {
+            effects.push({ type: "SPEAK", text: "Please select a unit first by clicking on one of the highlighted options in the view." })
+            return { nextState: state, effects }
+          }
           effects.push({ type: "SPEAK", text: "Here's the exterior view. The perspective from this floor is quite special. Would you like to book this room, or explore something else?" })
           effects.push({ type: "UE5_COMMAND", command: "unitView", value: "exterior" })
           return { nextState: { ...state, lastProposal: "book" }, effects }
@@ -509,7 +511,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
         case "BOOK":
           effects.push({ type: "SPEAK", text: "I'm opening the booking page for you now. You'll be able to complete your reservation directly on the hotel's website. Is there anything else you'd like to explore?" })
           effects.push({ type: "OPEN_BOOKING_URL" })
-          return { nextState: { stage: "ROOM_SELECTED", awaiting: "view_choice" }, effects }
+          return { nextState: { stage: "ROOM_SELECTED", awaiting: "view_choice", unitSelected: state.unitSelected }, effects }
 
         case "BACK":
           effects.push({ type: "SPEAK", text: "No problem, taking you back to the hotel overview." })
@@ -560,7 +562,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
         type: "SPEAK",
         text: `Nice — the ${action.roomName}. Would you like to step inside or see the view from the exterior?`,
       })
-      return { nextState: { stage: "ROOM_SELECTED", awaiting: "view_choice", lastProposal: "interior_or_exterior" }, effects }
+      return { nextState: { stage: "ROOM_SELECTED", awaiting: "view_choice", unitSelected: true, lastProposal: "interior_or_exterior" }, effects }
     }
   }
 

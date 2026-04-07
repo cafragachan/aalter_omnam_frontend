@@ -658,21 +658,6 @@ export function useJourney(options: UseJourneyOptions) {
     trackRoomExplored(event.roomId)
     currentRoomIdRef.current = event.roomId
 
-    // Validate: warn if the user taps a room that can't hold their full party in a single room
-    // (this is informational — we still allow the tap since multi-room plans handle this)
-    const partySize = profile.familySize ?? derivedProfile.partySize
-    const roomCapacity = parseInt(event.occupancy)
-    if (partySize && partySize > roomCapacity && !profile.roomAllocation) {
-      // Room can't hold the party and they haven't chosen a distribution — warn them
-      dispatch({
-        type: "ROOM_CARD_TAPPED_INVALID",
-        roomName: event.roomName,
-        roomCapacity,
-        partySize,
-      })
-      return
-    }
-
     dispatch({
       type: "ROOM_CARD_TAPPED",
       roomName: event.roomName,
