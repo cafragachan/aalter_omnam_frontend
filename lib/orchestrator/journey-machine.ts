@@ -514,6 +514,13 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           return { nextState: { stage: "ROOM_SELECTED", awaiting: "view_choice", unitSelected: state.unitSelected }, effects }
 
         case "BACK":
+          effects.push({ type: "SPEAK", text: "Sure, let me show you the other available rooms." })
+          effects.push({ type: "RESET_TO_DEFAULT" })
+          effects.push({ type: "FADE_TRANSITION" })
+          effects.push({ type: "OPEN_PANEL", panel: "rooms" })
+          return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
+
+        case "HOTEL_EXPLORE":
           effects.push({ type: "SPEAK", text: "No problem, taking you back to the hotel overview." })
           effects.push({ type: "RESET_TO_DEFAULT" })
           effects.push({ type: "FADE_TRANSITION" })

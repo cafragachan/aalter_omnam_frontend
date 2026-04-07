@@ -46,7 +46,7 @@ const ROOM_AUTO_RE = /\b(you\s+decide|you\s+recommend|suggest(?:\s+(?:a|one|the)
 const ROOM_PLAN_CHEAPER_RE = /\b(cheap(?:er|est)?|budget\s*(?:friend|conscious|option)|more\s+affordable|less\s+expensive|save\s+(?:money|cost)|lower\s+(?:price|cost)|economical|cut\s+cost|too\s+(?:much|expensive|pricey)|more\s+(?:economical|reasonable)|(?:can(?:'t|\s*not)\s+afford)|tighten|(?:reduce|lower|bring\s+down)\s+(?:the\s+)?(?:price|cost|total))\b/i
 const ROOM_PLAN_COMPACT_RE = /\b(fewer\s+rooms?|less\s+rooms?|(?:pack|fit)\s+(?:us\s+)?(?:in|together)|combine|share\s+more|(?:reduce|minimize|cut)\s+(?:the\s+)?(?:number\s+of\s+)?rooms?|not\s+(?:that\s+)?many\s+rooms?)\b/i
 const HOTEL_EXPLORE_RE =
-  /(?:\b(explore|tour|see|show|walk around|look around|view)\b.*\bhotel\b|\bhotel\b.*\b(explore|tour|see|show|walk around|look around|view)\b|\bhotel view\b)/
+  /(?:\b(explore|tour|see|show|walk around|look around|view)\b.*\bhotel\b|\bhotel\b.*\b(explore|tour|see|show|walk around|look around|view)\b|\bhotel view\b|\b(overview|bird'?s?\s*eye|aerial\s*view|zoom\s*out|pull\s*back|full\s*view|overall\s*view|whole\s*(?:hotel|property)|big\s*picture|from\s*above|top\s*down|default\s*view|main\s*view)\b)/i
 
 /**
  * Classify a user utterance into a navigation / action intent.
