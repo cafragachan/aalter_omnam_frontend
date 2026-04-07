@@ -502,7 +502,7 @@ export function useJourney(options: UseJourneyOptions) {
     // Stop exploration timer when leaving room/amenity context
     if (
       (stage === "ROOM_SELECTED" || stage === "AMENITY_VIEWING") &&
-      (intent.type === "BACK" || intent.type === "ROOMS" || intent.type === "LOCATION" || intent.type === "HOTEL_EXPLORE")
+      (intent.type === "BACK" || intent.type === "ROOMS" || intent.type === "LOCATION" || intent.type === "HOTEL_EXPLORE" || intent.type === "TRAVEL_TO_HOTEL")
     ) {
       stopExplorationTimer()
     }

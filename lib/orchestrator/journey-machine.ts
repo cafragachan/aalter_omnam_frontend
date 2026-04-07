@@ -417,6 +417,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
 
         case "BACK":
         case "HOTEL_EXPLORE":
+        case "TRAVEL_TO_HOTEL":
           effects.push({ type: "RESET_TO_DEFAULT" })
           effects.push({ type: "SPEAK", text: "Back to the hotel overview. What would you like to explore next — rooms, amenities, or the area?" })
           return { nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" }, effects }
@@ -524,6 +525,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
 
         case "HOTEL_EXPLORE":
+        case "TRAVEL_TO_HOTEL":
           effects.push({ type: "SPEAK", text: "No problem, taking you back to the hotel overview." })
           effects.push({ type: "RESET_TO_DEFAULT" })
           effects.push({ type: "FADE_TRANSITION" })
@@ -583,6 +585,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
       switch (intent.type) {
         case "BACK":
         case "HOTEL_EXPLORE":
+        case "TRAVEL_TO_HOTEL":
           effects.push({ type: "RESET_TO_DEFAULT" })
           effects.push({ type: "FADE_TRANSITION" })
           effects.push({ type: "SPEAK", text: "Back to the hotel. What would you like to explore next?" })

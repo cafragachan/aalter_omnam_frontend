@@ -7,7 +7,9 @@
       "Bash(grep -r \"buildAvatarContext\\\\|buildPrompt\" /c/Users/CesarFragachan/Documents/Repos/aalter_omnam_frontend --include=*.ts --include=*.tsx)",
       "Read(//c/Users/CESARF~1/AppData/Local/Temp/claude/c--Users-CesarFragachan-Documents-Repos-aalter-omnam-frontend/19303c47-6a41-403e-a7e3-a03f0e544812/tasks/**)",
       "Bash(grep -r \"context_id\\\\|contextId\\\\|ephemeral\" /c/Users/CesarFragachan/Documents/Repos/aalter_omnam_frontend/app --include=*.ts --include=*.tsx)",
-      "Bash(grep -r \"sandbox\\\\|deployment\\\\|SANDBOX\\\\|DEPLOYMENT\" /c/Users/CesarFragachan/Documents/Repos/aalter_omnam_frontend/.env* --include=\"*.local\" --include=\"*.example\")"
+      "Bash(grep -r \"sandbox\\\\|deployment\\\\|SANDBOX\\\\|DEPLOYMENT\" /c/Users/CesarFragachan/Documents/Repos/aalter_omnam_frontend/.env* --include=\"*.local\" --include=\"*.example\")",
+      "Bash(xargs ls:*)",
+      "Read(//c/Users/CESARF~1/AppData/Local/Temp/claude/c--Users-CesarFragachan-Documents-Repos-aalter-omnam-frontend/cadbefa7-30da-48d8-aa72-bd194c1aa14a/tasks/**)"
     ]
   }
 }

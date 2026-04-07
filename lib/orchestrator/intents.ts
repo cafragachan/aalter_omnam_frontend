@@ -53,8 +53,28 @@ const ROOM_SEPARATE_RE = /\b(separate\s+rooms?|own\s+room|individual\s+rooms?|ea
 const ROOM_AUTO_RE = /\b(you\s+decide|you\s+recommend|suggest(?:\s+(?:a|one|the))?|up\s+to\s+you|whatever\s+works|your\s+(?:call|choice|recommendation)|best\s+(?:option|layout)|recommend\s+(?:one|a layout))\b/i
 const ROOM_PLAN_CHEAPER_RE = /\b(cheap(?:er|est)?|budget\s*(?:friend|conscious|option)|more\s+affordable|less\s+expensive|save\s+(?:money|cost)|lower\s+(?:price|cost)|economical|cut\s+cost|too\s+(?:much|expensive|pricey)|more\s+(?:economical|reasonable)|(?:can(?:'t|\s*not)\s+afford)|tighten|(?:reduce|lower|bring\s+down)\s+(?:the\s+)?(?:price|cost|total))\b/i
 const ROOM_PLAN_COMPACT_RE = /\b(fewer\s+rooms?|less\s+rooms?|(?:pack|fit)\s+(?:us\s+)?(?:in|together)|combine|share\s+more|(?:reduce|minimize|cut)\s+(?:the\s+)?(?:number\s+of\s+)?rooms?|not\s+(?:that\s+)?many\s+rooms?)\b/i
-const HOTEL_EXPLORE_RE =
-  /(?:\b(explore|tour|see|show|walk around|look around|view)\b.*\bhotel\b|\bhotel\b.*\b(explore|tour|see|show|walk around|look around|view)\b|\bhotel view\b|\b(overview|bird'?s?\s*eye|aerial\s*view|zoom\s*out|pull\s*back|full\s*view|overall\s*view|whole\s*(?:hotel|property)|big\s*picture|from\s*above|top\s*down|default\s*view|main\s*view)\b)/i
+// Semantic groups for hotel overview / explore intent:
+//   1. [action verb] + [place noun] (bidirectional) — "show me the hotel", "hotel, let me explore"
+//   2. [perspective word] — inherently means overview: "bird's eye", "panoramic"
+//   3. [spatial verb] — return to wide angle: "zoom out", "pull back"
+//   4. [scope word] + [place/view noun] — "whole hotel", "full view", "entire property"
+//   5. [place noun] + [view word] — "hotel view", "property overview"
+const EXPLORE_ACTIONS = `explore|tour|see|show|walk\\s*around|look\\s*around|view|check\\s*out|take\\s*me\\s*(?:to|around)`
+const PLACE_NOUNS = `hotel|property|building|resort`
+const PERSPECTIVE_WORDS = `overview|bird'?s?\\s*eye|aerial|panoramic|panorama`
+const SPATIAL_VERBS = `zoom\\s*out|pull\\s*back|step\\s*back|widen|pan\\s*out`
+const SCOPE_WORDS = `whole|full|entire|overall|complete|general`
+const HOTEL_EXPLORE_RE = new RegExp(
+  `(?:` +
+    `\\b(${EXPLORE_ACTIONS})\\b.*\\b(${PLACE_NOUNS})\\b` +
+    `|\\b(${PLACE_NOUNS})\\b.*\\b(${EXPLORE_ACTIONS})\\b` +
+    `|\\b(${PERSPECTIVE_WORDS})\\b` +
+    `|\\b(${SPATIAL_VERBS})\\b` +
+    `|\\b(${SCOPE_WORDS})\\s+(${PLACE_NOUNS}|view)\\b` +
+    `|\\b(${PLACE_NOUNS})\\s+(view|overview)\\b` +
+  `)`,
+  "i",
+)
 
 /**
  * Classify a user utterance into a navigation / action intent.
