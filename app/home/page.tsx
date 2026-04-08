@@ -18,6 +18,7 @@ import { useAuth } from "@/lib/auth-context"
 import { useEmit } from "@/lib/events"
 import { useJourney } from "@/lib/orchestrator"
 import { useUE5Bridge } from "@/lib/ue5/bridge"
+import { useVagonSession } from "@/lib/ue5/useVagonSession"
 import { hotels, getHotelBySlug, getRoomsByHotelId, getAmenitiesByHotelId, getRecommendedRoomId, getRecommendedRoomPlan } from "@/lib/hotel-data"
 import type { Room } from "@/lib/hotel-data"
 import { useUE5WebSocket } from "@/lib/useUE5WebSocket"
@@ -654,22 +655,52 @@ export default function HomePage() {
   const sessionUserIdRef = useRef<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
+  // --- Stream config ---
+  const streamMode = process.env.NEXT_PUBLIC_STREAM_MODE || "local"
+  const isVagonMode = streamMode === "vagon"
 
-  // Cleanup ephemeral context on tab close / navigation away
+  // Vagon machine lifecycle (only active in vagon mode)
+  const vagon = useVagonSession(isVagonMode)
+  const vagonMachineIdRef = useRef<string | null>(null)
+  // Keep ref in sync so beforeunload can access it
+  useEffect(() => {
+    vagonMachineIdRef.current = vagon.machineId
+  }, [vagon.machineId])
+
+  // Cleanup ephemeral context + Vagon machine on tab close / navigation away
   useEffect(() => {
     const handleUnload = () => {
-      if (!contextIdRef.current) return
-      navigator.sendBeacon(
-        "/api/cleanup-context",
-        new Blob(
-          [JSON.stringify({ context_id: contextIdRef.current })],
-          { type: "application/json" },
-        ),
-      )
+      // Cleanup HeyGen ephemeral context
+      if (contextIdRef.current) {
+        navigator.sendBeacon(
+          "/api/cleanup-context",
+          new Blob(
+            [JSON.stringify({ context_id: contextIdRef.current })],
+            { type: "application/json" },
+          ),
+        )
+      }
+
+      // Stop Vagon machine via server-side proxy (beacon can't set HMAC headers)
+      if (vagonMachineIdRef.current) {
+        navigator.sendBeacon(
+          "/api/stop-vagon-machine",
+          new Blob(
+            [JSON.stringify({ machine_id: vagonMachineIdRef.current })],
+            { type: "application/json" },
+          ),
+        )
+      }
     }
     window.addEventListener("beforeunload", handleUnload)
-    return () => window.removeEventListener("beforeunload", handleUnload)
-  }, [])
+    return () => {
+      window.removeEventListener("beforeunload", handleUnload)
+      // Also stop on React unmount (SPA navigation)
+      if (vagonMachineIdRef.current) {
+        void vagon.stop()
+      }
+    }
+  }, [vagon.stop])
 
   // The overlay stays until introComplete — auth state changes mid-intro don't dismiss it
   const showLoginOverlay = !introComplete
@@ -717,17 +748,16 @@ export default function HomePage() {
     startSandboxSession()
   }, [ue5Ready, introComplete, isAuthenticated, userProfile, returningUserData, firebaseUser])
 
-  // --- Stream config ---
-  const streamMode = process.env.NEXT_PUBLIC_STREAM_MODE || "local"
-  const streamUrl =
-    streamMode === "vagon"
-      ? process.env.NEXT_PUBLIC_VAGON_CLOUD_URL || ""
-      : process.env.NEXT_PUBLIC_VAGON_STREAM_URL || "http://127.0.0.1"
-  const hasStream = !!streamUrl && streamUrl !== "about:blank"
-  const iframeAllow =
-    streamMode === "vagon"
-      ? "microphone *; clipboard-read *; clipboard-write *; encrypted-media *; fullscreen *"
-      : "autoplay; fullscreen; clipboard-read; clipboard-write; gamepad"
+  // --- Stream config (streamMode & isVagonMode declared earlier) ---
+  const streamUrl = isVagonMode
+    ? (vagon.connectionLink ?? "")
+    : (process.env.NEXT_PUBLIC_VAGON_STREAM_URL || "http://127.0.0.1")
+  const hasStream = isVagonMode
+    ? !!vagon.connectionLink
+    : (!!streamUrl && streamUrl !== "about:blank")
+  const iframeAllow = isVagonMode
+    ? "microphone *; clipboard-read *; clipboard-write *; encrypted-media *; fullscreen *"
+    : "autoplay; fullscreen; clipboard-read; clipboard-write; gamepad"
 
   const handleIntroComplete = useCallback(() => setIntroComplete(true), [])
 
@@ -736,7 +766,7 @@ export default function HomePage() {
       {/* UE5 Pixel Stream — loads immediately, behind everything */}
       {hasStream && !ue5Hidden ? (
         <iframe
-          id={streamMode === "vagon" ? "vagonFrame" : undefined}
+          id={isVagonMode ? "vagonFrame" : undefined}
           title="Vagon UE5 Stream"
           src={streamUrl}
           className="absolute inset-0 h-full w-full"
@@ -749,7 +779,7 @@ export default function HomePage() {
       ) : null}
 
       {/* Login intro overlay — sits on top of iframe, hides UE5 while loading */}
-      {showLoginOverlay && <LoginOverlay onComplete={handleIntroComplete} skipIntro={streamMode === "local"} />}
+      {showLoginOverlay && <LoginOverlay onComplete={handleIntroComplete} skipIntro={!isVagonMode} />}
 
       {/* End experience overlay — farewell message over intro video */}
       {journeyStage === "END_EXPERIENCE" && <EndExperienceOverlay firstName={profile.firstName} />}
