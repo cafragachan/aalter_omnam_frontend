@@ -769,7 +769,7 @@ export default function HomePage() {
           id={isVagonMode ? "vagonFrame" : undefined}
           title="Vagon UE5 Stream"
           src={streamUrl}
-          className="absolute inset-0 h-full w-full"
+          className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 min-w-full min-h-full w-[max(100vw,calc(100vh*16/9))] h-[max(100vh,calc(100vw*9/16))]"
           allow={iframeAllow}
         />
       ) : !ue5Hidden ? (
