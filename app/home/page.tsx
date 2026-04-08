@@ -627,7 +627,7 @@ function MicToggle() {
     <button
       type="button"
       onClick={toggle}
-      className="absolute bottom-3 right-3 z-10 flex h-10 w-10 items-center justify-center rounded-full border border-white/15 bg-white/10 backdrop-blur-md shadow-lg transition-colors hover:bg-white/20"
+      className="flex h-10 w-10 items-center justify-center rounded-full border border-white/15 bg-white/10 backdrop-blur-md shadow-lg transition-colors hover:bg-white/20"
       title={isMuted ? "Unmute microphone" : "Mute microphone"}
     >
       {isMuted ? (
@@ -1033,16 +1033,25 @@ function HomePageContent({ ephemeralContextId, onHideUE5Stream }: { ephemeralCon
         <div className="pointer-events-none relative z-10 flex min-h-screen flex-col justify-between px-6 pb-10 pt-12 sm:px-10">
           <div />
 
-          {/* Avatar panel */}
-          <div className="mt-auto grid gap-6 md:grid-cols-[210px,1fr] md:items-end">
-            <div className="pointer-events-auto w-full max-w-[230px]">
-              <div
-                className="relative overflow-hidden rounded-xl border border-white/10 bg-black shadow-2xl"
-                style={{ aspectRatio: "1 / 1.25" }}
-              >
-                <div className="relative w-full h-full">
+          {/* Avatar control panel */}
+          <div className="mt-auto pointer-events-auto">
+            <div className="inline-flex items-stretch rounded-[20px] border border-white/25 bg-gradient-to-br from-white/20 via-white/10 to-white/5 shadow-[0_20px_60px_-28px_rgba(0,0,0,0.85)] backdrop-blur-2xl">
+              {/* Avatar — 5px padding top/left/bottom, flush right edge */}
+              <div className="p-[5px] pr-0">
+                <div
+                  className="relative overflow-hidden rounded-[16px] bg-black shadow-2xl"
+                  style={{ width: 210, aspectRatio: "1 / 1.25" }}
+                >
                   <SandboxSessionPlayer fit="cover" />
                 </div>
+              </div>
+
+              {/* Right body — buttons */}
+              <div className="flex flex-col items-center justify-between py-4 px-[15px] min-w-[70px]">
+                <div />
+                {selectedHotel && journeyStage === "HOTEL_EXPLORATION" && (
+                  <SunToggle value={ue5.sunState} onChange={handleSunStateChange} />
+                )}
                 <MicToggle />
               </div>
             </div>
@@ -1061,15 +1070,6 @@ function HomePageContent({ ephemeralContextId, onHideUE5Stream }: { ephemeralCon
       </div>
 
       {/* --- Panels rendered outside the wrapper, as siblings of the iframe --- */}
-
-      {/* Sun toggle (only during hotel exploration) */}
-      {selectedHotel && journeyStage === "HOTEL_EXPLORATION" && (
-        <SunToggle
-          value={ue5.sunState}
-          onChange={handleSunStateChange}
-          className="pointer-events-auto fixed left-1/2 top-1 z-20 -translate-x-1/2"
-        />
-      )}
 
       {/* Destinations overlay */}
       <DestinationsOverlay
