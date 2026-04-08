@@ -187,7 +187,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
   // -----------------------------------------------------------------------
   if (action.type === "IDLE_TIMEOUT") {
     // Terminal states — no re-engagement
-    if (state.stage === "PROFILE_COLLECTION" || state.stage === "END_CONFIRMING" || state.stage === "END_EXPERIENCE") {
+    if (state.stage === "PROFILE_COLLECTION" || state.stage === "END_CONFIRMING" || state.stage === "END_EXPERIENCE" || state.stage === "LOUNGE_CONFIRMING") {
       return { nextState: state, effects: [] }
     }
     const prompt = getReengagePrompt(state)
@@ -232,6 +232,21 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
   }
 
   // -----------------------------------------------------------------------
+  // RETURN_TO_LOUNGE — global handler, reachable from exploration stages
+  // -----------------------------------------------------------------------
+  if (action.type === "USER_INTENT" && action.intent.type === "RETURN_TO_LOUNGE") {
+    if (
+      state.stage === "VIRTUAL_LOUNGE" || state.stage === "PROFILE_COLLECTION" ||
+      state.stage === "DESTINATION_SELECT" || state.stage === "END_CONFIRMING" ||
+      state.stage === "END_EXPERIENCE" || state.stage === "LOUNGE_CONFIRMING"
+    ) {
+      return { nextState: state, effects: [] }
+    }
+    effects.push({ type: "SPEAK", text: "Are you sure you'd like to head back to the virtual lounge? You'll leave the hotel experience for now." })
+    return { nextState: { stage: "LOUNGE_CONFIRMING", previousState: state }, effects }
+  }
+
+  // -----------------------------------------------------------------------
   // END_EXPERIENCE — global handler, reachable from any stage
   // -----------------------------------------------------------------------
   if (action.type === "USER_INTENT" && action.intent.type === "END_EXPERIENCE") {
@@ -259,6 +274,33 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
       }
       if (intent.type === "NEGATIVE") {
         effects.push({ type: "SPEAK", text: "Of course, I'm still here for you." })
+        return { nextState: state.previousState, effects }
+      }
+    }
+    // Ignore all other actions while confirming
+    return { nextState: state, effects: [] }
+  }
+
+  // -----------------------------------------------------------------------
+  // LOUNGE_CONFIRMING — awaiting yes/no to return to virtual lounge
+  // -----------------------------------------------------------------------
+  if (state.stage === "LOUNGE_CONFIRMING") {
+    if (action.type === "USER_INTENT") {
+      const { intent } = action
+      if (intent.type === "AFFIRMATIVE") {
+        effects.push({ type: "CLOSE_PANELS" })
+        effects.push({ type: "RESET_TO_DEFAULT" })
+        effects.push({ type: "UE5_COMMAND", command: "virtualLounge", value: "virtualLounge" })
+        effects.push({ type: "FADE_TRANSITION" })
+        effects.push({ type: "SET_JOURNEY_STAGE", stage: "VIRTUAL_LOUNGE" })
+        effects.push({
+          type: "SPEAK",
+          text: "Welcome back to the virtual lounge. Feel free to explore, and let me know if there's anything else you'd like to discover about the hotel.",
+        })
+        return { nextState: { stage: "VIRTUAL_LOUNGE", subState: "exploring" }, effects }
+      }
+      if (intent.type === "NEGATIVE") {
+        effects.push({ type: "SPEAK", text: "Of course, let's continue where we left off. How can I help?" })
         return { nextState: state.previousState, effects }
       }
     }

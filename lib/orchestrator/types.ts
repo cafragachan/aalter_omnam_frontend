@@ -25,6 +25,7 @@ export type JourneyState =
       suggestedNext?: string
       allAmenities: AmenityRef[]
     }
+  | { stage: "LOUNGE_CONFIRMING"; previousState: JourneyState }
   | { stage: "END_CONFIRMING"; previousState: JourneyState }
   | { stage: "END_EXPERIENCE" }
 

@@ -25,6 +25,7 @@ export type UserIntent =
   | { type: "ROOM_AUTO" }
   | { type: "ROOM_PLAN_CHEAPER" }
   | { type: "ROOM_PLAN_COMPACT" }
+  | { type: "RETURN_TO_LOUNGE" }
   | { type: "END_EXPERIENCE" }
   | { type: "UNKNOWN" }
 
@@ -54,6 +55,7 @@ function isEndExperience(text: string): boolean {
     || END_DESIRE_RE.test(text)
     || END_CLOSERS_RE.test(text)
 }
+const RETURN_TO_LOUNGE_RE = /\b(?:(?:go|take\s+me|head|travel|return|get)\s+(?:back\s+)?(?:to\s+)?(?:the\s+)?(?:virtual\s+)?(?:lounge|lobby|home\s*page|main\s*page|gallery)|back\s+to\s+(?:the\s+)?(?:virtual\s+)?(?:lounge|lobby|home\s*page|main\s*page|gallery))\b/i
 const DOWNLOAD_DATA_RE = /\bdownload\s+user\s+data\b/
 const TRAVEL_TO_HOTEL_RE = /\b(take me to the hotel|go to the hotel|head to the hotel|travel to the hotel|let'?s go to the hotel|ready to go|let'?s travel|bring me to the hotel|hotel please|straight to the hotel|head over)\b/i
 const AFFIRMATIVE_RE = /\b(yes|yeah|sure|absolutely|definitely|love to|why not|let'?s do it|sounds good|okay|ok|of course|i'?d love|please|certainly|yep|yea)\b/i
@@ -190,6 +192,9 @@ export function classifyIntent(message: string): UserIntent {
 
   // --- end experience / farewell (high priority, before navigation) ---
   if (isEndExperience(lower)) return { type: "END_EXPERIENCE" }
+
+  // --- return to virtual lounge (before BACK so "go back to the lounge" isn't swallowed) ---
+  if (RETURN_TO_LOUNGE_RE.test(lower)) return { type: "RETURN_TO_LOUNGE" }
 
   // --- highest priority: navigation commands ---
   if (BACK_RE.test(lower)) return { type: "BACK" }

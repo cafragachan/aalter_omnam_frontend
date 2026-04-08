@@ -454,15 +454,24 @@ export function useJourney(options: UseJourneyOptions) {
       }
     }
 
-    // --- END_EXPERIENCE intent is global — check before stage-specific routing ---
+    // --- Global intents — check before stage-specific routing ---
     const earlyIntent = classifyIntent(latestMessage)
-    if (earlyIntent.type === "END_EXPERIENCE") {
+    if (earlyIntent.type === "END_EXPERIENCE" || earlyIntent.type === "RETURN_TO_LOUNGE") {
       dispatch({ type: "USER_INTENT", intent: earlyIntent })
       return
     }
 
     // --- END_CONFIRMING: intercept yes/no for farewell confirmation ---
     if (stateRef.current.stage === "END_CONFIRMING") {
+      const confirmIntent = classifyIntent(latestMessage)
+      if (confirmIntent.type === "AFFIRMATIVE" || confirmIntent.type === "NEGATIVE") {
+        dispatch({ type: "USER_INTENT", intent: confirmIntent })
+      }
+      return
+    }
+
+    // --- LOUNGE_CONFIRMING: intercept yes/no for lounge return confirmation ---
+    if (stateRef.current.stage === "LOUNGE_CONFIRMING") {
       const confirmIntent = classifyIntent(latestMessage)
       if (confirmIntent.type === "AFFIRMATIVE" || confirmIntent.type === "NEGATIVE") {
         dispatch({ type: "USER_INTENT", intent: confirmIntent })
