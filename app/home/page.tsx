@@ -773,8 +773,12 @@ export default function HomePage() {
           allow={iframeAllow}
         />
       ) : !ue5Hidden ? (
-        <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-slate-900 via-black to-slate-950 text-white/70">
-          Set NEXT_PUBLIC_VAGON_STREAM_URL to render the live UE5 background here.
+        <div className="absolute inset-0 bg-gradient-to-br from-slate-900 via-black to-slate-950">
+          {!isVagonMode && (
+            <div className="flex items-center justify-center h-full text-white/70">
+              Set NEXT_PUBLIC_VAGON_STREAM_URL to render the live UE5 background here.
+            </div>
+          )}
         </div>
       ) : null}
 
