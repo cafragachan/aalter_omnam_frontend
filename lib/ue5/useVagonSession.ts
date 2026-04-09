@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useRef, useState, useCallback } from "react"
-import { getStreams, startMachine, assignMachine, stopMachine } from "@/lib/vagon-api"
+import { initVagonMachine, stopVagonMachine } from "@/lib/vagon-client"
 
 const STORAGE_KEY = "vagon_machine_id"
 
@@ -57,7 +57,7 @@ export function useVagonSession(enabled: boolean): VagonSession {
     stoppedRef.current = true
     if (machineIdRef.current) {
       try {
-        await stopMachine(machineIdRef.current)
+        await stopVagonMachine(machineIdRef.current)
       } catch (err) {
         console.error("[useVagonSession] stop failed:", err)
       }
@@ -83,20 +83,12 @@ export function useVagonSession(enabled: boolean): VagonSession {
         const staleId = loadAndClearMachineId()
         if (staleId) {
           console.log("[useVagonSession] Stopping stale machine:", staleId)
-          await stopMachine(staleId).catch(() => {})
+          await stopVagonMachine(staleId).catch(() => {})
         }
         if (cancelled || stoppedRef.current) return
 
-        // 1. Get stream
-        const streamId = await getStreams()
-        if (cancelled || stoppedRef.current) return
-
-        // 2. Start machine
-        await startMachine(streamId)
-        if (cancelled || stoppedRef.current) return
-
-        // 3. Assign machine → connection link + machine ID
-        const { connectionLink: link, machineId } = await assignMachine(streamId)
+        // Init machine via server-side route (getStreams → start → assign)
+        const { connectionLink: link, machineId } = await initVagonMachine()
         if (cancelled || stoppedRef.current) return
 
         machineIdRef.current = machineId
