@@ -57,26 +57,34 @@ export interface AssignResult {
 }
 
 // ---------------------------------------------------------------------------
-// Config
+// Config — read lazily so serverless env vars are always fresh
 // ---------------------------------------------------------------------------
 
 const API_BASE = "https://api.vagon.io"
-const API_KEY = process.env.NEXT_PUBLIC_VAGON_API_KEY ?? ""
-const API_SECRET = process.env.NEXT_PUBLIC_VAGON_API_SECRET ?? ""
+
+function getConfig() {
+  return {
+    apiKey: process.env.NEXT_PUBLIC_VAGON_API_KEY ?? "",
+    apiSecret: process.env.NEXT_PUBLIC_VAGON_API_SECRET ?? "",
+    appId: process.env.NEXT_PUBLIC_VAGON_APP_ID ?? "",
+    region: process.env.NEXT_PUBLIC_VAGON_REGION ?? "dublin",
+  }
+}
 
 // ---------------------------------------------------------------------------
 // HMAC signer
 // ---------------------------------------------------------------------------
 
 function generateHMAC(method: string, path: string, body = ""): string {
+  const { apiKey, apiSecret } = getConfig()
   const nonce = crypto.randomBytes(16).toString("hex")
   const timestamp = Date.now().toString()
-  const payload = `${API_KEY}${method}${path}${timestamp}${nonce}${body}`
+  const payload = `${apiKey}${method}${path}${timestamp}${nonce}${body}`
   const signature = crypto
-    .createHmac("sha256", API_SECRET)
+    .createHmac("sha256", apiSecret)
     .update(payload)
     .digest("hex")
-  return `HMAC ${API_KEY}:${signature}:${nonce}:${timestamp}`
+  return `HMAC ${apiKey}:${signature}:${nonce}:${timestamp}`
 }
 
 function authedHeaders(method: string, path: string, body = "") {
@@ -86,17 +94,11 @@ function authedHeaders(method: string, path: string, body = "") {
   }
 }
 
-// ---------------------------------------------------------------------------
-// API calls
-// ---------------------------------------------------------------------------
-
-const APP_ID = process.env.NEXT_PUBLIC_VAGON_APP_ID ?? ""
-const REGION = process.env.NEXT_PUBLIC_VAGON_REGION ?? "dublin"
-
 /** Fetch available streams for our app. */
 export async function getStreams(): Promise<string> {
+  const { appId } = getConfig()
   const path = "/app-stream-management/v2/streams"
-  const res = await fetch(`${API_BASE}${path}?application_id=${APP_ID}`, {
+  const res = await fetch(`${API_BASE}${path}?application_id=${appId}`, {
     method: "GET",
     headers: authedHeaders("GET", path),
   })
@@ -110,8 +112,9 @@ export async function getStreams(): Promise<string> {
 
 /** Start a machine for the given stream. */
 export async function startMachine(streamId: string): Promise<void> {
+  const { region } = getConfig()
   const path = `/app-stream-management/v2/streams/${streamId}/start-machine`
-  const body = JSON.stringify({ region: REGION })
+  const body = JSON.stringify({ region })
   const res = await fetch(`${API_BASE}${path}`, {
     method: "POST",
     headers: authedHeaders("POST", path, body),
@@ -122,8 +125,9 @@ export async function startMachine(streamId: string): Promise<void> {
 
 /** Assign a machine and return the connection link + machine ID. */
 export async function assignMachine(streamId: string): Promise<AssignResult> {
+  const { region } = getConfig()
   const path = `/app-stream-management/v2/streams/${streamId}/assign-machine`
-  const body = JSON.stringify({ region: REGION })
+  const body = JSON.stringify({ region })
   const res = await fetch(`${API_BASE}${path}`, {
     method: "POST",
     headers: authedHeaders("POST", path, body),
