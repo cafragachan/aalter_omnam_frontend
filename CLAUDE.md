@@ -1,5 +1,26 @@
 # Omnam Metaverse Frontend — Project Context
 
+## ⚠️ DUAL AVATAR PATHS — READ BEFORE EDITING
+
+This project currently has **two parallel avatar implementations** during the HeyGen → LiveKit migration. Both must remain functional until cutover is explicitly approved.
+
+| Path | Page | Provider folder | Status |
+|---|---|---|---|
+| Legacy | `/home` | `lib/liveavatar/` (HeyGen LiveAvatar SDK) | Production, fully working |
+| New | `/home-v2` | `lib/livekit/` (LiveKit + Hedra + OpenAI Realtime) | Under construction |
+
+**Rules when editing:**
+
+1. **Always state which path you are touching.** Every edit, plan, or PR description must name the path (`/home` legacy, `/home-v2` LiveKit, or shared) so reviewers can reason about scope.
+2. **Shared code must work for both paths; no path-specific changes** to `lib/orchestrator/`, `lib/events.ts`, `lib/ue5/`, `components/panels/`, `lib/hotel-data.ts`, `lib/guest-intelligence/`, or the profile contexts. Never make a change in those areas that only fits one provider.
+3. **Do NOT delete `lib/liveavatar/` or `app/home/page.tsx` until cutover is explicitly approved.** The legacy path is the production fallback while the LiveKit path is being built and validated.
+4. **New LiveKit code lives only in:** `lib/livekit/`, `agent/`, `app/home-v2/`, `components/livekit/`, `app/api/livekit-token/`, `app/api/start-livekit-session/`. Never put LiveKit code under `lib/liveavatar/`.
+5. **The two paths share the user-profile context, hotel data, and the journey machine.** When changing those, manually verify both `/home` and `/home-v2` still behave correctly before declaring done.
+
+The full migration plan lives at `C:\Users\CesarFragachan\.claude\plans\declarative-crafting-pixel.md`.
+
+---
+
 ## What This Is
 
 A **Next.js 16** web app for booking luxury hotel experiences through an AI-powered conversational avatar (HeyGen LiveAvatar) with real-time 3D visualization via **Unreal Engine 5** pixel streaming (hosted on Vagon.io, connected locally via WebSocket during development).
