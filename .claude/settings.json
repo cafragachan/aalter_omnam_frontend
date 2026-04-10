@@ -12,7 +12,11 @@
       "Read(//c/Users/CESARF~1/AppData/Local/Temp/claude/c--Users-CesarFragachan-Documents-Repos-aalter-omnam-frontend/cadbefa7-30da-48d8-aa72-bd194c1aa14a/tasks/**)",
       "Bash(xargs grep:*)",
       "Read(//c/Users/CESARF~1/AppData/Local/Temp/claude/c--Users-CesarFragachan-Documents-Repos-aalter-omnam-frontend/addeb364-71dc-4c85-8d68-9160b4a2fd73/tasks/**)",
-      "Read(//c/Users/CesarFragachan/Documents/Repos/temp_livekit_avatar/**)"
+      "Read(//c/Users/CesarFragachan/Documents/Repos/temp_livekit_avatar/**)",
+      "Bash(npm run:*)",
+      "Bash(tasklist /FI \"PID eq 19976\")",
+      "Bash(tasklist //FI \"PID eq 19976\")",
+      "Bash(netstat -ano)"
     ]
   }
 }
