@@ -2,13 +2,20 @@ import { voice, defineAgent, cli, ServerOptions } from "@livekit/agents";
 import * as openai from "@livekit/agents-plugin-openai";
 import * as hedra from "@livekit/agents-plugin-hedra";
 import { JobContext } from "@livekit/agents";
-import { RoomEvent, type RemoteParticipant } from "@livekit/rtc-node";
+import { RoomEvent, type RemoteParticipant, type Room } from "@livekit/rtc-node";
 import * as path from "node:path";
 import * as fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import * as dotenv from "dotenv";
 
 import { buildOmnamTools } from "./tools.js";
+import {
+  buildOpeningText,
+  buildPrompt,
+  parseContextInput,
+  PLACEHOLDER_OPENING,
+  PLACEHOLDER_PROMPT,
+} from "./system-prompt.js";
 
 // Load .env.local from project root
 const __filename = fileURLToPath(import.meta.url);
@@ -88,6 +95,64 @@ export default defineAgent({
     // Start the avatar and wait for it to join the room
     await avatar.start(session, ctx.room);
 
+    // Stage 3: forward LLM transcripts to the browser over the data
+    // channel so lib/livekit/context.tsx can populate its `messages[]`
+    // array. Without this, useUserProfile's regex extractor has nothing
+    // to read and profile collection is broken on /home-v2.
+    //
+    // User side: session.on("user_input_transcribed", ...) fires for
+    //   every intermediate and final STT result. Filter to isFinal so
+    //   we don't publish partials.
+    //   (ref: node_modules/@livekit/agents/dist/voice/events.d.ts:50)
+    //
+    // Assistant side: session.on("conversation_item_added", ...) fires
+    //   each time a ChatMessage is added to chat history. The handler
+    //   filters on role === "assistant" to skip the system messages we
+    //   inject for state_snapshot/narration_nudge and the user messages
+    //   published from user_message handler.
+    //   (ref: node_modules/@livekit/agents/dist/voice/events.d.ts:84)
+    //
+    // Both paths call publishTranscript(), which JSON-encodes a
+    // `{type:"transcript"}` DataChannelMessage matching the union in
+    // lib/livekit/data-channel.ts.
+    const transcriptEncoder = new TextEncoder();
+    async function publishTranscript(
+      role: "user" | "assistant",
+      text: string,
+    ) {
+      const room = ctx.room as Room;
+      const trimmed = text.trim();
+      if (!trimmed) return;
+      const local = room.localParticipant;
+      if (!local) {
+        console.warn("[agent] publishTranscript: no localParticipant");
+        return;
+      }
+      const payload = transcriptEncoder.encode(
+        JSON.stringify({ type: "transcript", role, text: trimmed }),
+      );
+      try {
+        await local.publishData(payload, {
+          reliable: true,
+          topic: OMNAM_DATA_TOPIC,
+        });
+      } catch (err) {
+        console.error("[agent] publishTranscript failed:", err);
+      }
+    }
+
+    session.on(voice.AgentSessionEventTypes.UserInputTranscribed, (ev) => {
+      if (!ev.isFinal) return;
+      publishTranscript("user", ev.transcript);
+    });
+
+    session.on(voice.AgentSessionEventTypes.ConversationItemAdded, (ev) => {
+      if (ev.item.role !== "assistant") return;
+      const text = ev.item.textContent;
+      if (!text) return;
+      publishTranscript("assistant", text);
+    });
+
     // Stage 2: subscribe to inbound data-channel messages from the
     // browser and translate them into agent-side actions:
     //   - state_snapshot   → inject as system message via updateChatCtx
@@ -157,8 +222,22 @@ export default defineAgent({
             session.generateReply();
             console.log("[agent] injected user_message");
           } else if (type === "speak") {
+            // OpenAI Realtime generates audio directly from the LLM —
+            // there's no TTS model for session.say() to drive, and
+            // calling it throws "trying to generate speech from text
+            // without a TTS model". Route `speak` through the same
+            // interrupt + generateReply pattern used for
+            // narration_nudge with priority: "interrupt": tell the
+            // LLM to voice the text verbatim via the `instructions`
+            // field. Slight paraphrasing is expected and aligns with
+            // the SPEAK → narration_nudge translation rule in the
+            // plan's State Synchronization Protocol section.
             const text = typeof parsed.text === "string" ? parsed.text : "";
-            session.say(text);
+            await session.interrupt();
+            await session.generateReply({
+              instructions: `Say the following to the user, verbatim, with no additions or paraphrasing: "${text}"`,
+            });
+            console.log("[agent] speak handled via generateReply");
           } else if (type === "interrupt") {
             await session.interrupt();
           }
@@ -168,13 +247,39 @@ export default defineAgent({
       },
     );
 
+    // Stage 4: build the dynamic persona prompt from the ContextInput JSON
+    // carried by the room's metadata. `app/api/start-livekit-session/route.ts`
+    // attaches the ContextInput to `AccessToken.roomConfig.metadata`, so when
+    // the token is used to auto-create the room, `ctx.room.metadata` contains
+    // the serialized ContextInput. If the metadata is missing, malformed, or
+    // lacks a firstName we gracefully fall back to the placeholder prompt so
+    // the throwaway direct-token /livekit-test path keeps working.
+    const rawRoomMetadata = ctx.room.metadata;
+    const contextInput = parseContextInput(rawRoomMetadata);
+    const instructions = contextInput ? buildPrompt(contextInput) : PLACEHOLDER_PROMPT;
+    const openingText = contextInput
+      ? buildOpeningText(contextInput)
+      : PLACEHOLDER_OPENING;
+    if (contextInput) {
+      console.log(
+        `[agent] built dynamic persona for identity: ${contextInput.identity.firstName}${
+          contextInput.identity.lastName ? " " + contextInput.identity.lastName : ""
+        } (prompt length: ${instructions.length} chars)`,
+      );
+    } else {
+      console.log(
+        `[agent] no valid ContextInput in room metadata (metadata=${
+          rawRoomMetadata ? `"${rawRoomMetadata.slice(0, 60)}..."` : "(empty)"
+        }) — using placeholder prompt`,
+      );
+    }
+
     // Start the agent session.
     // Disable RoomIO audio output so Hedra's DataStreamAudioOutput stays in place
     // (dropping this breaks lip-sync).
     await session.start({
       agent: new voice.Agent({
-        instructions:
-          "You are Ava, the Omnam concierge. You help guests book luxury hotel experiences. Always respond in English.",
+        instructions,
         // Stage 2 spike: register a single test tool to validate the
         // OpenAI Realtime function-calling pipeline through the
         // @livekit/agents-plugin-openai SDK. Real tools come in Stage 5.
@@ -184,8 +289,14 @@ export default defineAgent({
       outputOptions: { audioEnabled: false },
     });
 
-    // Proactively greet the user
-    await session.generateReply();
+    // Proactively greet the user. Seed the first turn with the opening text
+    // from buildOpeningText() so a returning guest hears "Welcome back,
+    // Sarah — when are you thinking of visiting Lake Como?" instead of a
+    // generic greeting. The LLM may paraphrase slightly; that's expected
+    // and aligns with the SPEAK → narration_nudge rule from the plan.
+    await session.generateReply({
+      instructions: `Open the conversation by saying something warm along these lines (you may paraphrase slightly to sound natural, but keep the meaning and tone): "${openingText}"`,
+    });
   },
 });
 

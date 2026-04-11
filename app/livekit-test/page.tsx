@@ -1,22 +1,27 @@
 "use client";
 
-// THROWAWAY TEST PAGE — Stage 1 of HeyGen → LiveKit migration.
-// Intentionally isolated from all Omnam UI, providers, and styling.
+// THROWAWAY TEST PAGE — Stage 1/2/3 of HeyGen → LiveKit migration.
 // Will be deleted at Stage 7. Do NOT import from lib/liveavatar/,
 // lib/orchestrator/, components/panels/, or any other Omnam folder.
+//
+// Stage 3: refactored from @livekit/components-react LiveKitRoom to the
+// new LiveKitAvatarContextProvider from @/lib/livekit. Exercises the
+// full hook surface (useSession.attachElement, useAvatarActions.repeat,
+// useAvatarActions.interrupt, useAvatarActions.message) plus the Stage 2
+// data-channel tester buttons and an on-screen log box. The Hedra
+// avatar video renders via <LiveKitAvatarPlayer/> and the messages[]
+// array from the context is displayed separately to prove transcripts
+// are being forwarded.
 
 import { useCallback, useEffect, useState } from "react";
-import {
-  LiveKitRoom,
-  VideoTrack,
-  useRemoteParticipants,
-  useTracks,
-  useRoomContext,
-  RoomAudioRenderer,
-} from "@livekit/components-react";
-import "@livekit/components-styles";
-import { Track } from "livekit-client";
 
+import {
+  LiveKitAvatarContextProvider,
+  MessageSender,
+  useAvatarActions,
+  useLiveKitAvatarContext,
+} from "@/lib/livekit";
+import { LiveKitAvatarPlayer } from "@/components/livekit/LiveKitAvatarPlayer";
 import {
   publishMessage,
   subscribeToMessages,
@@ -24,96 +29,39 @@ import {
 } from "@/lib/livekit/data-channel";
 
 const LIVEKIT_URL = process.env.NEXT_PUBLIC_LIVEKIT_URL!;
-const AVATAR_PARTICIPANT_NAME = "hedra-avatar-agent";
 
-function AvatarVideo() {
-  const remoteParticipants = useRemoteParticipants();
-  const tracks = useTracks([Track.Source.Camera], {
-    onlySubscribed: true,
-  });
-
-  const avatarTrack = tracks.find(
-    (t) => t.participant.name === AVATAR_PARTICIPANT_NAME
-  );
-
-  if (!avatarTrack) {
-    return (
-      <div
-        style={{
-          aspectRatio: "1 / 1",
-          width: 758,
-          maxWidth: "100%",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          background: "#222",
-          borderRadius: 12,
-          color: "#888",
-        }}
-      >
-        {remoteParticipants.length === 0
-          ? "Waiting for avatar agent to join..."
-          : "Connecting avatar..."}
-      </div>
-    );
-  }
-
-  return (
-    <div
-      style={{
-        aspectRatio: "1 / 1",
-        width: 512,
-        maxWidth: "100%",
-        overflow: "hidden",
-        borderRadius: 12,
-      }}
-    >
-      <VideoTrack
-        trackRef={avatarTrack}
-        style={{
-          width: "100%",
-          height: "100%",
-          objectFit: "contain",
-          display: "block",
-        }}
-      />
-    </div>
-  );
-}
-
-// Stage 2 spike: subscribes to data-channel messages from the agent and
-// exposes three buttons that publish state_snapshot / narration_nudge /
-// user_message events back to the agent. Lives inside <LiveKitRoom> so it
-// can grab the Room from useRoomContext().
-function DataChannelTester() {
-  const room = useRoomContext();
+// Data-channel tester + hook exerciser + transcript display.
+// Lives INSIDE <LiveKitAvatarContextProvider> so its hook calls resolve.
+function TestInner() {
+  const { sessionRef, sessionState, isStreamReady, messages } =
+    useLiveKitAvatarContext();
+  const actions = useAvatarActions();
   const [received, setReceived] = useState<
-    { ts: number; from: string; msg: DataChannelMessage }[]
+    { ts: number; msg: DataChannelMessage }[]
   >([]);
 
   useEffect(() => {
+    const room = sessionRef.current;
     if (!room) return;
-    const unsubscribe = subscribeToMessages(room, (msg, participant) => {
+    const unsubscribe = subscribeToMessages(room, (msg) => {
       console.log("[livekit-test] data ←", msg);
       setReceived((prev) =>
-        [
-          { ts: Date.now(), from: participant?.identity ?? "?", msg },
-          ...prev,
-        ].slice(0, 20),
+        [{ ts: Date.now(), msg }, ...prev].slice(0, 20),
       );
     });
     return unsubscribe;
-  }, [room]);
+  }, [sessionRef]);
 
   const send = useCallback(
     (msg: DataChannelMessage) => {
+      const room = sessionRef.current;
       if (!room) return;
       console.log("[livekit-test] data →", msg);
       publishMessage(room, msg).catch((err) =>
         console.error("[livekit-test] publish failed:", err),
       );
     },
-    [room],
+    [sessionRef],
   );
 
   const injectSnapshot = useCallback(() => {
@@ -143,6 +91,14 @@ function DataChannelTester() {
     send({ type: "user_message", text: "Tell me about my trip." });
   }, [send]);
 
+  const testRepeat = useCallback(() => {
+    actions.repeat("Hello from the new LiveKit provider.");
+  }, [actions]);
+
+  const testInterrupt = useCallback(() => {
+    actions.interrupt();
+  }, [actions]);
+
   const buttonStyle: React.CSSProperties = {
     padding: "8px 16px",
     fontSize: 13,
@@ -159,14 +115,38 @@ function DataChannelTester() {
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
-        gap: "0.5rem",
-        marginTop: "0.5rem",
+        gap: "1rem",
       }}
     >
+      <div
+        style={{
+          aspectRatio: "1 / 1",
+          width: 512,
+          maxWidth: "100%",
+          overflow: "hidden",
+          borderRadius: 12,
+          background: "#222",
+        }}
+      >
+        <LiveKitAvatarPlayer fit="contain" />
+      </div>
+
       <p style={{ color: "#666", margin: 0, fontSize: 12 }}>
-        Stage 2 data-channel tester (also logs to browser console)
+        sessionState: {sessionState} · streamReady: {String(isStreamReady)} ·
+        messages: {messages.length}
       </p>
-      <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+
+      <p style={{ color: "#666", margin: 0, fontSize: 12 }}>
+        Stage 3 provider tester (also logs to browser console)
+      </p>
+      <div
+        style={{
+          display: "flex",
+          gap: "0.5rem",
+          flexWrap: "wrap",
+          justifyContent: "center",
+        }}
+      >
         <button onClick={injectSnapshot} style={buttonStyle}>
           Inject test snapshot
         </button>
@@ -176,13 +156,19 @@ function DataChannelTester() {
         <button onClick={sendFakeUserMessage} style={buttonStyle}>
           Send fake user message
         </button>
+        <button onClick={testRepeat} style={buttonStyle}>
+          Test repeat()
+        </button>
+        <button onClick={testInterrupt} style={buttonStyle}>
+          Test interrupt()
+        </button>
       </div>
+
       <div
         style={{
           width: "min(640px, 95vw)",
-          maxHeight: 220,
+          maxHeight: 180,
           overflowY: "auto",
-          marginTop: "0.75rem",
           padding: "0.5rem 0.75rem",
           background: "#0a0a0a",
           border: "1px solid #2a2a2a",
@@ -205,13 +191,14 @@ function DataChannelTester() {
                 key={`${entry.ts}-${i}`}
                 style={{
                   padding: "2px 0",
-                  borderBottom: i === received.length - 1 ? "none" : "1px solid #1a1a1a",
+                  borderBottom:
+                    i === received.length - 1 ? "none" : "1px solid #1a1a1a",
                   color: isToolCall ? "#4ec9b0" : "#9cdcfe",
                   fontWeight: isToolCall ? 600 : 400,
                 }}
               >
                 <span style={{ color: "#666" }}>
-                  {new Date(entry.ts).toLocaleTimeString()} ← {entry.from}{" "}
+                  {new Date(entry.ts).toLocaleTimeString()}{" "}
                 </span>
                 {JSON.stringify(entry.msg)}
               </div>
@@ -219,32 +206,96 @@ function DataChannelTester() {
           })
         )}
       </div>
+
+      <div
+        style={{
+          width: "min(640px, 95vw)",
+          maxHeight: 180,
+          overflowY: "auto",
+          padding: "0.5rem 0.75rem",
+          background: "#0a0a0a",
+          border: "1px solid #2a2a2a",
+          borderRadius: 6,
+          fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+          fontSize: 11,
+          color: "#dcdcaa",
+        }}
+      >
+        <div style={{ color: "#666", marginBottom: 4 }}>
+          Transcripts / messages[] from context ({messages.length}):
+        </div>
+        {messages.length === 0 ? (
+          <div style={{ color: "#444" }}>(none yet — speak to the avatar)</div>
+        ) : (
+          messages.slice(-20).map((m, i) => (
+            <div
+              key={`${m.timestamp}-${i}`}
+              style={{
+                padding: "2px 0",
+                color: m.sender === MessageSender.USER ? "#9cdcfe" : "#dcdcaa",
+              }}
+            >
+              <span style={{ color: "#666" }}>
+                {new Date(m.timestamp).toLocaleTimeString()}{" "}
+              </span>
+              <strong>{m.sender}:</strong> {m.message}
+            </div>
+          ))
+        )}
+      </div>
     </div>
   );
 }
 
+// Hardcoded fake ContextInput used by the "Connect with fake profile" button.
+// The shape mirrors agent/system-prompt.ts's ContextInput — same fields the
+// HeyGen path's lib/avatar-context-builder.ts consumes. Stage 5 will replace
+// this with a real profile pulled from the logged-in user's Firebase data.
+const FAKE_CONTEXT_INPUT = {
+  identity: {
+    firstName: "Sarah",
+    lastName: "Anderson",
+    email: "sarah@test.com",
+    phoneNumber: "+1-555-0100",
+    dateOfBirth: "1988-06-12",
+    nationality: "USA",
+    languagePreference: "en",
+    createdAt: "2026-01-15T00:00:00.000Z",
+    lastSeenAt: "2026-04-10T00:00:00.000Z",
+  },
+  personality: null,
+  preferences: null,
+  loyalty: null,
+};
+
 export default function LiveKitTestPage() {
   const [token, setToken] = useState<string | null>(null);
-  const [connected, setConnected] = useState(false);
+  const [roomName, setRoomName] = useState<string | null>(null);
+  const [serverUrl, setServerUrl] = useState<string>(LIVEKIT_URL);
   const [connecting, setConnecting] = useState(false);
+  const [mode, setMode] = useState<"direct" | "session">("direct");
 
-  const connect = useCallback(async () => {
+  // Stage 1/2/3 path — direct /api/livekit-token call. No metadata, so the
+  // agent uses its placeholder prompt. Keeps the fallback path exercised.
+  const connectDirect = useCallback(async () => {
     setConnecting(true);
+    setMode("direct");
     try {
-      const roomName = `avatar-room-${Date.now()}`;
+      const newRoomName = `avatar-room-${Date.now()}`;
       const participantName = `user-${Math.random().toString(36).slice(2, 8)}`;
 
       const res = await fetch("/api/livekit-token", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ roomName, participantName }),
+        body: JSON.stringify({ roomName: newRoomName, participantName }),
       });
 
       const data = await res.json();
       if (data.error) throw new Error(data.error);
 
       setToken(data.token);
-      setConnected(true);
+      setRoomName(newRoomName);
+      setServerUrl(LIVEKIT_URL);
     } catch (err) {
       console.error("Failed to get token:", err);
       alert("Failed to connect. Check console for details.");
@@ -253,9 +304,40 @@ export default function LiveKitTestPage() {
     }
   }, []);
 
+  // Stage 4 path — /api/start-livekit-session with a fake ContextInput body.
+  // The route attaches the ContextInput to the room's metadata, so the
+  // agent can build a dynamic persona prompt and greet "Sarah" by name.
+  const connectWithProfile = useCallback(async () => {
+    setConnecting(true);
+    setMode("session");
+    try {
+      const res = await fetch("/api/start-livekit-session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(FAKE_CONTEXT_INPUT),
+      });
+
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      if (!data.token || !data.roomName) {
+        throw new Error("Session response missing token or roomName");
+      }
+
+      setToken(data.token);
+      setRoomName(data.roomName);
+      setServerUrl(data.serverUrl ?? LIVEKIT_URL);
+    } catch (err) {
+      console.error("Failed to start session:", err);
+      alert("Failed to start session. Check console for details.");
+    } finally {
+      setConnecting(false);
+    }
+  }, []);
+
   const disconnect = useCallback(() => {
     setToken(null);
-    setConnected(false);
+    setRoomName(null);
+    setServerUrl(LIVEKIT_URL);
   }, []);
 
   return (
@@ -275,43 +357,68 @@ export default function LiveKitTestPage() {
     >
       <h1 style={{ fontSize: 24, margin: 0 }}>LiveKit Test Harness</h1>
       <p style={{ color: "#888", margin: 0, fontSize: 14 }}>
-        Stage 1 smoke check — isolated from Omnam UI
+        Stage 4 — @/lib/livekit provider + dynamic persona prompt
       </p>
 
-      {!connected || !token ? (
-        <button
-          onClick={connect}
-          disabled={connecting}
-          style={{
-            padding: "12px 32px",
-            fontSize: 18,
-            borderRadius: 8,
-            border: "none",
-            background: "#0070f3",
-            color: "#fff",
-            cursor: connecting ? "wait" : "pointer",
-          }}
-        >
-          {connecting ? "Connecting..." : "Connect"}
-        </button>
-      ) : (
-        <LiveKitRoom
-          serverUrl={LIVEKIT_URL}
-          token={token}
-          connect={true}
-          audio={true}
-          video={false}
-          onDisconnected={disconnect}
+      {!token ? (
+        <div
           style={{
             display: "flex",
             flexDirection: "column",
+            gap: "0.75rem",
             alignItems: "center",
-            gap: "1rem",
           }}
         >
-          <AvatarVideo />
-          <RoomAudioRenderer />
-          <DataChannelTester />
+          <button
+            onClick={connectDirect}
+            disabled={connecting}
+            style={{
+              padding: "12px 32px",
+              fontSize: 16,
+              borderRadius: 8,
+              border: "1px solid #444",
+              background: "#1a1a1a",
+              color: "#fff",
+              cursor: connecting ? "wait" : "pointer",
+              minWidth: 320,
+            }}
+          >
+            {connecting && mode === "direct"
+              ? "Connecting..."
+              : "Connect (direct token, placeholder prompt)"}
+          </button>
+          <button
+            onClick={connectWithProfile}
+            disabled={connecting}
+            style={{
+              padding: "12px 32px",
+              fontSize: 16,
+              borderRadius: 8,
+              border: "none",
+              background: "#0070f3",
+              color: "#fff",
+              cursor: connecting ? "wait" : "pointer",
+              minWidth: 320,
+              fontWeight: 600,
+            }}
+          >
+            {connecting && mode === "session"
+              ? "Starting session..."
+              : "Connect with fake profile (Sarah — dynamic prompt)"}
+          </button>
+          <p style={{ color: "#666", margin: 0, fontSize: 11, maxWidth: 360, textAlign: "center" }}>
+            Direct-token path exercises the Stage 1-3 placeholder-prompt fallback.
+            The dynamic-prompt path hits /api/start-livekit-session with a
+            hardcoded Sarah ContextInput and the agent should greet her by name.
+          </p>
+        </div>
+      ) : (
+        <LiveKitAvatarContextProvider
+          token={token}
+          serverUrl={serverUrl}
+          roomName={roomName ?? undefined}
+        >
+          <TestInner />
           <button
             onClick={disconnect}
             style={{
@@ -326,7 +433,7 @@ export default function LiveKitTestPage() {
           >
             Disconnect
           </button>
-        </LiveKitRoom>
+        </LiveKitAvatarContextProvider>
       )}
     </div>
   );

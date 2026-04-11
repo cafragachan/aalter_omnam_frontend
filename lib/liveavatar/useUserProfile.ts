@@ -77,7 +77,11 @@ const parseDate = (monthName: string, day: string): Date | null => {
   return Number.isNaN(date.getTime()) ? null : date
 }
 
-const extractWithRegex = (
+// Exported so lib/livekit/useUserProfile.ts can reuse the pure regex
+// extractor without duplicating 400 lines of pattern matching. This is
+// a Stage 3 additive touch — zero logic changes, just adding the
+// `export` keyword. Documented in the Execution Log.
+export const extractWithRegex = (
   userMessages: { message: string; timestamp: number }[]
 ): AvatarDerivedProfile => {
   const result: AvatarDerivedProfile = { interests: [], startDate: null, endDate: null }
