@@ -1,16 +1,23 @@
 "use client"
 
 import { useCallback, useEffect, useRef } from "react"
-import { useLiveAvatarContext } from "@/lib/liveavatar"
+import { useLiveAvatarContext as useHeyGenLiveAvatarContext } from "@/lib/liveavatar"
 import type { JourneyStage } from "@/lib/context"
 
 // ---------------------------------------------------------------------------
 // Idle Detection — detects silence and triggers re-engagement
 // ---------------------------------------------------------------------------
-// Uses HeyGen's isAvatarTalking / isUserTalking state to detect
-// when neither party is speaking. After a stage-specific threshold,
-// fires onIdle() so the journey machine can produce a SPEAK effect.
+// Uses isAvatarTalking / isUserTalking state to detect when neither
+// party is speaking. After a stage-specific threshold, fires onIdle()
+// so the journey machine can produce a SPEAK effect.
+//
+// Stage 5: accepts an optional hooks parameter (same DI pattern as
+// useJourney) so /home-v2 can supply the LiveKit context instead.
 // ---------------------------------------------------------------------------
+
+export type IdleDetectionHooks = {
+  useContext: () => { isAvatarTalking: boolean; isUserTalking: boolean }
+}
 
 const IDLE_THRESHOLDS: Record<JourneyStage, number> = {
   PROFILE_COLLECTION: 12_000,
@@ -24,10 +31,12 @@ type UseIdleDetectionOptions = {
   journeyStage: JourneyStage
   onIdle: () => void
   enabled?: boolean
+  hooks?: IdleDetectionHooks
 }
 
-export function useIdleDetection({ journeyStage, onIdle, enabled = true }: UseIdleDetectionOptions) {
-  const { isAvatarTalking, isUserTalking } = useLiveAvatarContext()
+export function useIdleDetection({ journeyStage, onIdle, enabled = true, hooks }: UseIdleDetectionOptions) {
+  const useContextFn = hooks?.useContext ?? useHeyGenLiveAvatarContext
+  const { isAvatarTalking, isUserTalking } = useContextFn()
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const onIdleRef = useRef(onIdle)
   onIdleRef.current = onIdle

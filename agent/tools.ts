@@ -1,12 +1,28 @@
-// Stage 2 of the HeyGen → LiveKit migration: tool catalog for the agent.
+// Stage 5 of the HeyGen → LiveKit migration: full Omnam tool catalog.
 //
 // The full migration plan lives in
 // C:\Users\CesarFragachan\.claude\plans\declarative-crafting-pixel.md
 //
-// Stage 2 only registers a single test tool — `open_test_panel` — to
-// answer the spike question of whether OpenAI Realtime function calling
-// works end-to-end through @livekit/agents-plugin-openai @ 1.2.x.
-// Real tools are designed in Stage 5.
+// Stage 2 shipped a single spike tool (`open_test_panel`). Stage 5 adds
+// the real catalog the LLM uses to drive the /home-v2 journey: panel
+// opening, hotel/room/amenity selection, interior/exterior toggles,
+// back navigation, and end-of-experience.
+//
+// Every tool follows the same factory pattern as Stage 2:
+//   - buildOmnamTools(room) captures the LiveKit Room by closure.
+//   - Each tool's `execute` publishes a `{type:"tool_call", ...}`
+//     DataChannelMessage to the browser.
+//   - The tool does NOT perform the action itself. Translation into
+//     journey actions / EventBus emits happens in
+//     lib/livekit/useToolCallBridge.ts on the browser side.
+//   - The return string becomes the function-call output the LLM sees
+//     on its next turn, so it can acknowledge and narrate.
+//
+// Kept in sync by hand with lib/livekit/useToolCallBridge.ts. When you
+// add/rename/remove a tool here, update that file's switch statement.
+//
+// The spike tool `open_test_panel` is intentionally preserved for Stage
+// 2 regression checks on /livekit-test. Stage 7 will remove it.
 
 import { llm } from "@livekit/agents";
 import type { Room } from "@livekit/rtc-node";
@@ -47,6 +63,23 @@ async function publishToBrowser(
 }
 
 /**
+ * Helper: publish a tool_call payload and log the result. All tools
+ * share this helper so the log format + error handling stay uniform.
+ */
+async function publishToolCall(
+  room: Room,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<void> {
+  try {
+    await publishToBrowser(room, { type: "tool_call", name, args });
+    console.log(`[tools] ${name}(${JSON.stringify(args)}) → published to browser`);
+  } catch (err) {
+    console.error(`[tools] ${name} publish failed:`, err);
+  }
+}
+
+/**
  * Build the Omnam tool catalog. The room is captured by closure so each
  * tool's `execute` callback can publish data-channel messages back to
  * the browser without needing access to the LiveKit Room from inside
@@ -54,12 +87,12 @@ async function publishToBrowser(
  */
 export function buildOmnamTools(room: Room) {
   return {
+    // -----------------------------------------------------------------
+    // Stage 2 spike tool — kept for /livekit-test debugging.
+    // -----------------------------------------------------------------
     open_test_panel: llm.tool({
       description:
-        "Open a UI panel for the user. Use this whenever the user asks to see the rooms, the amenities, or the location of the hotel. Pick the closest matching panel.",
-      // Raw JSON Schema literal — the SDK accepts either a Zod object
-      // schema or a JSONSchema7. Sticking to JSON Schema avoids pulling
-      // zod into agent/ as a direct dependency.
+        "[Debug/testing only] Open a panel by name. Prefer the specific open_rooms_panel / open_amenities_panel / open_location_panel tools for real user flows.",
       parameters: {
         type: "object",
         properties: {
@@ -75,21 +108,184 @@ export function buildOmnamTools(room: Room) {
       execute: async (args) => {
         const panel = (args as { panel: "rooms" | "amenities" | "location" })
           .panel;
-        try {
-          await publishToBrowser(room, {
-            type: "tool_call",
-            name: "open_test_panel",
-            args: { panel },
-          });
-          console.log(
-            `[tools] open_test_panel(${panel}) → published to browser`,
-          );
-        } catch (err) {
-          console.error("[tools] failed to publish tool_call:", err);
-        }
-        // The string we return becomes the function-call output the LLM
-        // sees on its next turn, so it can confirm the action verbally.
+        await publishToolCall(room, "open_test_panel", { panel });
         return `Opened the ${panel} panel.`;
+      },
+    }),
+
+    // -----------------------------------------------------------------
+    // Panel opening
+    // -----------------------------------------------------------------
+    open_rooms_panel: llm.tool({
+      description:
+        "Open the rooms panel for the currently selected hotel. Use this whenever the user asks to see the rooms, the suites, the lofts, or where they will stay. Only call this after a hotel has been selected.",
+      parameters: {
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+      },
+      execute: async () => {
+        await publishToolCall(room, "open_rooms_panel", {});
+        return "Rooms panel opened. Describe the highlights briefly and invite the user to pick one.";
+      },
+    }),
+
+    open_amenities_panel: llm.tool({
+      description:
+        "Open the amenities view. Use when the user asks about amenities, facilities, pool, lobby, conference space, or the hotel's communal areas in general.",
+      parameters: {
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+      },
+      execute: async () => {
+        await publishToolCall(room, "open_amenities_panel", {});
+        return "Amenities view opened. Briefly mention the standout communal spaces and ask which one the user wants to explore.";
+      },
+    }),
+
+    open_location_panel: llm.tool({
+      description:
+        "Open the location / grounds view. Use when the user asks about the location, the surroundings, the outside, the lake, the gardens, or similar.",
+      parameters: {
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+      },
+      execute: async () => {
+        await publishToolCall(room, "open_location_panel", {});
+        return "Location view opened. Briefly describe what the user is seeing outside.";
+      },
+    }),
+
+    // -----------------------------------------------------------------
+    // Selection
+    // -----------------------------------------------------------------
+    select_hotel: llm.tool({
+      description:
+        "Confirm the user's hotel choice. Call this after the user has clearly expressed a preference for a specific property. For the current pilot, only 'edition-lake-como' is available.",
+      parameters: {
+        type: "object",
+        properties: {
+          slug: {
+            type: "string",
+            enum: ["edition-lake-como"],
+            description:
+              "Hotel slug. Only 'edition-lake-como' is active in the pilot.",
+          },
+        },
+        required: ["slug"],
+        additionalProperties: false,
+      },
+      execute: async (args) => {
+        const slug = (args as { slug: string }).slug;
+        await publishToolCall(room, "select_hotel", { slug });
+        return `Hotel ${slug} selected. Welcome the user warmly and offer to show rooms, amenities, or the location.`;
+      },
+    }),
+
+    select_room: llm.tool({
+      description:
+        "Select a specific room the user expressed interest in. Pass either the canonical roomId (e.g. 'r3') if you know it, or the human-readable roomName (e.g. 'Loft Suite Lake View') and the client will resolve it. Use when the user names a specific room or clearly picks one from the rooms panel.",
+      parameters: {
+        type: "object",
+        properties: {
+          roomId: {
+            type: "string",
+            description: "Canonical room id if known.",
+          },
+          roomName: {
+            type: "string",
+            description:
+              "Human-readable room name (fuzzy-matched client-side).",
+          },
+        },
+        additionalProperties: false,
+      },
+      execute: async (args) => {
+        const roomId = (args as { roomId?: string }).roomId;
+        const roomName = (args as { roomName?: string }).roomName;
+        await publishToolCall(room, "select_room", {
+          roomId: roomId ?? null,
+          roomName: roomName ?? null,
+        });
+        const label = roomName ?? roomId ?? "selected room";
+        return `Room "${label}" selected. Describe one or two distinctive details and ask whether the user wants to see the interior or the exterior.`;
+      },
+    }),
+
+    navigate_to_amenity: llm.tool({
+      description:
+        "Navigate to a specific amenity by name. Use when the user names an amenity like 'show me the pool', 'take me to the lobby', or 'conference room please'. The client resolves the amenityName against the active hotel's amenity list.",
+      parameters: {
+        type: "object",
+        properties: {
+          amenityName: {
+            type: "string",
+            description:
+              "The amenity name or scene keyword (e.g. 'pool', 'lobby', 'conference').",
+          },
+        },
+        required: ["amenityName"],
+        additionalProperties: false,
+      },
+      execute: async (args) => {
+        const amenityName = (args as { amenityName: string }).amenityName;
+        await publishToolCall(room, "navigate_to_amenity", { amenityName });
+        return `Navigating to ${amenityName}. Briefly set the scene and invite the user to take it in.`;
+      },
+    }),
+
+    view_unit: llm.tool({
+      description:
+        "Show the interior or exterior of the currently selected room. Use when the user asks to see inside or outside, or to peek through the window.",
+      parameters: {
+        type: "object",
+        properties: {
+          mode: {
+            type: "string",
+            enum: ["interior", "exterior"],
+            description: "Which view to show.",
+          },
+        },
+        required: ["mode"],
+        additionalProperties: false,
+      },
+      execute: async (args) => {
+        const mode = (args as { mode: "interior" | "exterior" }).mode;
+        await publishToolCall(room, "view_unit", { mode });
+        return `Showing the ${mode} view. Add a sensory detail or two.`;
+      },
+    }),
+
+    // -----------------------------------------------------------------
+    // Navigation
+    // -----------------------------------------------------------------
+    navigate_back: llm.tool({
+      description:
+        "Return to the previous view. Use when the user says 'go back', 'take me back', 'return', 'previous', or similar.",
+      parameters: {
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+      },
+      execute: async () => {
+        await publishToolCall(room, "navigate_back", {});
+        return "Back navigation triggered.";
+      },
+    }),
+
+    end_experience: llm.tool({
+      description:
+        "End the experience and begin the farewell flow. Use when the user explicitly says they are done, need to leave, want to stop, or the conversation has reached a natural conclusion. Do not call this on simple 'no' answers — only when the user clearly wants to exit.",
+      parameters: {
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+      },
+      execute: async () => {
+        await publishToolCall(room, "end_experience", {});
+        return "Farewell flow triggered. Say a warm goodbye using the user's first name if you know it.";
       },
     }),
   };

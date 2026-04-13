@@ -221,6 +221,31 @@ export default defineAgent({
             await session.currentAgent.updateChatCtx(newCtx);
             session.generateReply();
             console.log("[agent] injected user_message");
+          } else if (type === "ui_event") {
+            // Stage 5: forward UI events from the browser (card taps,
+            // panel requests, UE5 unit selections, etc.) as system
+            // messages so the LLM is aware of off-voice state changes
+            // and can react in its next natural turn. The browser-side
+            // bridge (lib/livekit/useStateSyncBridge.ts) is responsible
+            // for deciding which events are semantically meaningful
+            // vs. pure visual polish (FADE_TRANSITION is skipped, etc.).
+            const description =
+              typeof parsed.description === "string" ? parsed.description : "";
+            const eventName =
+              typeof parsed.event === "string" ? parsed.event : "unknown";
+            if (!description) {
+              console.warn(
+                `[agent] ui_event (${eventName}) missing description — ignoring`,
+              );
+            } else {
+              const newCtx = session.currentAgent.chatCtx.copy();
+              newCtx.addMessage({
+                role: "system",
+                content: `[UI event: ${eventName}] ${description}`,
+              });
+              await session.currentAgent.updateChatCtx(newCtx);
+              console.log(`[agent] injected ui_event: ${eventName}`);
+            }
           } else if (type === "speak") {
             // OpenAI Realtime generates audio directly from the LLM —
             // there's no TTS model for session.say() to drive, and

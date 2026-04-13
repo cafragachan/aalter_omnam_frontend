@@ -4,8 +4,9 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { auth } from "@/lib/firebase"
 import { useUserProfileContext } from "@/lib/context"
 import { useGuestIntelligence } from "@/lib/guest-intelligence"
-import { useUserProfile } from "@/lib/liveavatar"
-import { useLiveAvatarContext } from "@/lib/liveavatar"
+import { useUserProfile as useHeyGenUserProfile } from "@/lib/liveavatar"
+import { useLiveAvatarContext as useHeyGenLiveAvatarContext } from "@/lib/liveavatar"
+import type { LiveAvatarSessionMessage } from "@/lib/liveavatar/types"
 import { useApp } from "@/lib/store"
 import { initSessionPointer, updateSessionPointerFields, uploadSessionSnapshot } from "./session-service"
 import {
@@ -36,11 +37,20 @@ function serializeProfile(profile: UserProfile) {
 }
 
 // ---------------------------------------------------------------------------
+// Pluggable avatar-backend hooks (Stage 5 — same DI pattern as useJourney)
+// ---------------------------------------------------------------------------
+
+export type IncrementalPersistenceHooks = {
+  useContext: () => { messages: LiveAvatarSessionMessage[] }
+  useProfile: () => { userMessages: { message: string; timestamp: number }[] }
+}
+
+// ---------------------------------------------------------------------------
 // useIncrementalPersistence — writes session data to Firebase throughout
 // the session instead of all-at-once at the end.
 // ---------------------------------------------------------------------------
 
-export function useIncrementalPersistence() {
+export function useIncrementalPersistence(hooks?: IncrementalPersistenceHooks) {
   const [sessionId] = useState(() => crypto.randomUUID())
   const sessionStartedAtRef = useRef(new Date().toISOString())
   const sessionInitializedRef = useRef(false)
@@ -53,8 +63,10 @@ export function useIncrementalPersistence() {
 
   const { profile, journeyStage } = useUserProfileContext()
   const guestIntelligence = useGuestIntelligence()
-  const { userMessages } = useUserProfile()
-  const { messages } = useLiveAvatarContext()
+  const useProfileFn = hooks?.useProfile ?? useHeyGenUserProfile
+  const useContextFn = hooks?.useContext ?? useHeyGenLiveAvatarContext
+  const { userMessages } = useProfileFn()
+  const { messages } = useContextFn()
   const { selectedHotel } = useApp()
 
   // =========================================================================
