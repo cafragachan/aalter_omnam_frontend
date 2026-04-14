@@ -37,8 +37,44 @@ if (fs.existsSync(envPath)) {
 // uncaughtException and the worker dies between test sessions.
 // Catching here lets us log and continue. Stage 6+ should pin a fixed
 // plugin version or upstream a patch instead of relying on this net.
+//
+// Module-scope reference to the latest realtime session, populated by
+// createStateSyncController when it acquires the session. Used by the
+// uncaughtException handler below for best-effort recovery — the handler
+// runs at process scope, so it can't reach the session through the
+// AgentSession closure inside `entry`.
+//
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let latestRealtimeSession: any = null;
+
 process.on("uncaughtException", (err) => {
   console.error("[agent] uncaughtException — keeping worker alive:", err);
+
+  // SDK-internal error recovery: after certain sequences (double-interrupt,
+  // audio_end_ms truncation), the realtime session enters a broken state
+  // and stops responding. Try to recover by interrupting the session,
+  // which resets its internal response state.
+  const msg = err instanceof Error ? err.message : String(err);
+  if (
+    msg.includes("item is not a function call") ||
+    msg.includes("audio_end_ms")
+  ) {
+    try {
+      const rs = latestRealtimeSession;
+      if (rs && typeof rs.interrupt === "function") {
+        rs.interrupt();
+        console.log(
+          "[agent] recovery: interrupted realtime session after SDK internal error",
+        );
+      } else {
+        console.warn(
+          "[agent] recovery skipped: no interruptible realtime session available",
+        );
+      }
+    } catch (recoveryErr) {
+      console.error("[agent] recovery attempt failed:", recoveryErr);
+    }
+  }
 });
 process.on("unhandledRejection", (reason) => {
   console.error("[agent] unhandledRejection — keeping worker alive:", reason);
@@ -78,6 +114,7 @@ const MAX_RECENT_EVENTS = 10;
 interface StateBuffer {
   currentStage: string;
   awaiting: string | null;
+  unitSelected: boolean | null;
   profile: Record<string, unknown>;
   selectedHotel: Record<string, unknown> | null;
   lastSelectedRoom: {
@@ -94,6 +131,7 @@ function createStateBuffer(): StateBuffer {
   return {
     currentStage: "PROFILE_COLLECTION",
     awaiting: null,
+    unitSelected: null,
     profile: {},
     selectedHotel: null,
     lastSelectedRoom: null,
@@ -145,7 +183,16 @@ function inferSubstate(buf: StateBuffer): string {
 
   if (stage !== "HOTEL_EXPLORATION") return stage;
 
-  // Scan recent events in reverse to find the most recent meaningful one
+  // Prefer the boolean from state_snapshot when the reducer is in
+  // ROOM_SELECTED — it's authoritative. unitSelected is non-null only
+  // when the reducer's internal stage is ROOM_SELECTED.
+  if (buf.unitSelected !== null) {
+    return buf.unitSelected ? "ROOM_VIEWING_UNIT" : "ROOM_SELECTED";
+  }
+
+  // Fallback: scan recent events. Used when the snapshot hasn't caught
+  // up yet (rapid event bursts before debounced sync) or when the
+  // reducer is in a different stage but events still imply a room flow.
   for (let i = events.length - 1; i >= 0; i--) {
     const ev = events[i];
     // Room was selected via card tap or UE5 selection
@@ -286,55 +333,52 @@ function getActionGuide(buf: StateBuffer): string {
     case "ROOM_SELECTED":
       return (
         "[Action Guide]\n" +
-        "The guest JUST selected a specific room card. The [Current " +
-        "State] section above shows you EXACTLY which room " +
-        "(Currently selected room: name, sleeps, price). You MUST " +
-        "craft your response around THAT specific room and NO other.\n" +
+        "The guest just selected a ROOM TYPE from the browser panel. " +
+        "They have NOT yet selected a specific unit in the 3D view — " +
+        "several units of this room type are now highlighted in green " +
+        "and the guest needs to tap one to proceed. The [Current " +
+        "State] section above tells you which room type " +
+        "(Currently selected room: name, sleeps, price) and confirms " +
+        "`Specific unit selected in 3D: NO`.\n" +
         "\n" +
-        "Your response structure (2-3 short sentences, spoken warmly):\n" +
-        "  1. Name the room by its actual name (e.g., 'The Penthouse', " +
-        "     'The Loft Suite Lake View'). Do not say 'this room' or " +
-        "     'that one'.\n" +
-        "  2. Give one specific selling point from the ROOM CATALOG in " +
-        "     your system prompt (e.g., 'private terrace with panoramic " +
-        "     views', 'two-level loft with a private balcony over the " +
-        "     lake'). Match the point to the selected room's catalog " +
-        "     entry — do NOT mix details from different rooms.\n" +
-        "  3. State its capacity and price: 'sleeps up to X, from " +
-        "     $Y per night'.\n" +
-        "  4. End with a clear call to action: 'You'll see several " +
-        "     highlighted in green in the view — tap any one to step " +
-        "     inside.'\n" +
+        "Your response structure (2-3 short sentences):\n" +
+        "  1. Name the room type by its exact name.\n" +
+        "  2. One selling point from the ROOM CATALOG.\n" +
+        "  3. State capacity and price.\n" +
+        "  4. CLEAR call to action: 'You'll see several units " +
+        "     highlighted in green — tap any one to step inside and " +
+        "     explore it.'\n" +
         "\n" +
-        "Do NOT offer interior/exterior view yet — that's for AFTER " +
-        "UNIT_SELECTED_UE5 moves us to ROOM_VIEWING_UNIT.\n" +
-        "Do NOT book yet. Do NOT invent details not in the catalog.\n" +
-        "\n" +
-        "CRITICAL: Verify you are describing the room named in " +
-        "[Current State]'s 'Currently selected room' line. If the " +
-        "name there says 'Penthouse', do NOT describe a Loft Suite. " +
-        "If it says 'Loft Suite Mountain View', do NOT describe the " +
-        "Lake View version. Cross-check before responding."
+        "CRITICAL RULES:\n" +
+        "  - Do NOT offer interior view yet.\n" +
+        "  - Do NOT offer exterior view yet.\n" +
+        "  - Do NOT offer booking yet.\n" +
+        "  - If the guest asks 'show me inside' or 'exterior view' " +
+        "    before selecting a specific unit, respond: 'Of course — " +
+        "    please tap one of the highlighted green units first, and " +
+        "    then I can take you inside.' Do NOT call view_unit until " +
+        "    a unit is actually selected.\n" +
+        "  - Cross-check: if [Current State] says " +
+        "    'Specific unit selected in 3D: NO', you MUST follow the " +
+        "    rules above."
       );
 
     case "ROOM_VIEWING_UNIT":
       return (
         "[Action Guide]\n" +
-        "The guest is now viewing the interior or exterior of the " +
-        "selected unit. The [Current State] section tells you which " +
-        "room (name, occupancy, price) and which view mode (interior " +
-        "or exterior). Describe what THIS specific room looks like in " +
-        "this view — 1-2 sentences of sensory detail (light, space, " +
-        "views). Then offer the three next actions clearly:\n" +
-        "  (1) See the OTHER view — call view_unit with the opposite " +
-        "  mode (if viewing interior, offer exterior, and vice versa)\n" +
-        "  (2) Go back to browse other rooms (call navigate_back, then " +
-        "  open_rooms_panel)\n" +
-        "  (3) Book THIS specific room — only on explicit booking " +
-        "  language.\n" +
-        "If the guest has already seen both interior and exterior of " +
-        "this room, lean harder into booking: 'This is really a " +
-        "wonderful space — would you like to go ahead and reserve it?'"
+        "The guest has selected a specific unit in the 3D view " +
+        "(Specific unit selected in 3D: YES) and is currently " +
+        "viewing the interior or exterior. You can now offer the " +
+        "three view-choice actions freely:\n" +
+        "  (1) See the OTHER view (interior ↔ exterior — call " +
+        "      view_unit)\n" +
+        "  (2) Go back to browse other rooms (navigate_back)\n" +
+        "  (3) Book this room — ONLY on explicit booking language\n" +
+        "\n" +
+        "Describe what the guest is seeing in 1-2 sentences of sensory " +
+        "detail, then offer the three choices. If the guest has " +
+        "already seen both interior and exterior, lean harder into " +
+        "booking: 'Would you like to go ahead and reserve this one?'"
       );
 
     case "AMENITY_VIEWING":
@@ -444,6 +488,11 @@ function formatStateSummary(buf: StateBuffer): string {
     if (r.price) parts.push(`price: $${r.price}/night`);
     if (r.viewMode) parts.push(`currently viewing: ${r.viewMode}`);
     lines.push(`Currently selected room: ${parts.join(", ")}`);
+    if (buf.unitSelected !== null) {
+      lines.push(
+        `Specific unit selected in 3D: ${buf.unitSelected ? "YES" : "NO"}`,
+      );
+    }
   }
 
   if (buf.recentEvents.length > 0) {
@@ -509,6 +558,10 @@ function createStateSyncController(
 
     const rtSession = getRealtimeSession(session);
     if (rtSession) {
+      // Surface the realtime session to module scope so the
+      // uncaughtException recovery handler can interrupt it. Safe to
+      // overwrite on every sync — the handler always wants the latest.
+      latestRealtimeSession = rtSession;
       try {
         await rtSession.updateInstructions(fullInstructions);
         lastSyncedInstructions = fullInstructions;
@@ -552,6 +605,13 @@ function createStateSyncController(
       buf.awaiting = null;
     } else if (typeof p.awaiting === "string") {
       buf.awaiting = p.awaiting;
+    }
+
+    // Extract unitSelected sub-state (only meaningful during ROOM_SELECTED)
+    if (p.unitSelected === null) {
+      buf.unitSelected = null;
+    } else if (typeof p.unitSelected === "boolean") {
+      buf.unitSelected = p.unitSelected;
     }
 
     // Extract profile sub-object

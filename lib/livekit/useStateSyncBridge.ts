@@ -135,9 +135,18 @@ function buildStateSnapshotPayload(args: {
       ? internalState.awaiting
       : null
 
+  // Surface ROOM_SELECTED's unitSelected boolean so the agent can
+  // distinguish "user picked a room type card" from "user picked a
+  // specific unit in the 3D scene" — they need different action guides.
+  const unitSelected =
+    internalState && internalState.stage === "ROOM_SELECTED"
+      ? internalState.unitSelected === true
+      : null
+
   return {
     stage: journeyStage,
     awaiting,
+    unitSelected,
     profile: {
       firstName: profile.firstName ?? null,
       lastName: profile.lastName ?? null,

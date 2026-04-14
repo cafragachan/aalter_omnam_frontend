@@ -23,7 +23,9 @@
       "Bash(powershell -NoProfile -Command \"Get-Process -Id 28112 | Format-List Id,ProcessName,StartTime,Path\")",
       "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://localhost:3000/home)",
       "Bash(echo \"EXIT=$?\")",
-      "Bash(taskkill //F //PID 50916)"
+      "Bash(taskkill //F //PID 50916)",
+      "Bash(echo \"exit=$?\")",
+      "Read(//tmp/**)"
     ]
   }
 }
