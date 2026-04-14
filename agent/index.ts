@@ -77,16 +77,26 @@ const MAX_RECENT_EVENTS = 10;
 
 interface StateBuffer {
   currentStage: string;
+  awaiting: string | null;
   profile: Record<string, unknown>;
   selectedHotel: Record<string, unknown> | null;
+  lastSelectedRoom: {
+    id?: string;
+    name: string;
+    occupancy?: string;
+    price?: string | number;
+    viewMode?: "interior" | "exterior" | null;
+  } | null;
   recentEvents: string[];
 }
 
 function createStateBuffer(): StateBuffer {
   return {
     currentStage: "PROFILE_COLLECTION",
+    awaiting: null,
     profile: {},
     selectedHotel: null,
+    lastSelectedRoom: null,
     recentEvents: [],
   };
 }
@@ -174,21 +184,76 @@ function getActionGuide(buf: StateBuffer): string {
   const substate = inferSubstate(buf);
 
   switch (substate) {
-    case "PROFILE_COLLECTION":
+    case "PROFILE_COLLECTION": {
+      const awaiting = buf.awaiting ?? "unknown";
+      const fieldQuestions: Record<string, string> = {
+        dates_and_guests:
+          "Ask the guest for BOTH travel dates AND who will be traveling " +
+          "(party size). Do not assume either.",
+        dates:
+          "Ask the guest for their TRAVEL DATES. This is the most " +
+          "important missing piece — do not proceed without getting " +
+          "specific dates (e.g., 'May 10-15'). Even if you have " +
+          "historical dates from a previous stay, re-ask for THIS " +
+          "trip's dates.",
+        guests:
+          "Ask the guest how many people will be traveling, including " +
+          "themselves.",
+        guest_breakdown:
+          "You have the party size. Now ask for the breakdown — how " +
+          "many adults vs children?",
+        travel_purpose:
+          "Ask the guest what the main purpose of the trip is " +
+          "(leisure, family vacation, business, honeymoon, etc.).",
+        room_distribution:
+          "Ask how the guest would like to arrange rooms — all " +
+          "together, or split into multiple rooms?",
+      };
+      const question =
+        fieldQuestions[awaiting] ?? "Continue collecting profile.";
       return (
         "[Action Guide]\n" +
-        "You are collecting the guest's travel profile. Ask about: travel dates, " +
-        "party size, guest breakdown (adults vs children), travel purpose, and " +
-        "room distribution preference. Do not offer to show rooms or the hotel " +
-        "until all fields are collected."
+        `You are in PROFILE_COLLECTION and the system is waiting for: ${awaiting}.\n` +
+        `Your immediate task: ${question}\n` +
+        "\n" +
+        "CRITICAL: Do NOT advance to hotel exploration or the virtual " +
+        "lounge until every profile field is confirmed in THIS session. " +
+        "Even if the persona's historical context suggests you know the " +
+        "guest's typical travel pattern, you still need to verbally " +
+        "confirm THIS trip's specifics. The system will automatically " +
+        "transition stages once all fields are collected.\n" +
+        "\n" +
+        "Do NOT call open_rooms_panel, open_amenities_panel, or " +
+        "open_location_panel while in this stage. Do NOT describe the " +
+        "hotel or any rooms yet. Focus ONLY on collecting the missing " +
+        "profile field."
       );
+    }
 
     case "VIRTUAL_LOUNGE":
       return (
         "[Action Guide]\n" +
-        "The guest is in the virtual lounge. Offer to explore the lounge artwork " +
-        "and retail, or proceed directly to the hotel. Do not discuss rooms or " +
-        "amenities yet."
+        "The guest is currently in the VIRTUAL LOUNGE — a pre-hotel " +
+        "gallery space with exclusive artwork and curated retail " +
+        "offerings. They haven't arrived at the hotel yet. Your role " +
+        "here is to:\n" +
+        "  1. On your first utterance in this stage, offer two choices: " +
+        "     (a) explore the lounge — browse the artwork and retail " +
+        "     pieces around them, or (b) proceed directly to the hotel.\n" +
+        "  2. If the guest says ANYTHING indicating they want to go to " +
+        "     the hotel ('take me to the hotel', 'let's go to the " +
+        "     hotel', 'skip the lounge', 'head over', 'let's see the " +
+        "     hotel', 'proceed', 'lake como please', 'I'm ready', etc.), " +
+        "     the journey machine will automatically transition to " +
+        "     HOTEL_EXPLORATION — you do NOT need to call any tool, just " +
+        "     verbally acknowledge and the system handles it. Say " +
+        "     something warm like 'Wonderful, let me take you there now'.\n" +
+        "  3. Do NOT describe hotel rooms, amenities, or the location " +
+        "     while the guest is still in the lounge. Those are for " +
+        "     the next stage.\n" +
+        "  4. If the guest is quiet for a while, gently nudge: 'Would " +
+        "     you like to explore the lounge a bit, or shall we head " +
+        "     over to the hotel?'"
       );
 
     case "HOTEL_AWAITING_INTENT":
@@ -221,47 +286,55 @@ function getActionGuide(buf: StateBuffer): string {
     case "ROOM_SELECTED":
       return (
         "[Action Guide]\n" +
-        "The guest has selected a specific unit in the 3D environment. " +
-        "Your ONLY job in this turn is to offer them exactly THREE " +
-        "concrete next actions — nothing else. Do NOT describe the room " +
-        "in detail, do NOT talk about the view, the furnishings, the " +
-        "price, or share anecdotes. Keep your response to one short " +
-        "sentence that offers the three choices clearly:\n" +
-        "  1. See the INTERIOR (call view_unit with mode: 'interior')\n" +
-        "  2. See the EXTERIOR (call view_unit with mode: 'exterior')\n" +
-        "  3. BOOK this room (book it — but only if the guest uses " +
-        "     explicit booking language like 'book it', 'reserve it', " +
-        "     'let's go ahead', 'I want this one'). A plain 'yes' to a " +
-        "     previous question is NOT a booking request.\n" +
-        "Example good response: 'Lovely choice — would you like to " +
-        "step inside, see the exterior view, or go ahead and book it?'\n" +
-        "Example BAD responses (do not do these):\n" +
-        "  ✗ 'This room has beautiful lake views and a spacious balcony...'\n" +
-        "  ✗ 'The Loft Suite is great for families — let me tell you more...'\n" +
-        "  ✗ Any sentence that doesn't present the three-option choice.\n" +
-        "Save the storytelling for AFTER they pick interior or exterior " +
-        "— inside the unit view you can describe the space. But at the " +
-        "moment of unit selection, just offer the three options and stop."
+        "The guest JUST selected a specific room card. The [Current " +
+        "State] section above shows you EXACTLY which room " +
+        "(Currently selected room: name, sleeps, price). You MUST " +
+        "craft your response around THAT specific room and NO other.\n" +
+        "\n" +
+        "Your response structure (2-3 short sentences, spoken warmly):\n" +
+        "  1. Name the room by its actual name (e.g., 'The Penthouse', " +
+        "     'The Loft Suite Lake View'). Do not say 'this room' or " +
+        "     'that one'.\n" +
+        "  2. Give one specific selling point from the ROOM CATALOG in " +
+        "     your system prompt (e.g., 'private terrace with panoramic " +
+        "     views', 'two-level loft with a private balcony over the " +
+        "     lake'). Match the point to the selected room's catalog " +
+        "     entry — do NOT mix details from different rooms.\n" +
+        "  3. State its capacity and price: 'sleeps up to X, from " +
+        "     $Y per night'.\n" +
+        "  4. End with a clear call to action: 'You'll see several " +
+        "     highlighted in green in the view — tap any one to step " +
+        "     inside.'\n" +
+        "\n" +
+        "Do NOT offer interior/exterior view yet — that's for AFTER " +
+        "UNIT_SELECTED_UE5 moves us to ROOM_VIEWING_UNIT.\n" +
+        "Do NOT book yet. Do NOT invent details not in the catalog.\n" +
+        "\n" +
+        "CRITICAL: Verify you are describing the room named in " +
+        "[Current State]'s 'Currently selected room' line. If the " +
+        "name there says 'Penthouse', do NOT describe a Loft Suite. " +
+        "If it says 'Loft Suite Mountain View', do NOT describe the " +
+        "Lake View version. Cross-check before responding."
       );
 
     case "ROOM_VIEWING_UNIT":
       return (
         "[Action Guide]\n" +
-        "The guest is now viewing the interior or exterior of the selected " +
-        "room. Briefly describe what they're seeing (1–2 sentences, focus " +
-        "on sensory details — light, views, space), then gently offer the " +
-        "next concrete action. The guest's journey here should lead to a " +
-        "booking decision, so keep that goal in mind. Offer:\n" +
-        "  (1) See the OTHER view — interior↔exterior (call view_unit " +
-        "with the opposite mode)\n" +
-        "  (2) GO BACK to browse other rooms (call navigate_back, then " +
-        "open_rooms_panel)\n" +
-        "  (3) BOOK this room (only on explicit booking language — see " +
-        "ROOM_SELECTED rules)\n" +
-        "If the guest has seen both interior and exterior already, lean " +
-        "harder into the booking option: 'This really is a wonderful " +
-        "space — would you like to go ahead and book it?' You are a " +
-        "sales concierge; the goal is a reservation."
+        "The guest is now viewing the interior or exterior of the " +
+        "selected unit. The [Current State] section tells you which " +
+        "room (name, occupancy, price) and which view mode (interior " +
+        "or exterior). Describe what THIS specific room looks like in " +
+        "this view — 1-2 sentences of sensory detail (light, space, " +
+        "views). Then offer the three next actions clearly:\n" +
+        "  (1) See the OTHER view — call view_unit with the opposite " +
+        "  mode (if viewing interior, offer exterior, and vice versa)\n" +
+        "  (2) Go back to browse other rooms (call navigate_back, then " +
+        "  open_rooms_panel)\n" +
+        "  (3) Book THIS specific room — only on explicit booking " +
+        "  language.\n" +
+        "If the guest has already seen both interior and exterior of " +
+        "this room, lean harder into booking: 'This is really a " +
+        "wonderful space — would you like to go ahead and reserve it?'"
       );
 
     case "AMENITY_VIEWING":
@@ -364,6 +437,15 @@ function formatStateSummary(buf: StateBuffer): string {
     lines.push(`Hotel: ${h.name ?? h.slug ?? "unknown"}`);
   }
 
+  if (buf.lastSelectedRoom) {
+    const r = buf.lastSelectedRoom;
+    const parts: string[] = [`name: "${r.name}"`];
+    if (r.occupancy) parts.push(`sleeps: ${r.occupancy}`);
+    if (r.price) parts.push(`price: $${r.price}/night`);
+    if (r.viewMode) parts.push(`currently viewing: ${r.viewMode}`);
+    lines.push(`Currently selected room: ${parts.join(", ")}`);
+  }
+
   if (buf.recentEvents.length > 0) {
     lines.push("Recent events:");
     for (const ev of buf.recentEvents) {
@@ -411,6 +493,7 @@ function createStateSyncController(
 ) {
   const buf = createStateBuffer();
   let syncTimer: ReturnType<typeof setTimeout> | null = null;
+  let lastSyncedInstructions = "";
 
   async function syncInstructions() {
     syncTimer = null;
@@ -420,10 +503,15 @@ function createStateSyncController(
     const summary = formatStateSummary(buf);
     const fullInstructions = originalPrompt + "\n\n" + summary;
 
+    if (fullInstructions === lastSyncedInstructions) {
+      return;
+    }
+
     const rtSession = getRealtimeSession(session);
     if (rtSession) {
       try {
         await rtSession.updateInstructions(fullInstructions);
+        lastSyncedInstructions = fullInstructions;
         console.log(
           `[agent] synced instructions (${fullInstructions.length} chars, ` +
             `${buf.recentEvents.length} recent events)`,
@@ -459,6 +547,13 @@ function createStateSyncController(
       buf.currentStage = p.stage;
     }
 
+    // Extract awaiting sub-state (only meaningful during PROFILE_COLLECTION)
+    if (p.awaiting === null) {
+      buf.awaiting = null;
+    } else if (typeof p.awaiting === "string") {
+      buf.awaiting = p.awaiting;
+    }
+
     // Extract profile sub-object
     if (p.profile && typeof p.profile === "object") {
       buf.profile = p.profile as Record<string, unknown>;
@@ -482,7 +577,51 @@ function createStateSyncController(
     scheduleSync();
   }
 
-  return { updateFromSnapshot, pushEvent, flushSync, buf };
+  /**
+   * Capture room identity into buf.lastSelectedRoom from ui_event payloads.
+   * Called in addition to pushEvent so the LLM has structured "which room
+   * am I talking about" data, not just a scrollable event log.
+   */
+  function updateSelectedRoom(
+    eventName: string,
+    payload: Record<string, unknown> | undefined,
+  ) {
+    if (!payload) return;
+    if (eventName === "ROOM_CARD_TAPPED") {
+      buf.lastSelectedRoom = {
+        id: typeof payload.roomId === "string" ? payload.roomId : undefined,
+        name: String(payload.roomName ?? "unknown"),
+        occupancy:
+          typeof payload.occupancy === "string" ? payload.occupancy : undefined,
+        viewMode: null,
+      };
+    } else if (eventName === "UNIT_SELECTED_UE5") {
+      buf.lastSelectedRoom = {
+        id: buf.lastSelectedRoom?.id,
+        name: String(payload.roomName ?? buf.lastSelectedRoom?.name ?? "unknown"),
+        occupancy: buf.lastSelectedRoom?.occupancy,
+        price:
+          typeof payload.price === "string" || typeof payload.price === "number"
+            ? (payload.price as string | number)
+            : undefined,
+        viewMode: buf.lastSelectedRoom?.viewMode ?? null,
+      };
+    } else if (eventName === "VIEW_CHANGE") {
+      if (buf.lastSelectedRoom) {
+        const v = payload.view;
+        buf.lastSelectedRoom.viewMode =
+          v === "interior" || v === "exterior" ? v : null;
+      }
+    }
+  }
+
+  return {
+    updateFromSnapshot,
+    pushEvent,
+    updateSelectedRoom,
+    flushSync,
+    buf,
+  };
 }
 
 // formatStateSnapshot removed in Phase A-rev — state injection now goes
@@ -652,12 +791,17 @@ export default defineAgent({
               typeof parsed.description === "string" ? parsed.description : "";
             const eventName =
               typeof parsed.event === "string" ? parsed.event : "unknown";
+            const payload =
+              parsed.payload && typeof parsed.payload === "object"
+                ? (parsed.payload as Record<string, unknown>)
+                : undefined;
             if (!description) {
               console.warn(
                 `[agent] ui_event (${eventName}) missing description — ignoring`,
               );
             } else if (stateSync) {
               stateSync.pushEvent(`[${eventName}] ${description}`);
+              stateSync.updateSelectedRoom(eventName, payload);
               console.log(`[agent] ui_event ${eventName} → buffer`);
             }
           } else if (type === "speak") {

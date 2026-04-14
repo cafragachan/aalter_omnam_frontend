@@ -263,6 +263,12 @@ export function useJourney(options: UseJourneyOptions) {
     }
   }, [executeEffects])
 
+  // Expose the current internal JourneyState so outside observers
+  // (e.g., useStateSyncBridge) can read the fine-grained substate.
+  // Used by the state sync bridge to include `awaiting` in
+  // state_snapshot payloads. Read-only for consumers.
+  const getInternalState = useCallback(() => stateRef.current, [])
+
   // --- Amenity data helpers (compute data for rich actions dispatched to reducer) ---
 
   /** Build the lightweight AmenityRef[] the reducer needs from the full Amenity[] */
@@ -790,5 +796,5 @@ export function useJourney(options: UseJourneyOptions) {
     dispatch({ type: "USER_INTENT", intent: { type: "BACK" } })
   })
 
-  return { dispatch }
+  return { dispatch, getInternalState }
 }

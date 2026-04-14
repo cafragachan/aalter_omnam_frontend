@@ -631,15 +631,15 @@ function LoginOverlay({ onComplete, skipIntro = false }: { onComplete: () => voi
 
 function MicToggle() {
   const { isMuted } = useLiveKitAvatarContext()
-  const { startListening, stopListening } = useAvatarActions()
+  const { muteMicrophone, unmuteMicrophone } = useAvatarActions()
 
   const toggle = useCallback(() => {
     if (isMuted) {
-      startListening()
+      unmuteMicrophone()
     } else {
-      stopListening()
+      muteMicrophone()
     }
-  }, [isMuted, startListening, stopListening])
+  }, [isMuted, muteMicrophone, unmuteMicrophone])
 
   return (
     <button
@@ -995,7 +995,15 @@ function HomePageContent({ onHideUE5Stream }: { onHideUE5Stream: () => void }) {
   // if they were tap/click interactions.
   //
   // Both are safe no-ops before the room is connected.
-  const { onSpeak } = useStateSyncBridge({ enabled: true })
+  //
+  // getInternalStateRef is wired below (after useJourney returns); the
+  // state sync bridge re-reads it on every snapshot rebuild so it picks
+  // up the reducer's `awaiting` sub-state once useJourney is mounted.
+  const getInternalStateRef = useRef<(() => import("@/lib/orchestrator/types").JourneyState | null) | null>(null)
+  const { onSpeak } = useStateSyncBridge({
+    enabled: true,
+    getInternalState: () => getInternalStateRef.current?.() ?? null,
+  })
 
   const handleEndExperience = useCallback(() => {
     // Dispatch the end-experience intent into the journey reducer.
@@ -1041,7 +1049,7 @@ function HomePageContent({ onHideUE5Stream }: { onHideUE5Stream: () => void }) {
   )
 
   // --- Journey orchestrator (runs as a hook, not a component) ---
-  const { dispatch: journeyDispatch } = useJourney({
+  const { dispatch: journeyDispatch, getInternalState } = useJourney({
     onOpenPanel: handleOpenPanel,
     onClosePanels: handleClosePanels,
     onUE5Command: ue5.sendCommand,
@@ -1061,6 +1069,12 @@ function HomePageContent({ onHideUE5Stream }: { onHideUE5Stream: () => void }) {
   useEffect(() => {
     journeyDispatchRef.current = journeyDispatch
   }, [journeyDispatch])
+
+  // Hand getInternalState to the ref read by useStateSyncBridge so the
+  // state_snapshot payload can include the reducer's `awaiting` sub-state.
+  useEffect(() => {
+    getInternalStateRef.current = getInternalState
+  }, [getInternalState])
 
   // --- End-of-session snapshot on LiveKit disconnect ---
   useEffect(() => {

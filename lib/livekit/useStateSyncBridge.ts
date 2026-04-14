@@ -39,6 +39,7 @@ import { useUserProfileContext, type UserProfile, type JourneyStage } from "@/li
 import { useApp } from "@/lib/store"
 import { useEventListener } from "@/lib/events"
 import { getHotelBySlug } from "@/lib/hotel-data"
+import type { JourneyState } from "@/lib/orchestrator/types"
 
 import { useLiveKitAvatarContext } from "./context"
 import { useUserProfile, type AvatarDerivedProfile } from "./useUserProfile"
@@ -58,6 +59,15 @@ type UseStateSyncBridgeOptions = {
    * pause-without-unmount flow can disable state sync cheaply.
    */
   enabled?: boolean
+
+  /**
+   * Optional getter for the journey reducer's internal state. When
+   * provided, the state_snapshot payload includes an `awaiting` field
+   * (PROFILE_COLLECTION's fine-grained sub-state) so the agent can tell
+   * the LLM exactly which profile field to ask for next. Null-safe:
+   * when undefined or returning null, `awaiting` is set to null.
+   */
+  getInternalState?: () => JourneyState | null
 }
 
 type UseStateSyncBridgeReturn = {
@@ -110,15 +120,24 @@ function buildStateSnapshotPayload(args: {
   derivedProfile: AvatarDerivedProfile
   journeyStage: JourneyStage
   selectedHotelSlug: string | null
+  internalState: JourneyState | null
 }): Record<string, unknown> {
-  const { profile, derivedProfile, journeyStage, selectedHotelSlug } = args
+  const { profile, derivedProfile, journeyStage, selectedHotelSlug, internalState } = args
   const hotel = selectedHotelSlug ? getHotelBySlug(selectedHotelSlug) : null
 
   // partySize precedence: derived > familySize
   const partySize = derivedProfile.partySize ?? profile.familySize ?? null
 
+  // Surface PROFILE_COLLECTION's fine-grained awaiting sub-state so the
+  // agent's action guide knows exactly which field to ask for next.
+  const awaiting =
+    internalState && internalState.stage === "PROFILE_COLLECTION"
+      ? internalState.awaiting
+      : null
+
   return {
     stage: journeyStage,
+    awaiting,
     profile: {
       firstName: profile.firstName ?? null,
       lastName: profile.lastName ?? null,
@@ -161,11 +180,18 @@ export function useStateSyncBridge(
   options: UseStateSyncBridgeOptions = {},
 ): UseStateSyncBridgeReturn {
   const enabled = options.enabled ?? true
+  const { getInternalState } = options
 
   const { sessionRef } = useLiveKitAvatarContext()
   const { profile, journeyStage } = useUserProfileContext()
   const { profile: derivedProfile } = useUserProfile()
   const { selectedHotel } = useApp()
+
+  // Ref-wrap the getter so the memoized snapshot stays stable when callers
+  // pass a fresh function identity each render. We re-read through the ref
+  // on every snapshot rebuild.
+  const getInternalStateRef = useRef(getInternalState)
+  getInternalStateRef.current = getInternalState
 
   // Stable ref to the room so callback closures don't capture stale values.
   const roomRef = useRef<Room | null>(null)
@@ -205,6 +231,7 @@ export function useStateSyncBridge(
         derivedProfile,
         journeyStage,
         selectedHotelSlug: selectedHotel,
+        internalState: getInternalStateRef.current?.() ?? null,
       }),
     [profile, derivedProfile, journeyStage, selectedHotel],
   )

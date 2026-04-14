@@ -74,11 +74,37 @@ export const useAvatarActions = (_mode: "FULL" | "CUSTOM" = "FULL") => {
     [sessionRef],
   )
 
+  // Stage 6 Phase E Fix 3: explicit user-driven mute/unmute.
+  // stopListening is a no-op (to keep journey-driven transitions from
+  // killing the mic), so MicToggle and other user-initiated mute flows
+  // use these instead.
+  const muteMicrophone = useCallback(async () => {
+    const room = sessionRef.current
+    if (!room) return
+    try {
+      await room.localParticipant.setMicrophoneEnabled(false)
+    } catch (err) {
+      console.error("[livekit] muteMicrophone failed:", err)
+    }
+  }, [sessionRef])
+
+  const unmuteMicrophone = useCallback(async () => {
+    const room = sessionRef.current
+    if (!room) return
+    try {
+      await room.localParticipant.setMicrophoneEnabled(true)
+    } catch (err) {
+      console.error("[livekit] unmuteMicrophone failed:", err)
+    }
+  }, [sessionRef])
+
   return {
     interrupt,
     repeat,
     startListening,
     stopListening,
     message,
+    muteMicrophone,
+    unmuteMicrophone,
   }
 }
