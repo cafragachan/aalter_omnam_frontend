@@ -109,7 +109,7 @@ const OMNAM_DATA_TOPIC = "omnam";
 // ---------------------------------------------------------------------------
 
 const SYNC_DEBOUNCE_MS = 300;
-const MAX_RECENT_EVENTS = 10;
+const MAX_RECENT_EVENTS = 6;
 
 interface StateBuffer {
   currentStage: string;
@@ -360,7 +360,10 @@ function getActionGuide(buf: StateBuffer): string {
         "    a unit is actually selected.\n" +
         "  - Cross-check: if [Current State] says " +
         "    'Specific unit selected in 3D: NO', you MUST follow the " +
-        "    rules above."
+        "    rules above.\n" +
+        "  - NEVER offer to pick a unit for the guest. The guest picks " +
+        "    the unit. Your only role here is to invite them to tap one " +
+        "    of the highlighted green units."
       );
 
     case "ROOM_VIEWING_UNIT":
@@ -931,6 +934,42 @@ export default defineAgent({
     // preserved as the prefix; state summaries are appended after it.
     stateSync = createStateSyncController(sessionRef, instructions);
     console.log("[agent] stateSyncController initialized");
+
+    // Hard session time cap. Audio is 76% of OpenAI spend, so a forced
+    // upper bound on session length protects us from forgotten tabs,
+    // long silences, and test runs left open. At (cap - 2min) the agent
+    // nudges via narration_nudge-equivalent (interrupt + generateReply);
+    // at `cap` we disconnect the room which tears the session down.
+    const sessionMaxMinutes = Number(
+      process.env.AGENT_SESSION_MAX_MINUTES ?? "15",
+    );
+    const hardCapMs = Math.max(1, sessionMaxMinutes) * 60_000;
+    const nudgeAtMs = Math.max(0, hardCapMs - 2 * 60_000);
+    const nudgeTimer = setTimeout(async () => {
+      console.log("[agent] session time cap approaching");
+      try {
+        if (stateSync) await stateSync.flushSync();
+        await session.interrupt();
+        session.generateReply({
+          instructions:
+            "We've been chatting for a while — shall I wrap things up?",
+        });
+      } catch (err) {
+        console.error("[agent] time-cap nudge failed:", err);
+      }
+    }, nudgeAtMs);
+    const hardCapTimer = setTimeout(async () => {
+      console.log("[agent] session time cap reached, closing");
+      try {
+        await ctx.room.disconnect();
+      } catch (err) {
+        console.error("[agent] time-cap disconnect failed:", err);
+      }
+    }, hardCapMs);
+    ctx.room.once(RoomEvent.Disconnected, () => {
+      clearTimeout(nudgeTimer);
+      clearTimeout(hardCapTimer);
+    });
 
     // Proactively greet the user. Seed the first turn with the opening text
     // from buildOpeningText() so a returning guest hears "Welcome back,

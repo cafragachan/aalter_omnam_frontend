@@ -25,7 +25,23 @@
       "Bash(echo \"EXIT=$?\")",
       "Bash(taskkill //F //PID 50916)",
       "Bash(echo \"exit=$?\")",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "Bash(curl -s https://api.ipify.org)",
+      "Bash(node -e \"const https=require\\('https'\\);https.get\\('https://api.ipify.org',r=>{let d='';r.on\\('data',c=>d+=c\\);r.on\\('end',\\(\\)=>console.log\\(d\\)\\)}\\)\")",
+      "Bash(node -e:*)",
+      "Bash(tasklist)",
+      "Bash(tasklist //FI \"IMAGENAME eq node.exe\")",
+      "Bash(tasklist //FI \"IMAGENAME eq tsx.exe\")",
+      "Bash(tee /tmp/next_debug.log)",
+      "Bash(npx tsx:*)",
+      "Bash(npm view:*)",
+      "Bash(npm list:*)",
+      "Bash(curl -sS \"https://api.hedra.com/public/openapi.json\" -o /tmp/hedra_openapi.json)",
+      "Bash(python -c \"import json; d=json.load\\(open\\('/tmp/hedra_openapi.json'\\)\\); paths=d.get\\('paths',{}\\); rt=[p for p in paths if 'livekit' in p.lower\\(\\) or 'realtime' in p.lower\\(\\) or 'session' in p.lower\\(\\)]; print\\('realtime/livekit/session paths:'\\); [print\\(' ',p,list\\(paths[p].keys\\(\\)\\)\\) for p in rt]; print\\('\\\\\\\\ninfo:', d.get\\('info',{}\\)\\); print\\('\\\\\\\\ntotal paths:', len\\(paths\\)\\)\")",
+      "Read(//c/tmp/**)",
+      "Bash(curl -sS \"https://api.hedra.com/public/openapi.json\" -o hedra_openapi.json)",
+      "Bash(python -c ':*)",
+      "Bash(curl -sS \"https://api.hedra.com/public/openapi.json\")"
     ]
   }
 }

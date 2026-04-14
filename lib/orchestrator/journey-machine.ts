@@ -13,21 +13,15 @@ export function buildAmenityNarrative(name: string, scene: string): string {
   const n = name.toLowerCase()
   const s = scene.toLowerCase()
   if (s.includes("lobby") || n.includes("lobby")) {
-    return "we'll step into a grand, light-filled arrival lounge with plush seating and a calm lakeside energy. Is a welcoming lobby space important to you when you arrive?"
+    return "a light-filled arrival lounge with plush seating and lakeside calm."
   }
   if (s.includes("conference") || n.includes("conference")) {
-    return "this conference space is set up for focused meetings with modern tech, warm lighting, and quiet service. Will you be needing any meeting facilities during your stay?"
-  }
-  if (s.includes("spa") || n.includes("spa")) {
-    return "the spa is designed for deep relaxation with lakeside views and holistic treatments. Is wellness something you enjoy on holiday?"
-  }
-  if (s.includes("restaurant") || n.includes("restaurant") || n.includes("dining")) {
-    return "the restaurant serves locally-sourced Italian cuisine with panoramic lake views. Any dietary preferences I should note for your stay?"
+    return "a focused meeting space with modern tech and warm lighting."
   }
   if (s.includes("pool") || n.includes("pool")) {
-    return "the pool area has a wonderful setting overlooking the lake. Do you enjoy swimming, or is it more about the lounging and the view?"
+    return "a beautiful pool overlooking the lake."
   }
-  return "it's one of the property's signature spaces, designed for comfort, flow, and a touch of quiet luxury. What do you think?"
+  return "one of the property's signature spaces."
 }
 
 type ProfileCollectionAwaiting = Extract<JourneyState, { stage: "PROFILE_COLLECTION" }>["awaiting"]
@@ -111,7 +105,7 @@ function buildAmenityListingSpeech(
   // All visited
   if (remaining.length === 0) {
     const visitedText = visited.map((a) => `the ${a.name.toLowerCase()}`).join(", ")
-    return { text: `You've already explored ${visitedText}. Would you like to revisit any of them, or shall we look at the rooms instead?` }
+    return { text: `You've seen ${visitedText}. Revisit one, or look at rooms?` }
   }
 
   // Some visited — mention visited, offer remaining
@@ -122,7 +116,7 @@ function buildAmenityListingSpeech(
       ? `the ${remaining[0].name.toLowerCase()}`
       : remaining.map((a) => `the ${a.name.toLowerCase()}`).join(" and ")
     return {
-      text: `We've already visited ${visitedText}. Would you like to see ${remainingText} now?`,
+      text: `We've seen ${visitedText}. Next: ${remainingText}?`,
       suggestedName,
     }
   }
@@ -137,7 +131,7 @@ function buildAmenityListingSpeech(
         ? `a ${others[0].name.toLowerCase()}`
         : others.map((a) => `a ${a.name.toLowerCase()}`).join(" and ")
       return {
-        text: `Since you're here ${narrative}, I'd suggest starting with the ${recommended.name.toLowerCase()}. We also have ${othersText} that I can take you to. Where shall we begin?`,
+        text: `Since you're here ${narrative}, I'd start with the ${recommended.name.toLowerCase()}. Or we have ${othersText}. Your pick?`,
         suggestedName: recommended.name,
       }
     }
@@ -242,7 +236,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
     ) {
       return { nextState: state, effects: [] }
     }
-    effects.push({ type: "SPEAK", text: "Are you sure you'd like to head back to the virtual lounge? You'll leave the hotel experience for now." })
+    effects.push({ type: "SPEAK", text: "Head back to the virtual lounge? You'll leave the hotel for now." })
     return { nextState: { stage: "LOUNGE_CONFIRMING", previousState: state }, effects }
   }
 
@@ -295,7 +289,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
         effects.push({ type: "SET_JOURNEY_STAGE", stage: "VIRTUAL_LOUNGE" })
         effects.push({
           type: "SPEAK",
-          text: "Welcome back to the virtual lounge. Feel free to explore, and let me know if there's anything else you'd like to discover about the hotel.",
+          text: "Welcome back to the lounge. Let me know when you'd like to revisit.",
         })
         return { nextState: { stage: "VIRTUAL_LOUNGE", subState: "exploring" }, effects }
       }
@@ -373,14 +367,13 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
   // -----------------------------------------------------------------------
   if (state.stage === "DESTINATION_SELECT") {
     if (action.type === "HOTEL_PICKED") {
-      const { hotelName, description } = action
-      const narrative = `${description.charAt(0).toLowerCase()}${description.slice(1)}`
+      const { hotelName } = action
 
       effects.push({ type: "SET_JOURNEY_STAGE", stage: "VIRTUAL_LOUNGE" })
       effects.push({ type: "STOP_LISTENING" })
       effects.push({
         type: "SPEAK",
-        text: `Excellent choice — the ${hotelName}, ${narrative}. Before we head there, would you like to explore our virtual lounge? We have some exclusive artwork and unique retail offerings on display.`,
+        text: `Excellent — the ${hotelName}. Explore the lounge first, or head straight to the hotel?`,
       })
 
       return {
@@ -402,7 +395,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
         if (intent.type === "AFFIRMATIVE") {
           effects.push({
             type: "SPEAK",
-            text: "Great, feel free to navigate around the space pointing and clicking throughout the gallery. Let me know if you require any further assistance.",
+            text: "Take your time. Let me know when you're ready to head over.",
           })
           return { nextState: { stage: "VIRTUAL_LOUNGE", subState: "exploring" }, effects }
         }
@@ -426,7 +419,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           effects.push({ type: "FADE_TRANSITION" })
           effects.push({
             type: "SPEAK",
-            text: "Let me take you to the hotel. You can explore available rooms, check out the amenities, or wander the surrounding area. What would you like to see first?",
+            text: "Welcome to the hotel. Rooms, amenities, or the grounds — what would you like to see?",
           })
           return { nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" }, effects }
         }
@@ -452,14 +445,14 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           const proposal = state.lastProposal ?? "rooms"
           if (proposal === "rooms" || proposal === "book") {
             // Intercepted in useJourney to check if distribution question is needed
-            effects.push({ type: "SPEAK", text: "Let me pull up the available rooms." })
+            effects.push({ type: "SPEAK", text: "Let me pull up the rooms." })
             effects.push({ type: "OPEN_PANEL", panel: "rooms" })
             return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
           }
           if (proposal === "amenities") {
             // useJourney dispatches LIST_AMENITIES before this can be reached,
             // but as a safety net, prompt for specifics
-            effects.push({ type: "SPEAK", text: "Which amenity would you like to visit? I can show you the options." })
+            effects.push({ type: "SPEAK", text: "Which one — pool, lobby, or conference room?" })
             return { nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" }, effects }
           }
           if (proposal === "location") {
@@ -472,7 +465,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
 
         case "ROOMS":
           // Note: useJourney intercepts this to check if distribution question is needed first
-          effects.push({ type: "SPEAK", text: "Let me pull up the available rooms. I'll suggest the best fit based on your group size." })
+          effects.push({ type: "SPEAK", text: "Let me pull up the rooms." })
           effects.push({ type: "OPEN_PANEL", panel: "rooms" })
           return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
 
@@ -485,12 +478,12 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           return { nextState: state, effects: [] }
 
         case "LOCATION":
-          effects.push({ type: "SPEAK", text: "Let me show you the surrounding area. It's worth seeing what's nearby — there are some wonderful spots." })
+          effects.push({ type: "SPEAK", text: "Let me show you the surrounding area." })
           effects.push({ type: "OPEN_PANEL", panel: "location" })
           return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
 
         case "BOOK":
-          effects.push({ type: "SPEAK", text: "I'd love to help you book! Let me show you the available rooms first — pick the one that catches your eye." })
+          effects.push({ type: "SPEAK", text: "Of course — pick the room you'd like to book." })
           effects.push({ type: "OPEN_PANEL", panel: "rooms" })
           return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
 
@@ -503,7 +496,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
         case "HOTEL_EXPLORE":
         case "TRAVEL_TO_HOTEL":
           effects.push({ type: "RESET_TO_DEFAULT" })
-          effects.push({ type: "SPEAK", text: "Back to the hotel overview. What would you like to explore next — rooms, amenities, or the area?" })
+          effects.push({ type: "SPEAK", text: "Back to the overview. Rooms, amenities, or the area?" })
           return { nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" }, effects }
 
         case "UNKNOWN":
@@ -521,7 +514,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
       effects.push({ type: "UE5_COMMAND", command: "selectedRoom", value: roomId })
       effects.push({
         type: "SPEAK",
-        text: `The ${roomName} accommodates up to ${occupancy} guests. Select one of the highlighted green units to explore it.`,
+        text: `The ${roomName} sleeps up to ${occupancy}. Tap a highlighted green unit to step inside.`,
       })
       return { nextState: { stage: "ROOM_SELECTED", awaiting: "view_choice", unitSelected: false }, effects }
     }
@@ -530,7 +523,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
       effects.push({ type: "CLOSE_PANELS" })
       effects.push({
         type: "SPEAK",
-        text: `Great pick! The ${action.roomName} is a wonderful choice. Would you like to explore the interior or see the exterior view first?`,
+        text: `Nice — the ${action.roomName}. Interior or exterior?`,
       })
       return { nextState: { stage: "ROOM_SELECTED", awaiting: "view_choice", unitSelected: true, lastProposal: "interior_or_exterior" }, effects }
     }
@@ -542,7 +535,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
       effects.push({ type: "UE5_COMMAND", command: "communal", value: action.amenityId })
       effects.push({ type: "FADE_TRANSITION" })
       const nextState = buildAmenityViewingState(amenity, action.visitedAmenities, action.allAmenities)
-      const teaser = nextState.suggestedNext ? ` When you're ready, I can also show you the ${nextState.suggestedNext}.` : ""
+      const teaser = nextState.suggestedNext ? ` Next: the ${nextState.suggestedNext}?` : ""
       effects.push({ type: "SPEAK", text: `Let me take you to the ${action.name} — ${narrative}${teaser}` })
       return { nextState, effects }
     }
@@ -560,16 +553,16 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           // Resolve bare "yes" using what the avatar last proposed (default: book)
           const proposal = state.lastProposal ?? "book"
           if (proposal === "book") {
-            effects.push({ type: "SPEAK", text: "I'm opening the booking page for you now. You'll be able to complete your reservation directly on the hotel's website. Is there anything else you'd like to explore?" })
+            effects.push({ type: "SPEAK", text: "Opening the booking page now. Anything else I can help with?" })
             effects.push({ type: "OPEN_BOOKING_URL" })
             return { nextState: { stage: "ROOM_SELECTED", awaiting: "view_choice", unitSelected: state.unitSelected }, effects }
           }
           if (proposal === "interior_or_exterior") {
             if (!state.unitSelected) {
-              effects.push({ type: "SPEAK", text: "Please select a unit first by clicking on one of the highlighted options in the view." })
+              effects.push({ type: "SPEAK", text: "Tap a highlighted green unit first." })
               return { nextState: state, effects }
             }
-            effects.push({ type: "SPEAK", text: "Stepping inside — take a look around. Feel free to navigate through the space. Let me know if you have any specific requirements, or if you'd like to book this room, just say the word." })
+            effects.push({ type: "SPEAK", text: "Stepping inside — take a look around. Say the word when you're ready to book." })
             effects.push({ type: "UE5_COMMAND", command: "unitView", value: "interior" })
             effects.push({ type: "FADE_TRANSITION" })
             return { nextState: { ...state, lastProposal: "book" }, effects }
@@ -579,25 +572,25 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
 
         case "INTERIOR":
           if (!state.unitSelected) {
-            effects.push({ type: "SPEAK", text: "Please select a unit first by clicking on one of the highlighted options in the view." })
+            effects.push({ type: "SPEAK", text: "Tap a highlighted green unit first." })
             return { nextState: state, effects }
           }
-          effects.push({ type: "SPEAK", text: "Stepping inside — take a look around. Feel free to navigate through the space. Let me know if you have any specific requirements, or if you'd like to book this room, just say the word." })
+          effects.push({ type: "SPEAK", text: "Stepping inside — take a look around. Say the word when you're ready to book." })
           effects.push({ type: "UE5_COMMAND", command: "unitView", value: "interior" })
           effects.push({ type: "FADE_TRANSITION" })
           return { nextState: { ...state, lastProposal: "book" }, effects }
 
         case "EXTERIOR":
           if (!state.unitSelected) {
-            effects.push({ type: "SPEAK", text: "Please select a unit first by clicking on one of the highlighted options in the view." })
+            effects.push({ type: "SPEAK", text: "Tap a highlighted green unit first." })
             return { nextState: state, effects }
           }
-          effects.push({ type: "SPEAK", text: "Here's the exterior view. The perspective from this floor is quite special. Would you like to book this room, or explore something else?" })
+          effects.push({ type: "SPEAK", text: "The exterior view. Book this one, or see something else?" })
           effects.push({ type: "UE5_COMMAND", command: "unitView", value: "exterior" })
           return { nextState: { ...state, lastProposal: "book" }, effects }
 
         case "BOOK":
-          effects.push({ type: "SPEAK", text: "I'm opening the booking page for you now. You'll be able to complete your reservation directly on the hotel's website. Is there anything else you'd like to explore?" })
+          effects.push({ type: "SPEAK", text: "Opening the booking page now. Anything else I can help with?" })
           effects.push({ type: "OPEN_BOOKING_URL" })
           return { nextState: { stage: "ROOM_SELECTED", awaiting: "view_choice", unitSelected: state.unitSelected }, effects }
 
@@ -653,7 +646,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
     if (action.type === "UNIT_SELECTED_UE5") {
       effects.push({
         type: "SPEAK",
-        text: `Nice — the ${action.roomName}. Would you like to step inside or see the view from the exterior?`,
+        text: `Nice — the ${action.roomName}. Interior or exterior?`,
       })
       return { nextState: { stage: "ROOM_SELECTED", awaiting: "view_choice", unitSelected: true, lastProposal: "interior_or_exterior" }, effects }
     }

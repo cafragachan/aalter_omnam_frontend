@@ -186,7 +186,16 @@ export function buildOmnamTools(room: Room) {
 
     select_room: llm.tool({
       description:
-        "Select a specific room the user expressed interest in. Pass either the canonical roomId (e.g. 'r3') if you know it, or the human-readable roomName (e.g. 'Loft Suite Lake View') and the client will resolve it. Use when the user names a specific room or clearly picks one from the rooms panel.",
+        "Confirm the user's chosen ROOM TYPE (not a specific unit). " +
+        "Call this when the user explicitly names a room type they " +
+        "want to see (e.g., 'show me the Penthouse', 'I want to see " +
+        "the Loft Suite'). This highlights all units of that room type " +
+        "in the 3D view so the USER can then click on one. " +
+        "\n\n" +
+        "CRITICAL: you CANNOT pick a specific unit for the user. Only " +
+        "the user can click on a highlighted green unit. Do NOT offer " +
+        "'would you like me to pick one for you?' — that functionality " +
+        "does not exist. Always guide the user to click themselves.",
       parameters: {
         type: "object",
         properties: {

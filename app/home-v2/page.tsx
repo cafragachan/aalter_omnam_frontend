@@ -843,7 +843,8 @@ function HomePageContent({ onHideUE5Stream }: { onHideUE5Stream: () => void }) {
   const { selectHotel, selectedHotel } = useApp()
   const { profile, journeyStage, setJourneyStage, updateProfile } = useUserProfileContext()
   const emit = useEmit()
-  const { sessionState, sessionRef } = useLiveKitAvatarContext()
+  const { sessionState, sessionRef, isUserTalking } = useLiveKitAvatarContext()
+  const { muteMicrophone, unmuteMicrophone } = useAvatarActions("FULL")
   useDebugLogger()
   const { writeEndOfSessionSnapshot } = useIncrementalPersistence({
     useContext: useLiveKitAvatarContext,
@@ -890,8 +891,72 @@ function HomePageContent({ onHideUE5Stream }: { onHideUE5Stream: () => void }) {
   // --- UI panel visibility (local state, driven by orchestrator callbacks) ---
   const [showRoomsPanel, setShowRoomsPanel] = useState(false)
 
+  // Fix 1: Client-side idle disconnect. If the user doesn't speak for
+  // IDLE_TIMEOUT_MS, disconnect the LiveKit room to stop audio-token
+  // burn. Reset the timer on every isUserTalking=true transition.
+  const IDLE_TIMEOUT_MS = 90_000
+  const [idleDisconnected, setIdleDisconnected] = useState(false)
+  const idleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const prevIsUserTalkingRef = useRef(false)
+  const sessionConnected = sessionState === SessionState.CONNECTED
+
+  useEffect(() => {
+    if (!sessionConnected) {
+      if (idleTimeoutRef.current) clearTimeout(idleTimeoutRef.current)
+      idleTimeoutRef.current = null
+      return
+    }
+    const resetTimer = () => {
+      if (idleTimeoutRef.current) clearTimeout(idleTimeoutRef.current)
+      idleTimeoutRef.current = setTimeout(() => {
+        setIdleDisconnected(true)
+        sessionRef.current?.disconnect()
+      }, IDLE_TIMEOUT_MS)
+    }
+    resetTimer()
+    return () => {
+      if (idleTimeoutRef.current) clearTimeout(idleTimeoutRef.current)
+      idleTimeoutRef.current = null
+    }
+  }, [sessionConnected, sessionRef])
+
+  useEffect(() => {
+    if (!sessionConnected) {
+      prevIsUserTalkingRef.current = isUserTalking
+      return
+    }
+    if (isUserTalking && !prevIsUserTalkingRef.current) {
+      if (idleTimeoutRef.current) clearTimeout(idleTimeoutRef.current)
+      idleTimeoutRef.current = setTimeout(() => {
+        setIdleDisconnected(true)
+        sessionRef.current?.disconnect()
+      }, IDLE_TIMEOUT_MS)
+    }
+    prevIsUserTalkingRef.current = isUserTalking
+  }, [isUserTalking, sessionConnected, sessionRef])
+
   // --- UE5 Bridge (WebSocket + fade transitions + unit state) ---
   const ue5 = useUE5Bridge()
+
+  // Fix 3: Auto-mute mic during UE5 fade transitions so we don't spend
+  // audio tokens on the user's "wait, where did you go?" reaction while
+  // the scene swap is running. Re-uses the Phase G mute/unmute helpers.
+  const fadeMuteTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const fadeTransitionWithMute = useCallback(() => {
+    ue5.fadeTransition()
+    muteMicrophone()
+    if (fadeMuteTimeoutRef.current) clearTimeout(fadeMuteTimeoutRef.current)
+    fadeMuteTimeoutRef.current = setTimeout(() => {
+      unmuteMicrophone()
+      fadeMuteTimeoutRef.current = null
+    }, 3000)
+  }, [ue5, muteMicrophone, unmuteMicrophone])
+
+  useEffect(() => {
+    return () => {
+      if (fadeMuteTimeoutRef.current) clearTimeout(fadeMuteTimeoutRef.current)
+    }
+  }, [])
 
   // --- Stream mode (for debug hud visibility) ---
   const streamMode = process.env.NEXT_PUBLIC_STREAM_MODE || "local"
@@ -1054,7 +1119,7 @@ function HomePageContent({ onHideUE5Stream }: { onHideUE5Stream: () => void }) {
     onClosePanels: handleClosePanels,
     onUE5Command: ue5.sendCommand,
     onResetToDefault: handleResetToDefault,
-    onFadeTransition: ue5.fadeTransition,
+    onFadeTransition: fadeTransitionWithMute,
     onSelectHotel: handleAutoSelectHotel,
     onUpdateRoomPlan: handleUpdateRoomPlan,
     onStopAvatar: handleStopAvatar,
@@ -1210,6 +1275,25 @@ function HomePageContent({ onHideUE5Stream }: { onHideUE5Stream: () => void }) {
         recommendedRoomId={recommendedRoomId}
         recommendedPlan={recommendedPlan}
       />
+
+      {/* Idle-disconnect reconnect prompt */}
+      {idleDisconnected && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+          <GlassPanel className="max-w-sm space-y-4 px-8 py-8 text-center">
+            <h2 className="text-xl tracking-tight text-white">Session paused</h2>
+            <p className="text-sm text-white/70">
+              Session paused due to inactivity. Reconnect when you&apos;re ready.
+            </p>
+            <Button
+              size="lg"
+              className="w-full"
+              onClick={() => window.location.reload()}
+            >
+              Reconnect
+            </Button>
+          </GlassPanel>
+        </div>
+      )}
     </>
   )
 }
