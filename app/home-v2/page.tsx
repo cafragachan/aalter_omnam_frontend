@@ -852,21 +852,38 @@ function HomePageContent({ onHideUE5Stream }: { onHideUE5Stream: () => void }) {
   const { returningUserData } = useAuth()
 
   // --- Pre-populate profile from returning user's persisted preferences ---
+  //
+  // Stage 6 Phase C Fix 1: hydrate partySize / guestComposition / travelPurpose
+  // for returning users so the state_snapshot is accurate from the start.
+  // Without this, the LLM's persona greeting ("Will it be the 4 of you again?")
+  // contradicts state_snapshot's partySize: 1, and room recommendations are
+  // made for a party of 1 even though the persona knows it's a family of 4.
+  //
+  // Dates (startDate/endDate) and roomAllocation are intentionally NOT
+  // hydrated — they are session-specific and must be collected through
+  // conversation. profileCollectionAwaiting() in journey-machine.ts gates
+  // stage advancement on dates being present, so the journey will still stay
+  // in PROFILE_COLLECTION until the user provides them.
   const hasHydratedRef = useRef(false)
   useEffect(() => {
     if (hasHydratedRef.current || !returningUserData) return
     hasHydratedRef.current = true
     const { personality, preferences } = returningUserData
-    const comp = preferences?.typicalGuestComposition ?? undefined
+    const typical = preferences?.typicalGuestComposition ?? null
+    const partySize = typical ? typical.adults + typical.children : undefined
+    const guestComposition = typical
+      ? { adults: typical.adults, children: typical.children }
+      : undefined
+    const travelPurpose = personality?.travelPurposes?.[0] ?? undefined
     updateProfile({
       interests: personality?.interests ?? [],
-      travelPurpose: personality?.travelPurposes?.[0] ?? undefined,
       budgetRange: personality?.budgetTendency ?? undefined,
       dietaryRestrictions: personality?.dietaryRestrictions ?? [],
       accessibilityNeeds: personality?.accessibilityNeeds ?? [],
       amenityPriorities: preferences?.preferredAmenities ?? [],
-      guestComposition: comp,
-      familySize: comp ? comp.adults + comp.children : undefined,
+      ...(partySize !== undefined ? { familySize: partySize } : {}),
+      ...(guestComposition ? { guestComposition } : {}),
+      ...(travelPurpose ? { travelPurpose } : {}),
     })
   }, [returningUserData, updateProfile])
 
@@ -991,12 +1008,20 @@ function HomePageContent({ onHideUE5Stream }: { onHideUE5Stream: () => void }) {
     })
   }, [])
 
+  const handleReturnToLounge = useCallback(() => {
+    journeyDispatchRef.current?.({
+      type: "USER_INTENT",
+      intent: { type: "RETURN_TO_LOUNGE" },
+    })
+  }, [])
+
   const journeyDispatchRef = useRef<((action: import("@/lib/orchestrator").JourneyAction) => void) | null>(null)
 
   useToolCallBridge({
     enabled: true,
     onOpenPanel: handleOpenPanel,
     onEndExperience: handleEndExperience,
+    onReturnToLounge: handleReturnToLounge,
     selectedHotelSlug: selectedHotel,
   })
 

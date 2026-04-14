@@ -288,5 +288,25 @@ export function buildOmnamTools(room: Room) {
         return "Farewell flow triggered. Say a warm goodbye using the user's first name if you know it.";
       },
     }),
+
+    return_to_lounge: llm.tool({
+      description:
+        "Return to the virtual lounge from the hotel experience. " +
+        "Use when the user says anything like 'go back to the lounge', " +
+        "'take me home', 'go to the landing page', 'back to the intro', " +
+        "'return to the lounge', 'homepage', or any variation that " +
+        "suggests they want to leave the hotel and return to the " +
+        "starting area. This triggers a confirmation prompt before " +
+        "actually navigating.",
+      parameters: {
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+      },
+      execute: async () => {
+        await publishToolCall(room, "return_to_lounge", {});
+        return "Return-to-lounge confirmation triggered.";
+      },
+    }),
   };
 }

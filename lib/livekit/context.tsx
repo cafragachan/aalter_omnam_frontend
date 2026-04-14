@@ -67,6 +67,8 @@ import {
   RemoteTrackPublication,
   Room,
   RoomEvent,
+  Track,
+  type TrackPublication,
 } from "livekit-client"
 
 import {
@@ -316,8 +318,35 @@ function LiveKitContextBridge({ children }: { children: ReactNode }) {
       }
     }
 
-    const handleLocalTrackMuted = () => setIsMuted(true)
-    const handleLocalTrackUnmuted = () => setIsMuted(false)
+    // Stage 6 Phase B Fix 1: filter to only the LOCAL participant's mic
+    // track. RoomEvent.TrackMuted fires for ALL tracks (including the
+    // Hedra avatar's audio/video tracks), which was causing isMuted to
+    // flip to true during speech interruption when the avatar's track
+    // got muted.
+    const handleLocalTrackMuted = (
+      publication: TrackPublication,
+      participant: Participant,
+    ) => {
+      if (
+        room.localParticipant &&
+        participant.identity === room.localParticipant.identity &&
+        publication.source === Track.Source.Microphone
+      ) {
+        setIsMuted(true)
+      }
+    }
+    const handleLocalTrackUnmuted = (
+      publication: TrackPublication,
+      participant: Participant,
+    ) => {
+      if (
+        room.localParticipant &&
+        participant.identity === room.localParticipant.identity &&
+        publication.source === Track.Source.Microphone
+      ) {
+        setIsMuted(false)
+      }
+    }
 
     room.on(RoomEvent.ConnectionStateChanged, handleConnectionStateChanged)
     room.on(RoomEvent.Disconnected, handleDisconnected)

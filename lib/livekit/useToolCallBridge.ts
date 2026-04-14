@@ -55,6 +55,7 @@ type ToolCallName =
   | "view_unit"
   | "navigate_back"
   | "end_experience"
+  | "return_to_lounge"
   | "open_test_panel" // kept for Stage 2 debugging
 
 type ToolCallArgs = Record<string, unknown>
@@ -83,6 +84,14 @@ type UseToolCallBridgeOptions = {
   onEndExperience: () => void
 
   /**
+   * Return-to-lounge callback. Should trigger the journey reducer's
+   * RETURN_TO_LOUNGE path. The page wires this to
+   * journeyDispatch({type:"USER_INTENT", intent:{type:"RETURN_TO_LOUNGE"}})
+   * so the existing reducer + confirmation flow handles the rest.
+   */
+  onReturnToLounge: () => void
+
+  /**
    * Currently-selected hotel slug, used to resolve room/amenity IDs
    * to full payloads for EventBus emits. Null before hotel selection.
    */
@@ -94,13 +103,31 @@ type UseToolCallBridgeOptions = {
 // ---------------------------------------------------------------------
 
 export function useToolCallBridge(options: UseToolCallBridgeOptions): void {
-  const { enabled = true, onOpenPanel, onEndExperience, selectedHotelSlug } = options
+  const { enabled = true, onOpenPanel, onEndExperience, onReturnToLounge, selectedHotelSlug } = options
 
   const { subscribeToToolCalls } = useLiveKitAvatarContext()
   const emit = useEmit()
 
   useEffect(() => {
     if (!enabled) return
+
+    /**
+     * Stage 6 Phase B Fix 2: Before opening a panel, emit NAVIGATE_BACK
+     * to ensure the journey machine is in HOTEL_EXPLORATION state. This
+     * fixes the case where the LLM calls open_rooms_panel while the
+     * internal journey state is ROOM_SELECTED — without the BACK dispatch,
+     * ROOM_CARD_TAPPED events wouldn't be handled by the reducer.
+     *
+     * NAVIGATE_BACK from HOTEL_EXPLORATION is safe (resets to awaiting_intent).
+     * NAVIGATE_BACK from ROOM_SELECTED transitions to HOTEL_EXPLORATION.
+     * NAVIGATE_BACK from AMENITY_VIEWING transitions to HOTEL_EXPLORATION.
+     */
+    function resetToExplorationIfNeeded() {
+      // Always emit NAVIGATE_BACK — it's safe from any exploration sub-state.
+      // The journey machine's BACK handler for each stage correctly resets
+      // to HOTEL_EXPLORATION.
+      emit({ type: "NAVIGATE_BACK" })
+    }
 
     const handleToolCall = (msg: {
       type: "tool_call"
@@ -113,18 +140,21 @@ export function useToolCallBridge(options: UseToolCallBridgeOptions): void {
       try {
         switch (name) {
           case "open_rooms_panel": {
+            resetToExplorationIfNeeded()
             onOpenPanel("rooms")
             emit({ type: "PANEL_REQUESTED", panel: "rooms" })
             return
           }
 
           case "open_amenities_panel": {
+            resetToExplorationIfNeeded()
             onOpenPanel("amenities")
             emit({ type: "PANEL_REQUESTED", panel: "amenities" })
             return
           }
 
           case "open_location_panel": {
+            resetToExplorationIfNeeded()
             onOpenPanel("location")
             emit({ type: "PANEL_REQUESTED", panel: "location" })
             return
@@ -250,6 +280,11 @@ export function useToolCallBridge(options: UseToolCallBridgeOptions): void {
             return
           }
 
+          case "return_to_lounge": {
+            onReturnToLounge()
+            return
+          }
+
           case "open_test_panel": {
             // Stage 2 debug tool — still wired so the /livekit-test
             // page keeps working. Translate to a rooms-panel open if
@@ -274,5 +309,5 @@ export function useToolCallBridge(options: UseToolCallBridgeOptions): void {
 
     const unsubscribe = subscribeToToolCalls(handleToolCall)
     return unsubscribe
-  }, [enabled, subscribeToToolCalls, emit, onOpenPanel, onEndExperience, selectedHotelSlug])
+  }, [enabled, subscribeToToolCalls, emit, onOpenPanel, onEndExperience, onReturnToLounge, selectedHotelSlug])
 }

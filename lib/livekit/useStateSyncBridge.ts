@@ -70,10 +70,19 @@ type UseStateSyncBridgeReturn = {
 }
 
 // ---------------------------------------------------------------------
-// Debounce config
+// Debounce / dedup config
 // ---------------------------------------------------------------------
 
 const STATE_SNAPSHOT_DEBOUNCE_MS = 250
+
+/**
+ * Stage 6 Phase A — dedup window for ui_event and narration_nudge messages.
+ * If the same event (by type+payload key) or the same nudge text fires
+ * within this window, the duplicate is silently dropped. This prevents the
+ * agent from being flooded when, e.g., UNIT_SELECTED_UE5 fires 10+ times
+ * for a single user action.
+ */
+const DEDUP_WINDOW_MS = 500
 
 // ---------------------------------------------------------------------
 // Helpers
@@ -231,86 +240,159 @@ export function useStateSyncBridge(
   // Each handler publishes a `ui_event` data-channel message with a
   // human-readable `description` and the event's raw payload for
   // debugging/forwarding.
+  //
+  // Stage 6 Phase A: dedup guard. If the same event type + payload was
+  // published within DEDUP_WINDOW_MS, the duplicate is silently dropped.
+  // This prevents the 10+ duplicate UNIT_SELECTED_UE5 spam observed in
+  // end-to-end testing.
+
+  const lastUIEventRef = useRef<{ key: string; time: number }>({
+    key: "",
+    time: 0,
+  })
+
+  /**
+   * Stage 6 Phase B Fix 3: per-event-TYPE rate limiting.
+   *
+   * The existing per-payload dedup (above) catches identical events within
+   * 500ms, but doesn't handle rapid distinct-payload events of the same type
+   * (e.g., tapping 5 different room cards in 2 seconds). This tracker
+   * implements a "first + summary" pattern:
+   *   - First 2 events of the same type go through immediately.
+   *   - Subsequent events within 1s are buffered.
+   *   - After 1s of quiet, a summary event fires with the count + last payload.
+   */
+  const eventTypeTrackerRef = useRef<
+    Map<string, { count: number; timer: ReturnType<typeof setTimeout> | null; lastDescription: string; lastPayload: Record<string, unknown> | undefined }>
+  >(new Map())
+
+  /** Publish a ui_event with dedup + per-type rate limiting. */
+  const publishUIEvent = useCallback(
+    (
+      eventName: string,
+      description: string,
+      payload?: Record<string, unknown>,
+    ) => {
+      // Phase A dedup: identical event within window
+      const key = `${eventName}:${JSON.stringify(payload)}`
+      const now = Date.now()
+      if (
+        key === lastUIEventRef.current.key &&
+        now - lastUIEventRef.current.time < DEDUP_WINDOW_MS
+      ) {
+        return // dedup — same event within window
+      }
+      lastUIEventRef.current = { key, time: now }
+
+      // Phase B: per-type rate limiting
+      const trackerMap = eventTypeTrackerRef.current
+      let tracker = trackerMap.get(eventName)
+      if (!tracker) {
+        tracker = { count: 0, timer: null, lastDescription: "", lastPayload: undefined }
+        trackerMap.set(eventName, tracker)
+      }
+
+      tracker.count++
+      tracker.lastDescription = description
+      tracker.lastPayload = payload
+
+      if (tracker.count <= 2) {
+        // First two events go through immediately
+        publish({
+          type: "ui_event",
+          event: eventName,
+          description,
+          payload,
+        })
+      }
+
+      // Schedule a summary event after 1s of quiet
+      if (tracker.timer) clearTimeout(tracker.timer)
+      tracker.timer = setTimeout(() => {
+        if (tracker!.count > 2) {
+          publish({
+            type: "ui_event",
+            event: eventName,
+            description: `User browsed ${tracker!.count} ${eventName} items, last: ${tracker!.lastDescription}`,
+            payload: tracker!.lastPayload,
+          })
+        }
+        // Reset tracker for next burst
+        tracker!.count = 0
+        tracker!.timer = null
+      }, 1000)
+    },
+    [publish],
+  )
 
   useEventListener("ROOM_CARD_TAPPED", (event) => {
-    publish({
-      type: "ui_event",
-      event: "ROOM_CARD_TAPPED",
-      description: `User tapped the ${event.roomName} card (occupancy: ${event.occupancy}).`,
-      payload: {
+    publishUIEvent(
+      "ROOM_CARD_TAPPED",
+      `User tapped the ${event.roomName} card (occupancy: ${event.occupancy}).`,
+      {
         roomId: event.roomId,
         roomName: event.roomName,
         occupancy: event.occupancy,
       },
-    })
+    )
   })
 
   useEventListener("AMENITY_CARD_TAPPED", (event) => {
-    publish({
-      type: "ui_event",
-      event: "AMENITY_CARD_TAPPED",
-      description: `User tapped the ${event.name} amenity.`,
-      payload: {
+    publishUIEvent(
+      "AMENITY_CARD_TAPPED",
+      `User tapped the ${event.name} amenity.`,
+      {
         amenityId: event.amenityId,
         name: event.name,
         scene: event.scene,
       },
-    })
+    )
   })
 
   useEventListener("UNIT_SELECTED_UE5", (event) => {
-    publish({
-      type: "ui_event",
-      event: "UNIT_SELECTED_UE5",
-      description: `User selected ${event.roomName} in the 3D environment.`,
-      payload: {
+    publishUIEvent(
+      "UNIT_SELECTED_UE5",
+      `User selected ${event.roomName} in the 3D environment.`,
+      {
         roomName: event.roomName,
         description: event.description ?? null,
         price: event.price ?? null,
         level: event.level ?? null,
       },
-    })
+    )
   })
 
   useEventListener("HOTEL_SELECTED", (event) => {
     const hotel = getHotelBySlug(event.slug)
     const hotelName = hotel?.name ?? event.slug
-    publish({
-      type: "ui_event",
-      event: "HOTEL_SELECTED",
-      description: `User selected ${hotelName}.`,
-      payload: {
-        slug: event.slug,
-        name: hotel?.name ?? null,
-        location: hotel?.location ?? null,
-      },
+    publishUIEvent("HOTEL_SELECTED", `User selected ${hotelName}.`, {
+      slug: event.slug,
+      name: hotel?.name ?? null,
+      location: hotel?.location ?? null,
     })
   })
 
   useEventListener("PANEL_REQUESTED", (event) => {
-    publish({
-      type: "ui_event",
-      event: "PANEL_REQUESTED",
-      description: `User requested the ${event.panel} panel.`,
-      payload: { panel: event.panel },
-    })
+    publishUIEvent(
+      "PANEL_REQUESTED",
+      `User requested the ${event.panel} panel.`,
+      { panel: event.panel },
+    )
   })
 
   useEventListener("VIEW_CHANGE", (event) => {
-    publish({
-      type: "ui_event",
-      event: "VIEW_CHANGE",
-      description: `User switched to the ${event.view} view.`,
-      payload: { view: event.view },
-    })
+    publishUIEvent(
+      "VIEW_CHANGE",
+      `User switched to the ${event.view} view.`,
+      { view: event.view },
+    )
   })
 
   useEventListener("NAVIGATE_BACK", () => {
-    publish({
-      type: "ui_event",
-      event: "NAVIGATE_BACK",
-      description: "User requested back navigation.",
-    })
+    publishUIEvent(
+      "NAVIGATE_BACK",
+      "User requested back navigation.",
+    )
   })
 
   // FADE_TRANSITION is intentionally NOT mirrored — it's a visual polish
@@ -329,14 +411,31 @@ export function useStateSyncBridge(
   // The callback is stable (it closes over `publish`, which is also
   // stable) so useJourney's SPEAK executor deps don't re-fire on every
   // render.
+  // Stage 6 Phase A: dedup guard for narration_nudge. The journey machine
+  // may dispatch the same SPEAK text multiple times when the underlying
+  // action fires repeatedly (e.g., unit selection spam → multiple SPEAK
+  // effects with the same guidance text).
+  const lastNudgeRef = useRef<{ text: string; time: number }>({
+    text: "",
+    time: 0,
+  })
+
   const onSpeak = useCallback(
     (text: string) => {
       if (!enabledRef.current) return
+      const now = Date.now()
+      if (
+        text === lastNudgeRef.current.text &&
+        now - lastNudgeRef.current.time < DEDUP_WINDOW_MS
+      ) {
+        return // dedup — same nudge within window
+      }
+      lastNudgeRef.current = { text, time: now }
       publish({
         type: "narration_nudge",
         intent: "JOURNEY_SPEAK",
         guidance: text,
-        priority: "next_turn",
+        priority: "interrupt",
       })
     },
     [publish],

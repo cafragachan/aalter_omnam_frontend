@@ -49,15 +49,18 @@ export const useAvatarActions = (_mode: "FULL" | "CUSTOM" = "FULL") => {
     }
   }, [sessionRef])
 
+  // Stage 6 Phase B Fix 1: stopListening is a no-op on the LiveKit path.
+  // The journey machine's STOP_LISTENING effect calls this during stage
+  // transitions (e.g., profile complete → virtual lounge). On the HeyGen
+  // path, this pauses the HeyGen SDK's mic stream. On LiveKit, calling
+  // setMicrophoneEnabled(false) actually kills the WebRTC mic track,
+  // which is too aggressive — the OpenAI Realtime model manages its own
+  // VAD (semantic_vad) and doesn't need manual mic muting during
+  // transitions. Disabling the mic also breaks re-engagement because
+  // re-enabling it requires a new getUserMedia grant in some browsers.
   const stopListening = useCallback(async () => {
-    const room = sessionRef.current
-    if (!room) return
-    try {
-      await room.localParticipant.setMicrophoneEnabled(false)
-    } catch (err) {
-      console.error("[livekit] stopListening failed:", err)
-    }
-  }, [sessionRef])
+    // Intentional no-op — see comment above.
+  }, [])
 
   /** Send a typed message to the avatar's LLM (as if the user typed it). */
   const message = useCallback(
