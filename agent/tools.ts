@@ -263,7 +263,11 @@ export function buildOmnamTools(room: Room) {
     // -----------------------------------------------------------------
     navigate_back: llm.tool({
       description:
-        "Return to the previous view. Use when the user says 'go back', 'take me back', 'return', 'previous', or similar.",
+        "Go back ONE STEP within the current hotel experience — for " +
+        "example, close a panel and return to the hotel overview, or exit " +
+        "a specific room back to the rooms panel. Use this ONLY for small " +
+        "in-hotel navigation. DO NOT use this to leave the hotel entirely " +
+        "or return to the lounge/home — use return_to_lounge for that.",
       parameters: {
         type: "object",
         properties: {},
@@ -277,7 +281,14 @@ export function buildOmnamTools(room: Room) {
 
     end_experience: llm.tool({
       description:
-        "End the experience and begin the farewell flow. Use when the user explicitly says they are done, need to leave, want to stop, or the conversation has reached a natural conclusion. Do not call this on simple 'no' answers — only when the user clearly wants to exit.",
+        "End the experience entirely — close the session. Use when the " +
+        "guest says 'I'm done', 'goodbye', 'bye', 'that's all', 'I need " +
+        "to go', 'see you later', 'thanks that's enough', or similar " +
+        "clear farewells. The system will ask the guest to confirm before " +
+        "actually ending. Do NOT say 'goodbye' immediately after calling " +
+        "this tool — call it, then ask 'Are you sure you'd like to end " +
+        "your experience?' and wait for their confirmation. Do NOT " +
+        "call this on a simple 'no' answer to another question.",
       parameters: {
         type: "object",
         properties: {},
@@ -291,13 +302,16 @@ export function buildOmnamTools(room: Room) {
 
     return_to_lounge: llm.tool({
       description:
-        "Return to the virtual lounge from the hotel experience. " +
-        "Use when the user says anything like 'go back to the lounge', " +
-        "'take me home', 'go to the landing page', 'back to the intro', " +
-        "'return to the lounge', 'homepage', or any variation that " +
-        "suggests they want to leave the hotel and return to the " +
-        "starting area. This triggers a confirmation prompt before " +
-        "actually navigating.",
+        "Leave the hotel experience entirely and return to the virtual " +
+        "lounge / home / landing area. Use this when the guest says ANY " +
+        "of: 'take me back to the lounge', 'go home', 'homepage', " +
+        "'landing page', 'return to the intro', 'back to the start', " +
+        "'go back to the virtual lounge', or similar phrases suggesting " +
+        "they want to EXIT the hotel. The system will ask the guest to " +
+        "confirm before actually navigating — do not say 'taking you " +
+        "back now'. Instead, call this tool and then say something like " +
+        "'Sure — before we head back, just to confirm, you'd like to " +
+        "leave the hotel?' and wait for their answer.",
       parameters: {
         type: "object",
         properties: {},

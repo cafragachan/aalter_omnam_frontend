@@ -101,20 +101,34 @@ function inferSubstate(buf: StateBuffer): string {
   const stage = buf.currentStage;
   const events = buf.recentEvents;
 
-  // Detect confirmation stages from recent narration nudges.
+  // Detect confirmation stages from recent narration nudges AND tool calls.
   // LOUNGE_CONFIRMING and END_CONFIRMING are internal reducer states
   // that don't surface as public JourneyStages in the state_snapshot,
-  // so we infer them from the most recent narration_nudge content.
+  // so we infer them from:
+  //   1. Recent narration_nudge text (the journey machine's SPEAK effect)
+  //   2. Recent tool_call events (return_to_lounge / end_experience)
+  // Whichever signal appears most recently wins.
   for (let i = events.length - 1; i >= 0; i--) {
     const ev = events[i];
-    if (ev.includes("Are you sure you'd like to head back")) {
+    if (
+      ev.includes("Are you sure you'd like to head back") ||
+      ev.includes("return_to_lounge")
+    ) {
       return "LOUNGE_CONFIRMING";
     }
-    if (ev.includes("Are you sure you'd like to end")) {
+    if (
+      ev.includes("Are you sure you'd like to end") ||
+      ev.includes("end_experience")
+    ) {
       return "END_CONFIRMING";
     }
-    // Only check the most recent narration-style event
-    if (ev.includes("narration_nudge") || ev.includes("SPEAK")) {
+    // Break after the most recent narration/tool-call-style event so we
+    // don't scan all the way back past a resolved confirmation.
+    if (
+      ev.includes("narration_nudge") ||
+      ev.includes("SPEAK") ||
+      ev.includes("tool_call")
+    ) {
       break;
     }
   }
@@ -180,20 +194,19 @@ function getActionGuide(buf: StateBuffer): string {
     case "HOTEL_AWAITING_INTENT":
       return (
         "[Action Guide]\n" +
-        "The guest just arrived at the hotel. FIRST, welcome them and " +
-        "verbally describe the three things they can explore:\n" +
-        "  1. The hotel rooms — different room types and suites\n" +
-        "  2. The amenities — pool, lobby, conference space\n" +
-        "  3. The location and surrounding grounds\n" +
-        "Wait for the guest to express a preference before calling " +
-        "any tool. Do NOT immediately open a panel. Let them choose. " +
-        "Only call open_rooms_panel, open_amenities_panel, or " +
-        "open_location_panel AFTER the guest indicates what they want " +
-        "to see.\n" +
-        "If the guest says 'go back to the lounge', 'homepage', or " +
-        "'take me home', use return_to_lounge.\n" +
-        "If the guest says 'I'm done', 'goodbye', or wants to leave, " +
-        "use end_experience."
+        "The guest just arrived at the hotel. On your very first utterance " +
+        "after arrival, you MUST describe all THREE exploration paths in " +
+        "one flowing sentence:\n" +
+        "  1. The ROOMS (different suites and room types)\n" +
+        "  2. The AMENITIES (pool, lobby, conference room — ONLY these three)\n" +
+        "  3. The LOCATION and SURROUNDING AREA (grounds and views)\n" +
+        "Wait for the guest to choose. Do NOT default to rooms. Do NOT " +
+        "call any tool (open_rooms_panel, open_amenities_panel, " +
+        "open_location_panel) until the guest expresses a preference.\n" +
+        "If the guest says 'take me to the lounge', 'homepage', or 'back " +
+        "to the intro', call return_to_lounge.\n" +
+        "If the guest says 'I'm done', 'goodbye', 'bye', 'thanks that's " +
+        "enough', or similar, call end_experience."
       );
 
     case "PANEL_OPEN":
@@ -208,32 +221,47 @@ function getActionGuide(buf: StateBuffer): string {
     case "ROOM_SELECTED":
       return (
         "[Action Guide]\n" +
-        "The guest has selected a room. Offer EXACTLY these options: " +
-        "(1) see the interior view (use view_unit with mode 'interior'), " +
-        "(2) see the exterior view (use view_unit with mode 'exterior'), or " +
-        "(3) proceed to book this room — but only if the guest uses explicit " +
-        "booking language (book, reserve, confirm, go ahead). Do NOT offer to " +
-        "'tell them more about it' or 'show other rooms' at this point — " +
-        "they are looking at a specific unit."
+        "The guest has selected a specific unit in the 3D environment. " +
+        "Your ONLY job in this turn is to offer them exactly THREE " +
+        "concrete next actions — nothing else. Do NOT describe the room " +
+        "in detail, do NOT talk about the view, the furnishings, the " +
+        "price, or share anecdotes. Keep your response to one short " +
+        "sentence that offers the three choices clearly:\n" +
+        "  1. See the INTERIOR (call view_unit with mode: 'interior')\n" +
+        "  2. See the EXTERIOR (call view_unit with mode: 'exterior')\n" +
+        "  3. BOOK this room (book it — but only if the guest uses " +
+        "     explicit booking language like 'book it', 'reserve it', " +
+        "     'let's go ahead', 'I want this one'). A plain 'yes' to a " +
+        "     previous question is NOT a booking request.\n" +
+        "Example good response: 'Lovely choice — would you like to " +
+        "step inside, see the exterior view, or go ahead and book it?'\n" +
+        "Example BAD responses (do not do these):\n" +
+        "  ✗ 'This room has beautiful lake views and a spacious balcony...'\n" +
+        "  ✗ 'The Loft Suite is great for families — let me tell you more...'\n" +
+        "  ✗ Any sentence that doesn't present the three-option choice.\n" +
+        "Save the storytelling for AFTER they pick interior or exterior " +
+        "— inside the unit view you can describe the space. But at the " +
+        "moment of unit selection, just offer the three options and stop."
       );
 
     case "ROOM_VIEWING_UNIT":
       return (
         "[Action Guide]\n" +
-        "The guest is viewing the interior or exterior of a room. " +
-        "Let them explore freely. When they seem ready, offer to:\n" +
-        "  (1) see the other view — interior↔exterior (use view_unit)\n" +
-        "  (2) go back to browse more rooms (use navigate_back then " +
+        "The guest is now viewing the interior or exterior of the selected " +
+        "room. Briefly describe what they're seeing (1–2 sentences, focus " +
+        "on sensory details — light, views, space), then gently offer the " +
+        "next concrete action. The guest's journey here should lead to a " +
+        "booking decision, so keep that goal in mind. Offer:\n" +
+        "  (1) See the OTHER view — interior↔exterior (call view_unit " +
+        "with the opposite mode)\n" +
+        "  (2) GO BACK to browse other rooms (call navigate_back, then " +
         "open_rooms_panel)\n" +
-        "  (3) book this room — but ONLY offer this if the guest has " +
-        "explicitly expressed interest in booking. Do NOT interpret a " +
-        "generic 'yes' or 'sure' as a booking request. The guest must " +
-        "say something like 'I want to book this', 'reserve this room', " +
-        "'let's go ahead with this one', or 'book it'. A simple " +
-        "'yes' in response to 'do you like it?' is NOT a booking " +
-        "confirmation.\n" +
-        "Only trigger booking when the guest uses explicit booking language " +
-        "(book, reserve, confirm, go ahead)."
+        "  (3) BOOK this room (only on explicit booking language — see " +
+        "ROOM_SELECTED rules)\n" +
+        "If the guest has seen both interior and exterior already, lean " +
+        "harder into the booking option: 'This really is a wonderful " +
+        "space — would you like to go ahead and book it?' You are a " +
+        "sales concierge; the goal is a reservation."
       );
 
     case "AMENITY_VIEWING":
