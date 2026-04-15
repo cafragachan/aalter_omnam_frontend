@@ -412,8 +412,10 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
       }
 
       if (state.subState === "exploring") {
-        // User wants to leave the lounge and go to the hotel
-        if (intent.type === "TRAVEL_TO_HOTEL" || intent.type === "NEGATIVE") {
+        // User wants to leave the lounge and go to the hotel.
+        // AFFIRMATIVE ("yes", "sure", "ok") resolves against the avatar's
+        // standing "let me know when you're ready" prompt.
+        if (intent.type === "TRAVEL_TO_HOTEL" || intent.type === "NEGATIVE" || intent.type === "AFFIRMATIVE") {
           effects.push({ type: "SET_JOURNEY_STAGE", stage: "HOTEL_EXPLORATION" })
           effects.push({ type: "UE5_COMMAND", command: "startTEST", value: "startTEST" })
           effects.push({ type: "FADE_TRANSITION" })

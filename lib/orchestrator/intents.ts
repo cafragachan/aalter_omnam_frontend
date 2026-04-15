@@ -57,7 +57,7 @@ function isEndExperience(text: string): boolean {
 }
 const RETURN_TO_LOUNGE_RE = /\b(?:(?:go|take\s+me|head|travel|return|get)\s+(?:back\s+)?(?:to\s+)?(?:the\s+)?(?:virtual\s+)?(?:lounge|lobby|home\s*page|main\s*page|gallery)|back\s+to\s+(?:the\s+)?(?:virtual\s+)?(?:lounge|lobby|home\s*page|main\s*page|gallery))\b/i
 const DOWNLOAD_DATA_RE = /\bdownload\s+user\s+data\b/
-const TRAVEL_TO_HOTEL_RE = /\b(take me to the hotel|go to the hotel|head to the hotel|travel to the hotel|let'?s go to the hotel|ready to go|let'?s travel|bring me to the hotel|hotel please|straight to the hotel|head over)\b/i
+const TRAVEL_TO_HOTEL_RE = /\b(take me to the hotel|go to the hotel|head to the hotel|travel to the hotel|let'?s go to the hotel|ready to go|let'?s travel|bring me to the hotel|hotel please|straight to the hotel|head over|i'?m ready(?!\s+to\s+(?:book|reserve))|ready when you are|ready to (?:go|continue|proceed|move\s*on|see)|all set|let'?s (?:keep (?:going|moving)|continue|proceed|go on|move on)|keep going|move on|(?:want(?: to)?|wanna|(?:'d|would) like to) (?:see|visit|check out) the hotel|show me the hotel)\b/i
 const AFFIRMATIVE_RE = /\b(yes|yeah|sure|absolutely|definitely|love to|why not|let'?s do it|sounds good|okay|ok|of course|i'?d love|please|certainly|yep|yea)\b/i
 const NEGATIVE_RE = /\b(no|nah|skip|not really|no thanks|no thank you|i'?m good|pass|nope|not interested)\b/i
 const ROOM_RE = /\b(room|rooms|suite|suites|stay|bed|accommodation)\b/

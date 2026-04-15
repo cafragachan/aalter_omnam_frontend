@@ -1,6 +1,7 @@
 import { voice, defineAgent, cli, ServerOptions } from "@livekit/agents";
 import * as openai from "@livekit/agents-plugin-openai";
 import * as hedra from "@livekit/agents-plugin-hedra";
+import * as bey from "@livekit/agents-plugin-bey";
 import { JobContext } from "@livekit/agents";
 import { RoomEvent, type RemoteParticipant, type Room } from "@livekit/rtc-node";
 import * as path from "node:path";
@@ -706,9 +707,27 @@ export default defineAgent({
       }),
     });
 
-    const avatar = new hedra.AvatarSession({
-      avatarId: process.env.HEDRA_AVATAR_ID,
-    });
+    // Avatar provider is toggleable via env. Default "hedra" keeps /home-v2
+    // production behavior. Set AVATAR_PROVIDER=bey to test Beyond Presence
+    // end-to-end via /livekit-test while Hedra's realtime pipeline is broken.
+    // Both plugins expose the same AvatarSession surface; we override the bey
+    // participant identity/name to "hedra-avatar-agent" so the existing
+    // frontend code in components/livekit/LiveKitAvatarPlayer.tsx and
+    // lib/livekit/context.tsx (which filter on AVATAR_PARTICIPANT_NAME =
+    // "hedra-avatar-agent") keeps working without changes.
+    const provider = (process.env.AVATAR_PROVIDER ?? "hedra").toLowerCase();
+    console.log(`[agent] avatar provider: ${provider}`);
+    const avatar =
+      provider === "bey"
+        ? new bey.AvatarSession({
+            avatarId: process.env.BEYOND_PRESENCE_AVATAR_ID ?? null,
+            apiKey: process.env.BEYOND_PRESENCE_API_KEY,
+            avatarParticipantIdentity: "hedra-avatar-agent",
+            avatarParticipantName: "hedra-avatar-agent",
+          })
+        : new hedra.AvatarSession({
+            avatarId: process.env.HEDRA_AVATAR_ID,
+          });
 
     // Start the avatar and wait for it to join the room
     await avatar.start(session, ctx.room);

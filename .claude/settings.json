@@ -41,7 +41,8 @@
       "Read(//c/tmp/**)",
       "Bash(curl -sS \"https://api.hedra.com/public/openapi.json\" -o hedra_openapi.json)",
       "Bash(python -c ':*)",
-      "Bash(curl -sS \"https://api.hedra.com/public/openapi.json\")"
+      "Bash(curl -sS \"https://api.hedra.com/public/openapi.json\")",
+      "Bash(npm search:*)"
     ]
   }
 }
