@@ -1050,8 +1050,8 @@ function HomePageContent({ ephemeralContextId, onHideUE5Stream }: { ephemeralCon
           <div />
 
           {/* Avatar control panel */}
-          <div className="mt-auto pointer-events-auto">
-            <div className="inline-flex items-stretch rounded-[20px] border border-white/25 bg-gradient-to-br from-white/20 via-white/10 to-white/5 shadow-[0_20px_60px_-28px_rgba(0,0,0,0.85)] backdrop-blur-2xl">
+          <div className="mt-auto">
+            <div className="pointer-events-auto inline-flex items-stretch rounded-[20px] border border-white/25 bg-gradient-to-br from-white/20 via-white/10 to-white/5 shadow-[0_20px_60px_-28px_rgba(0,0,0,0.85)] backdrop-blur-2xl">
               {/* Avatar — 5px padding top/left/bottom, flush right edge */}
               <div className="p-[5px] pr-0">
                 <div
