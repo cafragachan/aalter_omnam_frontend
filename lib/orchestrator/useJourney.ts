@@ -15,6 +15,7 @@ import { classifyIntentLLM } from "./classifyIntentLLM"
 import { classifyRoomPlanLLM } from "./classifyRoomPlanLLM"
 import type { RoomPlanAction, RoomPlanContext } from "./classifyRoomPlanLLM"
 import { generateSpeechLLM } from "./generateSpeechLLM"
+import { orchestrateLLM } from "./orchestrateLLM"
 import type { SpeechContext } from "./generateSpeechLLM"
 import { journeyReducer, INITIAL_JOURNEY_STATE, buildAmenityNarrative } from "./journey-machine"
 import { useIdleDetection } from "./idle-detection"
@@ -127,6 +128,13 @@ type UseJourneyOptions = {
    */
   enableLLMSpeech?: boolean
   /**
+   * When true, user messages are classified via a single consolidated
+   * /api/orchestrate call that returns intent + room plan action + speech
+   * in one round-trip. Supersedes the three individual LLM flags when set.
+   * Default: false. Only `/home` passes true.
+   */
+  enableLLMOrchestrate?: boolean
+  /**
    * Stage 5 (LiveKit path): when provided, SPEAK effects are routed
    * through this callback instead of interrupt()+repeat() on the avatar
    * session. Legacy /home does not pass this — default behavior is
@@ -187,6 +195,9 @@ export function useJourney(options: UseJourneyOptions) {
   const currentRoomIdRef = useRef<string | null>(null)
   const lastAvatarMessageCountRef = useRef(0)
 
+  // --- Pre-generated speech ref (Phase 4: orchestrate fills this before processIntent) ---
+  const preGeneratedSpeechRef = useRef<string | null>(null)
+
   // --- Profile nudge tracking ---
   const nudgeAwaitingRef = useRef<string | null>(null)
   const nudgeCountRef = useRef(0)
@@ -219,6 +230,18 @@ export function useJourney(options: UseJourneyOptions) {
     const generated = await generateSpeechLLM(fallbackText, context)
     repeat(generated ?? fallbackText).catch(() => undefined)
   }, [interrupt, repeat, options.enableLLMSpeech])
+
+  /** Check preGeneratedSpeechRef first, fall back to speakWithLLM */
+  const speakResolved = useCallback((fallbackText: string, context: SpeechContext) => {
+    if (preGeneratedSpeechRef.current !== null) {
+      const preGenerated = preGeneratedSpeechRef.current
+      preGeneratedSpeechRef.current = null
+      interrupt()
+      repeat(preGenerated).catch(() => undefined)
+      return
+    }
+    void speakWithLLM(fallbackText, context)
+  }, [interrupt, repeat, speakWithLLM])
 
   // --- Admin: download all collected user data as JSON ---
   const downloadUserData = useCallback(async () => {
@@ -272,7 +295,12 @@ export function useJourney(options: UseJourneyOptions) {
         case "SPEAK":
           if (options.onSpeak) {
             options.onSpeak(effect.text)
-          } else if (options.enableLLMSpeech) {
+          } else if (preGeneratedSpeechRef.current !== null) {
+            const preGenerated = preGeneratedSpeechRef.current
+            preGeneratedSpeechRef.current = null
+            interrupt()
+            repeat(preGenerated).catch(() => undefined)
+          } else if (options.enableLLMSpeech || options.enableLLMOrchestrate) {
             void speakWithLLM(effect.text, buildSpeechContext())
           } else {
             interrupt()
@@ -436,7 +464,7 @@ export function useJourney(options: UseJourneyOptions) {
     }
 
     if (newPlan) {
-      void speakWithLLM(speechText, buildSpeechContext("PLAN_ADJUSTMENT"))
+      speakResolved(speechText, buildSpeechContext("PLAN_ADJUSTMENT"))
       executeEffects([{ type: "UPDATE_ROOM_PLAN", plan: newPlan }])
       // Ensure the rooms panel is open
       if (stateRef.current.stage === "HOTEL_EXPLORATION" && stateRef.current.subState !== "panel_open") {
@@ -444,7 +472,7 @@ export function useJourney(options: UseJourneyOptions) {
         stateRef.current = { stage: "HOTEL_EXPLORATION", subState: "panel_open" }
       }
     }
-  }, [profile, derivedProfile, rooms, speakWithLLM, buildSpeechContext, executeEffects])
+  }, [profile, derivedProfile, rooms, speakResolved, buildSpeechContext, executeEffects])
 
   /** Handle explicit room composition from user (e.g., "4 standard rooms and 2 loft suites") */
   const handleExplicitComposition = useCallback((
@@ -454,7 +482,7 @@ export function useJourney(options: UseJourneyOptions) {
     const { plan, warning } = buildExplicitRoomPlan(requests, rooms, partySize)
 
     if (plan.entries.length === 0) {
-      void speakWithLLM(
+      speakResolved(
         "I couldn't quite match those room types. Could you describe the combination you'd like?",
         buildSpeechContext("EXPLICIT_COMPOSITION"),
       )
@@ -472,7 +500,7 @@ export function useJourney(options: UseJourneyOptions) {
       speechText += " How does that look?"
     }
 
-    void speakWithLLM(speechText, buildSpeechContext("EXPLICIT_COMPOSITION"))
+    speakResolved(speechText, buildSpeechContext("EXPLICIT_COMPOSITION"))
     executeEffects([{ type: "UPDATE_ROOM_PLAN", plan }])
 
     // Ensure the rooms panel is open
@@ -480,7 +508,7 @@ export function useJourney(options: UseJourneyOptions) {
       executeEffects([{ type: "OPEN_PANEL", panel: "rooms" }])
       stateRef.current = { stage: "HOTEL_EXPLORATION", subState: "panel_open" }
     }
-  }, [profile, derivedProfile, rooms, speakWithLLM, buildSpeechContext, executeEffects])
+  }, [profile, derivedProfile, rooms, speakResolved, buildSpeechContext, executeEffects])
 
   /**
    * Execute a structured RoomPlanAction from the LLM room-plan classifier.
@@ -504,7 +532,7 @@ export function useJourney(options: UseJourneyOptions) {
           const summary = newPlan.entries
             .map((e) => `${e.quantity > 1 ? `${e.quantity} ` : ""}${e.roomName}${e.quantity > 1 ? " rooms" : ""}`)
             .join(" and ")
-          void speakWithLLM(
+          speakResolved(
             `Here's what I can do close to ${budgetStr} per night: ${summary} at $${newPlan.totalPricePerNight.toLocaleString()} per night. How does that sound?`,
             buildSpeechContext("ADJUST_BUDGET"),
           )
@@ -536,7 +564,7 @@ export function useJourney(options: UseJourneyOptions) {
             const summary = newPlan.entries
               .map((e) => `${e.quantity > 1 ? `${e.quantity} ` : ""}${e.roomName}${e.quantity > 1 ? " rooms" : ""}`)
               .join(" and ")
-            void speakWithLLM(
+            speakResolved(
               `Great news — I can fit your group into ${roomCount} room${roomCount > 1 ? "s" : ""}: ${summary} at $${newPlan.totalPricePerNight.toLocaleString()} per night.`,
               buildSpeechContext("COMPACT_PLAN"),
             )
@@ -547,7 +575,7 @@ export function useJourney(options: UseJourneyOptions) {
             }
             return true
           } else {
-            void speakWithLLM(
+            speakResolved(
               `I wasn't able to fit everyone into just ${action.params.max_rooms} room${action.params.max_rooms > 1 ? "s" : ""} — the minimum is ${roomCount}. Here's the most compact option I have. What do you think?`,
               buildSpeechContext("COMPACT_PLAN"),
             )
@@ -582,7 +610,7 @@ export function useJourney(options: UseJourneyOptions) {
           .map((e) => `${e.quantity > 1 ? `${e.quantity} ` : ""}${e.roomName}${e.quantity > 1 ? " rooms" : ""}`)
           .join(" and ")
         const prefLabel = action.params.room_type_preference ?? "your preferences"
-        void speakWithLLM(
+        speakResolved(
           `Based on ${prefLabel}, here's what I'd recommend: ${summary} at $${newPlan.totalPricePerNight.toLocaleString()} per night. How does that look?`,
           buildSpeechContext("RECOMPUTE_PREFERENCES"),
         )
@@ -597,7 +625,7 @@ export function useJourney(options: UseJourneyOptions) {
     }
 
     return false
-  }, [profile, derivedProfile, rooms, speakWithLLM, buildSpeechContext, executeEffects, handlePlanAdjustment, handleExplicitComposition, updateProfile])
+  }, [profile, derivedProfile, rooms, speakResolved, buildSpeechContext, executeEffects, handlePlanAdjustment, handleExplicitComposition, updateProfile])
 
   /** Dispatch LIST_AMENITIES action with pre-computed hotel data */
   const dispatchListAmenities = useCallback(() => {
@@ -779,7 +807,7 @@ export function useJourney(options: UseJourneyOptions) {
       intent.type === "UNKNOWN" || intent.type === "ROOMS"
     )
 
-    if (isRoomPlanIntent && options.enableLLMRoomPlanning && isRoomPlanningMessage(latestMessage)) {
+    if (isRoomPlanIntent && !options.enableLLMOrchestrate && options.enableLLMRoomPlanning && isRoomPlanningMessage(latestMessage)) {
       const partySize = profile.familySize ?? derivedProfile.partySize
       const roomContext: RoomPlanContext = {
         rooms: rooms.map((r) => ({ id: r.id, name: r.name, occupancy: parseInt(r.occupancy, 10) || 2, price: r.price })),
@@ -902,7 +930,7 @@ export function useJourney(options: UseJourneyOptions) {
     ) {
       // Multi-room composition detected — skip room selection AND intent classification,
       // go directly to the room plan LLM which handles set_room_composition.
-      if (MULTI_ROOM_RE.test(latestMessage) && options.enableLLMRoomPlanning) {
+      if (MULTI_ROOM_RE.test(latestMessage) && !options.enableLLMOrchestrate && options.enableLLMRoomPlanning) {
         const partySize = profile.familySize ?? derivedProfile.partySize
         const roomContext: RoomPlanContext = {
           rooms: rooms.map((r) => ({ id: r.id, name: r.name, occupancy: parseInt(r.occupancy, 10) || 2, price: r.price })),
@@ -939,6 +967,62 @@ export function useJourney(options: UseJourneyOptions) {
 
     const regexIntent = classifyIntent(latestMessage)
 
+    // --- Phase 4: consolidated orchestrate branch ---
+    if (options.enableLLMOrchestrate) {
+      // High-confidence regex — skip LLM, speech handled by SPEAK effect fallback
+      if (HIGH_CONFIDENCE_INTENTS.has(regexIntent.type)) {
+        processIntent(regexIntent, latestMessage, currentState, stage)
+        return
+      }
+
+      const isRoomContext = currentState.stage === "HOTEL_EXPLORATION" || currentState.stage === "ROOM_SELECTED"
+
+      let cancelled = false
+      ;(async () => {
+        const result = await orchestrateLLM({
+          message: latestMessage,
+          state: currentState,
+          guestFirstName: profile.firstName,
+          travelPurpose: profile.travelPurpose ?? derivedProfile.travelPurpose,
+          interests: profile.interests,
+          rooms: isRoomContext ? rooms.map((r) => ({ id: r.id, name: r.name, occupancy: parseInt(r.occupancy, 10) || 2, price: r.price })) : undefined,
+          partySize: (profile.familySize ?? derivedProfile.partySize) ?? undefined,
+          budgetRange: profile.budgetRange ?? undefined,
+          guestComposition: profile.guestComposition ?? derivedProfile.guestComposition ?? undefined,
+        })
+        if (cancelled) return
+
+        if (!result) {
+          // Orchestrate failed — fall back to regex + hardcoded speech
+          processIntent(regexIntent, latestMessage, currentState, stage)
+          return
+        }
+
+        if (result.tool === "no_action_speak") {
+          interrupt()
+          repeat(result.speech).catch(() => undefined)
+          return
+        }
+
+        if (result.tool === "adjust_room_plan") {
+          preGeneratedSpeechRef.current = result.speech
+          const handled = executeRoomPlanAction(result.action, latestMessage)
+          if (!handled) {
+            preGeneratedSpeechRef.current = null
+            processIntent(regexIntent, latestMessage, currentState, stage)
+          }
+          return
+        }
+
+        // navigate_and_speak
+        preGeneratedSpeechRef.current = result.speech
+        processIntent(result.intent, latestMessage, currentState, stage)
+      })()
+      return () => { cancelled = true }
+    }
+
+    // --- Original Phase 1-3 path (enableLLMOrchestrate false) ---
+
     // Fast-path: high-confidence regex results skip the LLM entirely
     const needsLLM = options.enableLLMClassifier === true
       && !HIGH_CONFIDENCE_INTENTS.has(regexIntent.type)
@@ -956,7 +1040,7 @@ export function useJourney(options: UseJourneyOptions) {
       processIntent(llmIntent ?? regexIntent, latestMessage, currentState, stage)
     })()
     return () => { cancelled = true }
-  }, [userMessages, dispatch, trackQuestion, trackRequirement, processIntent, rooms, eventBus, options.enableLLMClassifier, options.enableLLMRoomPlanning, profile, derivedProfile, executeRoomPlanAction])
+  }, [userMessages, dispatch, trackQuestion, trackRequirement, processIntent, rooms, eventBus, options.enableLLMClassifier, options.enableLLMRoomPlanning, options.enableLLMOrchestrate, profile, derivedProfile, executeRoomPlanAction, interrupt, repeat])
 
   // --- React to new avatar messages (proposal classification + profile nudges) ---
   useEffect(() => {
