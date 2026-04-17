@@ -653,6 +653,7 @@ export default function HomePage() {
   const [contextId, setContextId] = useState<string | null>(null)
   const contextIdRef = useRef<string | null>(null)
   const sessionUserIdRef = useRef<string | null>(null)
+  const iframeRef = useRef<HTMLIFrameElement>(null)
   const [error, setError] = useState<string | null>(null)
 
   // --- Stream config ---
@@ -704,6 +705,13 @@ export default function HomePage() {
 
   // The overlay stays until introComplete — auth state changes mid-intro don't dismiss it
   const showLoginOverlay = !introComplete
+
+  // Re-focus the UE5 iframe whenever the mouse re-enters it so that
+  // pointer/keyboard input routes back to the pixel-streamed experience
+  // after the user interacts with overlay controls (mic, sun toggle, etc.).
+  const handleIframeMouseEnter = useCallback(() => {
+    iframeRef.current?.focus()
+  }, [])
 
   // Lightweight UE5 listener — detect the first incoming message
   const handleFirstUE5Message = useCallback(() => setUe5Ready(true), [])
@@ -762,14 +770,17 @@ export default function HomePage() {
   const handleIntroComplete = useCallback(() => setIntroComplete(true), [])
 
   return (
-    <div className="relative min-h-screen w-full bg-black overflow-hidden">
+    <div className="relative min-h-screen w-full bg-black overflow-hidden select-none">
       {/* UE5 Pixel Stream — loads immediately, behind everything */}
       {hasStream && !ue5Hidden ? (
         <iframe
+          ref={iframeRef}
           id={isVagonMode ? "vagonFrame" : undefined}
           title="Vagon UE5 Stream"
           src={streamUrl}
-          className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 min-w-full min-h-full w-[max(100vw,calc(100vh*16/9))] h-[max(100vh,calc(100vw*9/16))]"
+          tabIndex={0}
+          onMouseEnter={handleIframeMouseEnter}
+          className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 min-w-full min-h-full w-[max(100vw,calc(100vh*16/9))] h-[max(100vh,calc(100vw*9/16))] outline-none"
           allow={iframeAllow}
         />
       ) : !ue5Hidden ? (
@@ -1024,7 +1035,7 @@ function HomePageContent({ ephemeralContextId, onHideUE5Stream }: { ephemeralCon
   // -----------------------------------------------------------------------
   return (
     <>
-      <div className="pointer-events-none relative min-h-screen w-full overflow-hidden">
+      <div className="pointer-events-none relative min-h-screen w-full overflow-hidden" onDragStart={(e) => e.preventDefault()}>
         {/* Fade overlay for scene transitions */}
         {ue5.showFadeOverlay && (
           <div
