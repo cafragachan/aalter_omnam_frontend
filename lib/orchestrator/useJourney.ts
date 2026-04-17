@@ -898,9 +898,31 @@ export function useJourney(options: UseJourneyOptions) {
     // "the mountain view", "show me the penthouse", "loft suite lake" etc.
     if (
       currentState.stage === "HOTEL_EXPLORATION" &&
-      currentState.subState === "panel_open" &&
-      !MULTI_ROOM_RE.test(latestMessage)
+      currentState.subState === "panel_open"
     ) {
+      // Multi-room composition detected — skip room selection AND intent classification,
+      // go directly to the room plan LLM which handles set_room_composition.
+      if (MULTI_ROOM_RE.test(latestMessage) && options.enableLLMRoomPlanning) {
+        const partySize = profile.familySize ?? derivedProfile.partySize
+        const roomContext: RoomPlanContext = {
+          rooms: rooms.map((r) => ({ id: r.id, name: r.name, occupancy: parseInt(r.occupancy, 10) || 2, price: r.price })),
+          partySize: partySize ?? undefined,
+          currentPlan: undefined,
+          journeyStage: currentState.stage,
+          budgetRange: profile.budgetRange ?? undefined,
+          guestComposition: profile.guestComposition ?? undefined,
+          travelPurpose: profile.travelPurpose ?? undefined,
+        }
+        ;(async () => {
+          const action = await classifyRoomPlanLLM(latestMessage, roomContext)
+          if (action && action.action !== "no_room_change") {
+            executeRoomPlanAction(action, latestMessage)
+          }
+        })()
+        return
+      }
+
+      // Single room selection — fuzzy match room name
       const matched = matchRoomByName(latestMessage, rooms)
       if (matched) {
         eventBus.emit({
@@ -934,7 +956,7 @@ export function useJourney(options: UseJourneyOptions) {
       processIntent(llmIntent ?? regexIntent, latestMessage, currentState, stage)
     })()
     return () => { cancelled = true }
-  }, [userMessages, dispatch, trackQuestion, trackRequirement, processIntent, rooms, eventBus, options.enableLLMClassifier])
+  }, [userMessages, dispatch, trackQuestion, trackRequirement, processIntent, rooms, eventBus, options.enableLLMClassifier, options.enableLLMRoomPlanning, profile, derivedProfile, executeRoomPlanAction])
 
   // --- React to new avatar messages (proposal classification + profile nudges) ---
   useEffect(() => {
