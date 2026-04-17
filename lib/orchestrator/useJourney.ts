@@ -12,6 +12,8 @@ import { useEventBus, useEventListener } from "@/lib/events"
 import { useGuestIntelligence } from "@/lib/guest-intelligence"
 import { classifyIntent, classifyAvatarProposal } from "./intents"
 import { classifyIntentLLM } from "./classifyIntentLLM"
+import { classifyRoomPlanLLM } from "./classifyRoomPlanLLM"
+import type { RoomPlanAction, RoomPlanContext } from "./classifyRoomPlanLLM"
 import { journeyReducer, INITIAL_JOURNEY_STATE, buildAmenityNarrative } from "./journey-machine"
 import { useIdleDetection } from "./idle-detection"
 import { buildProfileNudge } from "./profile-nudge"
@@ -38,6 +40,16 @@ const HIGH_CONFIDENCE_INTENTS: ReadonlySet<string> = new Set([
   "ROOM_PLAN_CHEAPER", "ROOM_PLAN_COMPACT", "ROOM_TOGETHER",
   "ROOM_SEPARATE", "ROOM_AUTO", "DOWNLOAD_DATA",
 ])
+
+// ---------------------------------------------------------------------------
+// Lightweight guard — avoids calling the room-plan LLM on every utterance.
+// Intentionally broad: false positives are cheap (LLM returns no_room_change).
+// ---------------------------------------------------------------------------
+const ROOM_PLANNING_RE = /\b(cheap|budget|afford|expensive|price|cost|\$|dollar|room|suite|penthouse|loft|standard|mountain|lake|view|together|separate|own room|fit|compact|fewer|less|one room|two room|nanny|kids|children|split|share)\b/i
+
+function isRoomPlanningMessage(message: string): boolean {
+  return ROOM_PLANNING_RE.test(message)
+}
 
 // ---------------------------------------------------------------------------
 // useJourney — wires the pure state machine to React
@@ -92,6 +104,13 @@ type UseJourneyOptions = {
    * Default: false (regex-only, current behavior). Only `/home` passes true.
    */
   enableLLMClassifier?: boolean
+  /**
+   * When true, room plan adjustment intents in HOTEL_EXPLORATION / ROOM_SELECTED
+   * are re-classified via the LLM room-plan classifier for structured parameter
+   * extraction. Falls back to existing heuristic logic on failure.
+   * Default: false. Only `/home` passes true.
+   */
+  enableLLMRoomPlanning?: boolean
   /**
    * Stage 5 (LiveKit path): when provided, SPEAK effects are routed
    * through this callback instead of interrupt()+repeat() on the avatar
@@ -417,6 +436,115 @@ export function useJourney(options: UseJourneyOptions) {
     }
   }, [profile, derivedProfile, rooms, interrupt, repeat, executeEffects])
 
+  /**
+   * Execute a structured RoomPlanAction from the LLM room-plan classifier.
+   * Returns true if the action was handled, false if the caller should fall
+   * back to the existing heuristic path (e.g. no_room_change).
+   */
+  const executeRoomPlanAction = useCallback((action: RoomPlanAction, _message: string): boolean => {
+    if (action.action === "no_room_change") return false
+
+    const partySize = profile.familySize ?? derivedProfile.partySize
+    if (!partySize || rooms.length === 0) return false
+
+    if (action.action === "adjust_budget") {
+      if (action.params.target_per_night) {
+        // LLM extracted a specific budget target — use getRecommendedRoomPlan with budget string
+        const budgetStr = `$${action.params.target_per_night}`
+        const newPlan = getRecommendedRoomPlan(
+          rooms, partySize, profile.guestComposition, profile.travelPurpose, budgetStr, undefined, profile.roomAllocation,
+        )
+        if (newPlan) {
+          const summary = newPlan.entries
+            .map((e) => `${e.quantity > 1 ? `${e.quantity} ` : ""}${e.roomName}${e.quantity > 1 ? " rooms" : ""}`)
+            .join(" and ")
+          interrupt()
+          repeat(`Here's what I can do close to ${budgetStr} per night: ${summary} at $${newPlan.totalPricePerNight.toLocaleString()} per night. How does that sound?`).catch(() => undefined)
+          executeEffects([{ type: "UPDATE_ROOM_PLAN", plan: newPlan }])
+          if (stateRef.current.stage === "HOTEL_EXPLORATION" && stateRef.current.subState !== "panel_open") {
+            executeEffects([{ type: "OPEN_PANEL", panel: "rooms" }])
+            stateRef.current = { stage: "HOTEL_EXPLORATION", subState: "panel_open" }
+          }
+          return true
+        }
+      }
+      // No target or plan failed — fall back to budget mode
+      handlePlanAdjustment("budget", _message)
+      return true
+    }
+
+    if (action.action === "set_room_composition") {
+      handleExplicitComposition(action.params.rooms.map((r) => ({ roomId: r.room_id, quantity: r.quantity })))
+      return true
+    }
+
+    if (action.action === "compact_plan") {
+      if (action.params.max_rooms) {
+        // LLM extracted a specific constraint — use getCompactRoomPlan and validate
+        const newPlan = getCompactRoomPlan(rooms, partySize)
+        if (newPlan) {
+          const roomCount = newPlan.entries.reduce((sum, e) => sum + e.quantity, 0)
+          if (roomCount <= action.params.max_rooms) {
+            const summary = newPlan.entries
+              .map((e) => `${e.quantity > 1 ? `${e.quantity} ` : ""}${e.roomName}${e.quantity > 1 ? " rooms" : ""}`)
+              .join(" and ")
+            interrupt()
+            repeat(`Great news — I can fit your group into ${roomCount} room${roomCount > 1 ? "s" : ""}: ${summary} at $${newPlan.totalPricePerNight.toLocaleString()} per night.`).catch(() => undefined)
+            executeEffects([{ type: "UPDATE_ROOM_PLAN", plan: newPlan }])
+            if (stateRef.current.stage === "HOTEL_EXPLORATION" && stateRef.current.subState !== "panel_open") {
+              executeEffects([{ type: "OPEN_PANEL", panel: "rooms" }])
+              stateRef.current = { stage: "HOTEL_EXPLORATION", subState: "panel_open" }
+            }
+            return true
+          } else {
+            interrupt()
+            repeat(`I wasn't able to fit everyone into just ${action.params.max_rooms} room${action.params.max_rooms > 1 ? "s" : ""} — the minimum is ${roomCount}. Here's the most compact option I have. What do you think?`).catch(() => undefined)
+            executeEffects([{ type: "UPDATE_ROOM_PLAN", plan: newPlan }])
+            if (stateRef.current.stage === "HOTEL_EXPLORATION" && stateRef.current.subState !== "panel_open") {
+              executeEffects([{ type: "OPEN_PANEL", panel: "rooms" }])
+              stateRef.current = { stage: "HOTEL_EXPLORATION", subState: "panel_open" }
+            }
+            return true
+          }
+        }
+      }
+      // No constraint or plan failed — fall back to compact mode
+      handlePlanAdjustment("compact", _message)
+      return true
+    }
+
+    if (action.action === "set_distribution") {
+      updateProfile({ roomAllocation: action.params.allocation })
+      handlePlanAdjustment("distribution", _message, action.params.allocation)
+      return true
+    }
+
+    if (action.action === "recompute_with_preferences") {
+      const budgetStr = action.params.budget_range ?? profile.budgetRange
+      const distPref = action.params.distribution_preference as import("@/lib/hotel-data").DistributionPreference | undefined
+      const newPlan = getRecommendedRoomPlan(
+        rooms, partySize, profile.guestComposition, profile.travelPurpose, budgetStr, distPref, profile.roomAllocation,
+      )
+      if (newPlan) {
+        const summary = newPlan.entries
+          .map((e) => `${e.quantity > 1 ? `${e.quantity} ` : ""}${e.roomName}${e.quantity > 1 ? " rooms" : ""}`)
+          .join(" and ")
+        const prefLabel = action.params.room_type_preference ?? "your preferences"
+        interrupt()
+        repeat(`Based on ${prefLabel}, here's what I'd recommend: ${summary} at $${newPlan.totalPricePerNight.toLocaleString()} per night. How does that look?`).catch(() => undefined)
+        executeEffects([{ type: "UPDATE_ROOM_PLAN", plan: newPlan }])
+        if (stateRef.current.stage === "HOTEL_EXPLORATION" && stateRef.current.subState !== "panel_open") {
+          executeEffects([{ type: "OPEN_PANEL", panel: "rooms" }])
+          stateRef.current = { stage: "HOTEL_EXPLORATION", subState: "panel_open" }
+        }
+        return true
+      }
+      return false
+    }
+
+    return false
+  }, [profile, derivedProfile, rooms, interrupt, repeat, executeEffects, handlePlanAdjustment, handleExplicitComposition, updateProfile])
+
   /** Dispatch LIST_AMENITIES action with pre-computed hotel data */
   const dispatchListAmenities = useCallback(() => {
     const recommended = getRecommendedAmenity(amenities, profile.travelPurpose)
@@ -555,37 +683,77 @@ export function useJourney(options: UseJourneyOptions) {
     // --- Intercept room plan adjustment intents ---
     const isRoomContext = currentState.stage === "HOTEL_EXPLORATION" || currentState.stage === "ROOM_SELECTED"
 
-    if (isRoomContext && intent.type === "ROOM_PLAN_CHEAPER") {
-      handlePlanAdjustment("budget", latestMessage)
-      return
-    }
-
-    if (isRoomContext && intent.type === "ROOM_PLAN_COMPACT") {
-      handlePlanAdjustment("compact", latestMessage)
-      return
-    }
-
-    if (isRoomContext && (intent.type === "ROOM_TOGETHER" || intent.type === "ROOM_SEPARATE")) {
-      const partySize = profile.familySize ?? derivedProfile.partySize ?? 1
-      const newAllocation = intent.type === "ROOM_TOGETHER"
-        ? [partySize]
-        : Array(partySize).fill(1)
-      updateProfile({ roomAllocation: newAllocation })
-      handlePlanAdjustment("distribution", latestMessage, newAllocation)
-      return
-    }
-
-    // --- Try to parse explicit room composition from the raw message ---
-    if (isRoomContext && (intent.type === "UNKNOWN" || intent.type === "ROOMS")) {
-      const explicitRequests = parseExplicitRoomRequests(latestMessage, rooms)
-      if (explicitRequests && explicitRequests.length > 0) {
-        handleExplicitComposition(explicitRequests)
+    // Existing heuristic room-plan logic, extracted so both the sync (flag off)
+    // and async (LLM fallback) paths share the same code without duplication.
+    const roomPlanFallback = () => {
+      if (isRoomContext && intent.type === "ROOM_PLAN_CHEAPER") {
+        handlePlanAdjustment("budget", latestMessage)
         return
       }
+
+      if (isRoomContext && intent.type === "ROOM_PLAN_COMPACT") {
+        handlePlanAdjustment("compact", latestMessage)
+        return
+      }
+
+      if (isRoomContext && (intent.type === "ROOM_TOGETHER" || intent.type === "ROOM_SEPARATE")) {
+        const partySize = profile.familySize ?? derivedProfile.partySize ?? 1
+        const newAllocation = intent.type === "ROOM_TOGETHER"
+          ? [partySize]
+          : Array(partySize).fill(1)
+        updateProfile({ roomAllocation: newAllocation })
+        handlePlanAdjustment("distribution", latestMessage, newAllocation)
+        return
+      }
+
+      // Try to parse explicit room composition from the raw message
+      if (isRoomContext && (intent.type === "UNKNOWN" || intent.type === "ROOMS")) {
+        const explicitRequests = parseExplicitRoomRequests(latestMessage, rooms)
+        if (explicitRequests && explicitRequests.length > 0) {
+          handleExplicitComposition(explicitRequests)
+          return
+        }
+      }
+
+      dispatch({ type: "USER_INTENT", intent })
     }
 
-    dispatch({ type: "USER_INTENT", intent })
-  }, [dispatch, dispatchListAmenities, navigateToAmenityByName, startRoomTimer, stopExplorationTimer, handlePlanAdjustment, handleExplicitComposition, profile, derivedProfile, rooms, updateProfile])
+    // --- LLM room-plan classification branch ---
+    const isRoomPlanIntent = isRoomContext && (
+      intent.type === "ROOM_PLAN_CHEAPER" || intent.type === "ROOM_PLAN_COMPACT" ||
+      intent.type === "ROOM_TOGETHER" || intent.type === "ROOM_SEPARATE" ||
+      intent.type === "UNKNOWN" || intent.type === "ROOMS"
+    )
+
+    if (isRoomPlanIntent && options.enableLLMRoomPlanning && isRoomPlanningMessage(latestMessage)) {
+      const partySize = profile.familySize ?? derivedProfile.partySize
+      const roomContext: RoomPlanContext = {
+        rooms: rooms.map((r) => ({ id: r.id, name: r.name, occupancy: parseInt(r.occupancy, 10) || 2, price: r.price })),
+        partySize: partySize ?? undefined,
+        currentPlan: undefined, // caller can extend later if needed
+        journeyStage: currentState.stage,
+        budgetRange: profile.budgetRange ?? undefined,
+        guestComposition: profile.guestComposition ?? undefined,
+        travelPurpose: profile.travelPurpose ?? undefined,
+      }
+
+      ;(async () => {
+        const action = await classifyRoomPlanLLM(latestMessage, roomContext)
+        if (!action || action.action === "no_room_change") {
+          roomPlanFallback()
+          return
+        }
+        const handled = executeRoomPlanAction(action, latestMessage)
+        if (!handled) {
+          roomPlanFallback()
+        }
+      })()
+      return // handled (async)
+    }
+
+    // Flag off or not a room-plan intent — use existing heuristic path
+    roomPlanFallback()
+  }, [dispatch, dispatchListAmenities, navigateToAmenityByName, startRoomTimer, stopExplorationTimer, handlePlanAdjustment, handleExplicitComposition, executeRoomPlanAction, profile, derivedProfile, rooms, updateProfile, options.enableLLMRoomPlanning])
 
   // --- React to new user messages (intent classification + question tracking) ---
   useEffect(() => {
