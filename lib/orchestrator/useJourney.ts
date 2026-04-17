@@ -11,6 +11,7 @@ import type { AvatarDerivedProfile } from "@/lib/liveavatar/useUserProfile"
 import { useEventBus, useEventListener } from "@/lib/events"
 import { useGuestIntelligence } from "@/lib/guest-intelligence"
 import { classifyIntent, classifyAvatarProposal } from "./intents"
+import { classifyIntentLLM } from "./classifyIntentLLM"
 import { journeyReducer, INITIAL_JOURNEY_STATE, buildAmenityNarrative } from "./journey-machine"
 import { useIdleDetection } from "./idle-detection"
 import { buildProfileNudge } from "./profile-nudge"
@@ -27,6 +28,16 @@ import {
   type Room,
   type RoomPlan,
 } from "@/lib/hotel-data"
+
+// ---------------------------------------------------------------------------
+// Intents the regex classifier handles with high confidence — no LLM needed.
+// ---------------------------------------------------------------------------
+const HIGH_CONFIDENCE_INTENTS: ReadonlySet<string> = new Set([
+  "BACK", "INTERIOR", "EXTERIOR", "ROOMS", "AMENITIES", "LOCATION",
+  "HOTEL_EXPLORE", "BOOK", "TRAVEL_TO_HOTEL", "OTHER_OPTIONS",
+  "ROOM_PLAN_CHEAPER", "ROOM_PLAN_COMPACT", "ROOM_TOGETHER",
+  "ROOM_SEPARATE", "ROOM_AUTO", "DOWNLOAD_DATA",
+])
 
 // ---------------------------------------------------------------------------
 // useJourney — wires the pure state machine to React
@@ -74,6 +85,13 @@ type UseJourneyOptions = {
   amenities: Amenity[]
   /** Rooms for the currently selected hotel (needed for booking URL resolution) */
   rooms: Room[]
+  /**
+   * When true, ambiguous intents (UNKNOWN, AFFIRMATIVE, NEGATIVE, AMENITY_BY_NAME)
+   * are re-classified via the LLM API route before dispatching. High-confidence
+   * regex results bypass the LLM entirely for zero-latency response.
+   * Default: false (regex-only, current behavior). Only `/home` passes true.
+   */
+  enableLLMClassifier?: boolean
   /**
    * Stage 5 (LiveKit path): when provided, SPEAK effects are routed
    * through this callback instead of interrupt()+repeat() on the avatar
@@ -487,6 +505,88 @@ export function useJourney(options: UseJourneyOptions) {
     doDispatch()
   }, [derivedProfile, isExtractionPending, profile.firstName, profile.familySize, profile.guestComposition, profile.travelPurpose, profile.roomAllocation, dispatch])
 
+  // --- processIntent: routes a classified intent through interception logic → dispatch ---
+  // Extracted as a helper so both the sync (regex) and async (LLM) paths
+  // share the same interception pipeline without duplication.
+  const processIntent = useCallback((
+    intent: ReturnType<typeof classifyIntent>,
+    latestMessage: string,
+    currentState: JourneyState,
+    stage: JourneyState["stage"],
+  ) => {
+    // --- Exploration timer management ---
+    if (stage === "ROOM_SELECTED" && (intent.type === "INTERIOR" || intent.type === "EXTERIOR")) {
+      if (currentRoomIdRef.current) {
+        startRoomTimer(currentRoomIdRef.current)
+      }
+    }
+
+    if (
+      (stage === "ROOM_SELECTED" || stage === "AMENITY_VIEWING") &&
+      (intent.type === "BACK" || intent.type === "ROOMS" || intent.type === "LOCATION" || intent.type === "HOTEL_EXPLORE" || intent.type === "TRAVEL_TO_HOTEL")
+    ) {
+      stopExplorationTimer()
+    }
+
+    // --- Intercept amenity intents (need hotel data → dispatch rich actions) ---
+    if (intent.type === "AMENITIES" || (intent.type === "OTHER_OPTIONS" && stage === "AMENITY_VIEWING")) {
+      stopExplorationTimer()
+      dispatchListAmenities()
+      return
+    }
+
+    if (intent.type === "AMENITY_BY_NAME") {
+      navigateToAmenityByName(intent.amenityName)
+      return
+    }
+
+    // Bare "yes" → resolve against suggested amenity in state
+    if (intent.type === "AFFIRMATIVE") {
+      if (currentState.stage === "AMENITY_VIEWING" && currentState.suggestedNext) {
+        navigateToAmenityByName(currentState.suggestedNext)
+        return
+      }
+      if (currentState.stage === "HOTEL_EXPLORATION" && currentState.suggestedAmenityName) {
+        navigateToAmenityByName(currentState.suggestedAmenityName)
+        return
+      }
+    }
+
+    // --- Intercept room plan adjustment intents ---
+    const isRoomContext = currentState.stage === "HOTEL_EXPLORATION" || currentState.stage === "ROOM_SELECTED"
+
+    if (isRoomContext && intent.type === "ROOM_PLAN_CHEAPER") {
+      handlePlanAdjustment("budget", latestMessage)
+      return
+    }
+
+    if (isRoomContext && intent.type === "ROOM_PLAN_COMPACT") {
+      handlePlanAdjustment("compact", latestMessage)
+      return
+    }
+
+    if (isRoomContext && (intent.type === "ROOM_TOGETHER" || intent.type === "ROOM_SEPARATE")) {
+      const partySize = profile.familySize ?? derivedProfile.partySize ?? 1
+      const newAllocation = intent.type === "ROOM_TOGETHER"
+        ? [partySize]
+        : Array(partySize).fill(1)
+      updateProfile({ roomAllocation: newAllocation })
+      handlePlanAdjustment("distribution", latestMessage, newAllocation)
+      return
+    }
+
+    // --- Try to parse explicit room composition from the raw message ---
+    if (isRoomContext && (intent.type === "UNKNOWN" || intent.type === "ROOMS")) {
+      const explicitRequests = parseExplicitRoomRequests(latestMessage, rooms)
+      if (explicitRequests && explicitRequests.length > 0) {
+        handleExplicitComposition(explicitRequests)
+        return
+      }
+    }
+
+    dispatch({ type: "USER_INTENT", intent })
+  }, [dispatch, dispatchListAmenities, navigateToAmenityByName, startRoomTimer, stopExplorationTimer, handlePlanAdjustment, handleExplicitComposition, profile, derivedProfile, rooms, updateProfile])
+
   // --- React to new user messages (intent classification + question tracking) ---
   useEffect(() => {
     if (userMessages.length <= lastMessageCountRef.current) return
@@ -592,88 +692,26 @@ export function useJourney(options: UseJourneyOptions) {
       // (the user might be saying "go back", "show amenities", etc.)
     }
 
-    const intent = classifyIntent(latestMessage)
+    const regexIntent = classifyIntent(latestMessage)
 
-    // --- Exploration timer management ---
-    // Start room timer when user begins interior/exterior exploration
-    if (stage === "ROOM_SELECTED" && (intent.type === "INTERIOR" || intent.type === "EXTERIOR")) {
-      if (currentRoomIdRef.current) {
-        startRoomTimer(currentRoomIdRef.current)
-      }
-    }
+    // Fast-path: high-confidence regex results skip the LLM entirely
+    const needsLLM = options.enableLLMClassifier === true
+      && !HIGH_CONFIDENCE_INTENTS.has(regexIntent.type)
 
-    // Stop exploration timer when leaving room/amenity context
-    if (
-      (stage === "ROOM_SELECTED" || stage === "AMENITY_VIEWING") &&
-      (intent.type === "BACK" || intent.type === "ROOMS" || intent.type === "LOCATION" || intent.type === "HOTEL_EXPLORE" || intent.type === "TRAVEL_TO_HOTEL")
-    ) {
-      stopExplorationTimer()
-    }
-
-    // --- Intercept amenity intents (need hotel data → dispatch rich actions) ---
-
-    // "amenities" or "other options" while viewing → list amenities via reducer
-    if (intent.type === "AMENITIES" || (intent.type === "OTHER_OPTIONS" && stage === "AMENITY_VIEWING")) {
-      stopExplorationTimer()
-      dispatchListAmenities()
+    if (!needsLLM) {
+      processIntent(regexIntent, latestMessage, currentState, stage)
       return
     }
 
-    // Specific amenity by name → navigate via reducer
-    if (intent.type === "AMENITY_BY_NAME") {
-      navigateToAmenityByName(intent.amenityName)
-      return
-    }
-
-    // Bare "yes" → resolve against suggested amenity in state
-    if (intent.type === "AFFIRMATIVE") {
-      // Check AMENITY_VIEWING suggestedNext
-      if (currentState.stage === "AMENITY_VIEWING" && currentState.suggestedNext) {
-        navigateToAmenityByName(currentState.suggestedNext)
-        return
-      }
-      // Check HOTEL_EXPLORATION suggestedAmenityName
-      if (currentState.stage === "HOTEL_EXPLORATION" && currentState.suggestedAmenityName) {
-        navigateToAmenityByName(currentState.suggestedAmenityName)
-        return
-      }
-    }
-
-    // --- Intercept room plan adjustment intents (panel must be open or in exploration) ---
-    const isRoomContext = currentState.stage === "HOTEL_EXPLORATION" || currentState.stage === "ROOM_SELECTED"
-
-    if (isRoomContext && intent.type === "ROOM_PLAN_CHEAPER") {
-      handlePlanAdjustment("budget", latestMessage)
-      return
-    }
-
-    if (isRoomContext && intent.type === "ROOM_PLAN_COMPACT") {
-      handlePlanAdjustment("compact", latestMessage)
-      return
-    }
-
-    // Distribution change while panel is open → convert to allocation and recompute
-    if (isRoomContext && (intent.type === "ROOM_TOGETHER" || intent.type === "ROOM_SEPARATE")) {
-      const partySize = profile.familySize ?? derivedProfile.partySize ?? 1
-      const newAllocation = intent.type === "ROOM_TOGETHER"
-        ? [partySize]
-        : Array(partySize).fill(1)
-      updateProfile({ roomAllocation: newAllocation })
-      handlePlanAdjustment("distribution", latestMessage, newAllocation)
-      return
-    }
-
-    // --- Try to parse explicit room composition from the raw message ---
-    if (isRoomContext && (intent.type === "UNKNOWN" || intent.type === "ROOMS")) {
-      const explicitRequests = parseExplicitRoomRequests(latestMessage, rooms)
-      if (explicitRequests && explicitRequests.length > 0) {
-        handleExplicitComposition(explicitRequests)
-        return
-      }
-    }
-
-    dispatch({ type: "USER_INTENT", intent })
-  }, [userMessages, dispatch, trackQuestion, trackRequirement, dispatchListAmenities, navigateToAmenityByName, startRoomTimer, stopExplorationTimer, profile, derivedProfile, rooms, interrupt, repeat, handlePlanAdjustment, handleExplicitComposition])
+    // Async LLM classification with cancellation guard
+    let cancelled = false
+    ;(async () => {
+      const llmIntent = await classifyIntentLLM(latestMessage, currentState)
+      if (cancelled) return
+      processIntent(llmIntent ?? regexIntent, latestMessage, currentState, stage)
+    })()
+    return () => { cancelled = true }
+  }, [userMessages, dispatch, trackQuestion, trackRequirement, processIntent, rooms, eventBus, options.enableLLMClassifier])
 
   // --- React to new avatar messages (proposal classification + profile nudges) ---
   useEffect(() => {
