@@ -949,6 +949,7 @@ function HomePageContent({ ephemeralContextId, onHideUE5Stream }: { ephemeralCon
     rooms,
     enableLLMClassifier: true,
     enableLLMRoomPlanning: true,
+    enableLLMSpeech: true,
   })
 
   // --- End-of-session snapshot + cleanup ephemeral context on HeyGen disconnect ---

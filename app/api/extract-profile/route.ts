@@ -88,13 +88,13 @@ export async function POST(request: Request) {
       )
     }
 
-    const userMessage = `Current profile state:
+    const userMessage = `Current accumulated profile (already extracted from prior messages):
 ${JSON.stringify(currentProfile ?? {}, null, 2)}
 
-Recent user utterances to extract from:
+New user utterances (not yet extracted):
 ${utterances.map((u, i) => `${i + 1}. "${u}"`).join("\n")}
 
-Extract any new profile information from these utterances. Only include fields where you found new information.`
+Extract profile information from these new utterances only. Return null for any field not mentioned in the new utterances — do not re-extract fields already present in the accumulated profile above.`
 
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",

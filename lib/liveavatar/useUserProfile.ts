@@ -44,6 +44,32 @@ type AIExtractedProfile = {
   roomAllocation?: number[] | null
 }
 
+function mergeAIProfiles(
+  prev: AIExtractedProfile | null,
+  next: AIExtractedProfile,
+): AIExtractedProfile {
+  if (!prev) return next
+  return {
+    name: next.name ?? prev.name,
+    partySize: next.partySize ?? prev.partySize,
+    destination: next.destination ?? prev.destination,
+    startDate: next.startDate ?? prev.startDate,
+    endDate: next.endDate ?? prev.endDate,
+    interests: Array.from(new Set([...(prev.interests ?? []), ...(next.interests ?? [])])),
+    travelPurpose: next.travelPurpose ?? prev.travelPurpose,
+    budgetRange: next.budgetRange ?? prev.budgetRange,
+    roomTypePreference: next.roomTypePreference ?? prev.roomTypePreference,
+    dietaryRestrictions: Array.from(new Set([...(prev.dietaryRestrictions ?? []), ...(next.dietaryRestrictions ?? [])])),
+    accessibilityNeeds: Array.from(new Set([...(prev.accessibilityNeeds ?? []), ...(next.accessibilityNeeds ?? [])])),
+    amenityPriorities: Array.from(new Set([...(prev.amenityPriorities ?? []), ...(next.amenityPriorities ?? [])])),
+    nationality: next.nationality ?? prev.nationality,
+    arrivalTime: next.arrivalTime ?? prev.arrivalTime,
+    guestComposition: next.guestComposition ?? prev.guestComposition,
+    distributionPreference: next.distributionPreference ?? prev.distributionPreference,
+    roomAllocation: next.roomAllocation ?? prev.roomAllocation,
+  }
+}
+
 const clean = (text: string) => text.trim().replace(/\s+/g, " ")
 
 const titleCase = (text: string) =>
@@ -507,6 +533,7 @@ export const useUserProfile = (): {
   const [isExtracting, setIsExtracting] = useState(false)
   const [aiAvailable, setAiAvailable] = useState(true) // Assume available until proven otherwise
   const lastExtractedCount = useRef(0)
+  const lastSentIndexRef = useRef(0)
 
   const userMessages = useMemo(
     () =>
@@ -563,14 +590,18 @@ export const useUserProfile = (): {
     if (userMessages.length === 0 || isExtracting) return
     if (userMessages.length === lastExtractedCount.current) return
 
+    // Only send utterances the AI hasn't seen yet
+    const newUtterances = userMessages.slice(lastSentIndexRef.current).map((m) => m.message)
+    if (newUtterances.length === 0) return
+
     setIsExtracting(true)
     try {
       const response = await fetch("/api/extract-profile", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          utterances: userMessages.map((m) => m.message),
-          currentProfile: regexProfile,
+          utterances: newUtterances,
+          currentProfile: aiProfile ?? regexProfile,
         }),
       })
 
@@ -578,6 +609,7 @@ export const useUserProfile = (): {
       if (response.status === 501) {
         console.info("AI extraction not configured, using regex-only extraction")
         lastExtractedCount.current = userMessages.length
+        lastSentIndexRef.current = userMessages.length
         setAiAvailable(false)
         return
       }
@@ -585,7 +617,7 @@ export const useUserProfile = (): {
       if (response.ok) {
         const data = await response.json()
         if (data.profile) {
-          setAiProfile(data.profile)
+          setAiProfile((prev) => mergeAIProfiles(prev, data.profile))
           lastExtractedCount.current = userMessages.length
         }
       } else {
@@ -597,9 +629,10 @@ export const useUserProfile = (): {
     } finally {
       // Even if extraction fails, mark current batch as processed so the UI doesn't stay blocked
       lastExtractedCount.current = userMessages.length
+      lastSentIndexRef.current = userMessages.length
       setIsExtracting(false)
     }
-  }, [userMessages, regexProfile, isExtracting, aiAvailable])
+  }, [userMessages, regexProfile, aiProfile, isExtracting, aiAvailable])
 
   // Auto-trigger AI extraction when new messages arrive (debounced)
   useEffect(() => {
@@ -615,7 +648,7 @@ export const useUserProfile = (): {
 
     const timer = setTimeout(() => {
       triggerAIExtraction()
-    }, 2000) // Wait 2 seconds after last message
+    }, 800) // Wait 800ms after last message
 
     return () => clearTimeout(timer)
   }, [userMessages.length, triggerAIExtraction, aiAvailable])

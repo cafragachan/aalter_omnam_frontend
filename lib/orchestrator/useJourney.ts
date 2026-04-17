@@ -14,6 +14,8 @@ import { classifyIntent, classifyAvatarProposal } from "./intents"
 import { classifyIntentLLM } from "./classifyIntentLLM"
 import { classifyRoomPlanLLM } from "./classifyRoomPlanLLM"
 import type { RoomPlanAction, RoomPlanContext } from "./classifyRoomPlanLLM"
+import { generateSpeechLLM } from "./generateSpeechLLM"
+import type { SpeechContext } from "./generateSpeechLLM"
 import { journeyReducer, INITIAL_JOURNEY_STATE, buildAmenityNarrative } from "./journey-machine"
 import { useIdleDetection } from "./idle-detection"
 import { buildProfileNudge } from "./profile-nudge"
@@ -112,6 +114,13 @@ type UseJourneyOptions = {
    */
   enableLLMRoomPlanning?: boolean
   /**
+   * When true, SPEAK effects and direct repeat() calls generate contextual
+   * speech via the LLM API route instead of using hardcoded strings.
+   * Hardcoded text becomes the fallback on failure. Default: false.
+   * Only `/home` passes true.
+   */
+  enableLLMSpeech?: boolean
+  /**
    * Stage 5 (LiveKit path): when provided, SPEAK effects are routed
    * through this callback instead of interrupt()+repeat() on the avatar
    * session. Legacy /home does not pass this — default behavior is
@@ -178,6 +187,33 @@ export function useJourney(options: UseJourneyOptions) {
   const nudgeLastSentRef = useRef(0)
   const avatarMsgsSinceProfileChangeRef = useRef(0)
 
+  // --- LLM speech generation helpers ---
+  const buildSpeechContext = useCallback((
+    eventType?: string,
+    lastUserMessage?: string,
+  ): SpeechContext => ({
+    journeyStage: stateRef.current.stage,
+    eventType,
+    guestFirstName: profile.firstName,
+    travelPurpose: profile.travelPurpose ?? derivedProfile.travelPurpose,
+    guestComposition: profile.guestComposition ?? derivedProfile.guestComposition,
+    interests: profile.interests,
+    lastUserMessage,
+  }), [profile, derivedProfile])
+
+  const speakWithLLM = useCallback(async (
+    fallbackText: string,
+    context: SpeechContext,
+  ) => {
+    interrupt()
+    if (!options.enableLLMSpeech) {
+      repeat(fallbackText).catch(() => undefined)
+      return
+    }
+    const generated = await generateSpeechLLM(fallbackText, context)
+    repeat(generated ?? fallbackText).catch(() => undefined)
+  }, [interrupt, repeat, options.enableLLMSpeech])
+
   // --- Admin: download all collected user data as JSON ---
   const downloadUserData = useCallback(async () => {
     const giSnapshot = guestIntelligence.getDataSnapshot()
@@ -230,6 +266,8 @@ export function useJourney(options: UseJourneyOptions) {
         case "SPEAK":
           if (options.onSpeak) {
             options.onSpeak(effect.text)
+          } else if (options.enableLLMSpeech) {
+            void speakWithLLM(effect.text, buildSpeechContext())
           } else {
             interrupt()
             repeat(effect.text).catch(() => undefined)
@@ -289,7 +327,7 @@ export function useJourney(options: UseJourneyOptions) {
           break
       }
     }
-  }, [interrupt, repeat, stopListening, onUE5Command, onOpenPanel, onClosePanels, onFadeTransition, setJourneyStage, onResetToDefault, onSelectHotel, downloadUserData, rooms, setBookingOutcome, options])
+  }, [interrupt, repeat, stopListening, onUE5Command, onOpenPanel, onClosePanels, onFadeTransition, setJourneyStage, onResetToDefault, onSelectHotel, downloadUserData, rooms, setBookingOutcome, options, speakWithLLM, buildSpeechContext])
 
   // --- Dispatch helper ---
   const dispatch = useCallback((action: JourneyAction) => {
@@ -327,8 +365,10 @@ export function useJourney(options: UseJourneyOptions) {
 
     if (!match) {
       // No match — speak directly (no state change needed)
-      interrupt()
-      repeat(`I don't think we have a ${amenityName} at this property. Would you like to see the rooms, or explore the surrounding area?`).catch(() => undefined)
+      void speakWithLLM(
+        `I don't think we have a ${amenityName} at this property. Would you like to see the rooms, or explore the surrounding area?`,
+        buildSpeechContext("AMENITY_NOT_FOUND", amenityName),
+      )
       return
     }
 
@@ -344,7 +384,7 @@ export function useJourney(options: UseJourneyOptions) {
       visitedAmenities: getVisitedAmenityNames(),
       allAmenities: amenityRefs,
     })
-  }, [amenities, amenityRefs, trackAmenityExplored, startAmenityTimer, getVisitedAmenityNames, interrupt, repeat, dispatch])
+  }, [amenities, amenityRefs, trackAmenityExplored, startAmenityTimer, getVisitedAmenityNames, speakWithLLM, buildSpeechContext, dispatch])
 
   /** Handle dynamic room plan adjustments (budget, compact, distribution change) */
   const handlePlanAdjustment = useCallback((
@@ -390,8 +430,7 @@ export function useJourney(options: UseJourneyOptions) {
     }
 
     if (newPlan) {
-      interrupt()
-      repeat(speechText).catch(() => undefined)
+      void speakWithLLM(speechText, buildSpeechContext("PLAN_ADJUSTMENT"))
       executeEffects([{ type: "UPDATE_ROOM_PLAN", plan: newPlan }])
       // Ensure the rooms panel is open
       if (stateRef.current.stage === "HOTEL_EXPLORATION" && stateRef.current.subState !== "panel_open") {
@@ -399,7 +438,7 @@ export function useJourney(options: UseJourneyOptions) {
         stateRef.current = { stage: "HOTEL_EXPLORATION", subState: "panel_open" }
       }
     }
-  }, [profile, derivedProfile, rooms, interrupt, repeat, executeEffects])
+  }, [profile, derivedProfile, rooms, speakWithLLM, buildSpeechContext, executeEffects])
 
   /** Handle explicit room composition from user (e.g., "4 standard rooms and 2 loft suites") */
   const handleExplicitComposition = useCallback((
@@ -409,8 +448,10 @@ export function useJourney(options: UseJourneyOptions) {
     const { plan, warning } = buildExplicitRoomPlan(requests, rooms, partySize)
 
     if (plan.entries.length === 0) {
-      interrupt()
-      repeat("I couldn't quite match those room types. Could you describe the combination you'd like?").catch(() => undefined)
+      void speakWithLLM(
+        "I couldn't quite match those room types. Could you describe the combination you'd like?",
+        buildSpeechContext("EXPLICIT_COMPOSITION"),
+      )
       return
     }
 
@@ -425,8 +466,7 @@ export function useJourney(options: UseJourneyOptions) {
       speechText += " How does that look?"
     }
 
-    interrupt()
-    repeat(speechText).catch(() => undefined)
+    void speakWithLLM(speechText, buildSpeechContext("EXPLICIT_COMPOSITION"))
     executeEffects([{ type: "UPDATE_ROOM_PLAN", plan }])
 
     // Ensure the rooms panel is open
@@ -434,7 +474,7 @@ export function useJourney(options: UseJourneyOptions) {
       executeEffects([{ type: "OPEN_PANEL", panel: "rooms" }])
       stateRef.current = { stage: "HOTEL_EXPLORATION", subState: "panel_open" }
     }
-  }, [profile, derivedProfile, rooms, interrupt, repeat, executeEffects])
+  }, [profile, derivedProfile, rooms, speakWithLLM, buildSpeechContext, executeEffects])
 
   /**
    * Execute a structured RoomPlanAction from the LLM room-plan classifier.
@@ -458,8 +498,10 @@ export function useJourney(options: UseJourneyOptions) {
           const summary = newPlan.entries
             .map((e) => `${e.quantity > 1 ? `${e.quantity} ` : ""}${e.roomName}${e.quantity > 1 ? " rooms" : ""}`)
             .join(" and ")
-          interrupt()
-          repeat(`Here's what I can do close to ${budgetStr} per night: ${summary} at $${newPlan.totalPricePerNight.toLocaleString()} per night. How does that sound?`).catch(() => undefined)
+          void speakWithLLM(
+            `Here's what I can do close to ${budgetStr} per night: ${summary} at $${newPlan.totalPricePerNight.toLocaleString()} per night. How does that sound?`,
+            buildSpeechContext("ADJUST_BUDGET"),
+          )
           executeEffects([{ type: "UPDATE_ROOM_PLAN", plan: newPlan }])
           if (stateRef.current.stage === "HOTEL_EXPLORATION" && stateRef.current.subState !== "panel_open") {
             executeEffects([{ type: "OPEN_PANEL", panel: "rooms" }])
@@ -488,8 +530,10 @@ export function useJourney(options: UseJourneyOptions) {
             const summary = newPlan.entries
               .map((e) => `${e.quantity > 1 ? `${e.quantity} ` : ""}${e.roomName}${e.quantity > 1 ? " rooms" : ""}`)
               .join(" and ")
-            interrupt()
-            repeat(`Great news — I can fit your group into ${roomCount} room${roomCount > 1 ? "s" : ""}: ${summary} at $${newPlan.totalPricePerNight.toLocaleString()} per night.`).catch(() => undefined)
+            void speakWithLLM(
+              `Great news — I can fit your group into ${roomCount} room${roomCount > 1 ? "s" : ""}: ${summary} at $${newPlan.totalPricePerNight.toLocaleString()} per night.`,
+              buildSpeechContext("COMPACT_PLAN"),
+            )
             executeEffects([{ type: "UPDATE_ROOM_PLAN", plan: newPlan }])
             if (stateRef.current.stage === "HOTEL_EXPLORATION" && stateRef.current.subState !== "panel_open") {
               executeEffects([{ type: "OPEN_PANEL", panel: "rooms" }])
@@ -497,8 +541,10 @@ export function useJourney(options: UseJourneyOptions) {
             }
             return true
           } else {
-            interrupt()
-            repeat(`I wasn't able to fit everyone into just ${action.params.max_rooms} room${action.params.max_rooms > 1 ? "s" : ""} — the minimum is ${roomCount}. Here's the most compact option I have. What do you think?`).catch(() => undefined)
+            void speakWithLLM(
+              `I wasn't able to fit everyone into just ${action.params.max_rooms} room${action.params.max_rooms > 1 ? "s" : ""} — the minimum is ${roomCount}. Here's the most compact option I have. What do you think?`,
+              buildSpeechContext("COMPACT_PLAN"),
+            )
             executeEffects([{ type: "UPDATE_ROOM_PLAN", plan: newPlan }])
             if (stateRef.current.stage === "HOTEL_EXPLORATION" && stateRef.current.subState !== "panel_open") {
               executeEffects([{ type: "OPEN_PANEL", panel: "rooms" }])
@@ -530,8 +576,10 @@ export function useJourney(options: UseJourneyOptions) {
           .map((e) => `${e.quantity > 1 ? `${e.quantity} ` : ""}${e.roomName}${e.quantity > 1 ? " rooms" : ""}`)
           .join(" and ")
         const prefLabel = action.params.room_type_preference ?? "your preferences"
-        interrupt()
-        repeat(`Based on ${prefLabel}, here's what I'd recommend: ${summary} at $${newPlan.totalPricePerNight.toLocaleString()} per night. How does that look?`).catch(() => undefined)
+        void speakWithLLM(
+          `Based on ${prefLabel}, here's what I'd recommend: ${summary} at $${newPlan.totalPricePerNight.toLocaleString()} per night. How does that look?`,
+          buildSpeechContext("RECOMPUTE_PREFERENCES"),
+        )
         executeEffects([{ type: "UPDATE_ROOM_PLAN", plan: newPlan }])
         if (stateRef.current.stage === "HOTEL_EXPLORATION" && stateRef.current.subState !== "panel_open") {
           executeEffects([{ type: "OPEN_PANEL", panel: "rooms" }])
@@ -543,7 +591,7 @@ export function useJourney(options: UseJourneyOptions) {
     }
 
     return false
-  }, [profile, derivedProfile, rooms, interrupt, repeat, executeEffects, handlePlanAdjustment, handleExplicitComposition, updateProfile])
+  }, [profile, derivedProfile, rooms, speakWithLLM, buildSpeechContext, executeEffects, handlePlanAdjustment, handleExplicitComposition, updateProfile])
 
   /** Dispatch LIST_AMENITIES action with pre-computed hotel data */
   const dispatchListAmenities = useCallback(() => {
@@ -942,13 +990,13 @@ export function useJourney(options: UseJourneyOptions) {
     destinationAnnouncedRef.current = true
 
     const timer = setTimeout(() => {
-      interrupt()
-      repeat(
+      void speakWithLLM(
         "Based on what you've told me, I think you'll love these options. Take a look — tap any card to step inside the digital twin.",
-      ).catch(() => undefined)
+        buildSpeechContext("DESTINATION_ANNOUNCEMENT"),
+      )
     }, 500)
     return () => clearTimeout(timer)
-  }, [journeyStage, interrupt, repeat])
+  }, [journeyStage, speakWithLLM, buildSpeechContext])
 
   // --- EventBus subscriptions ---
 
