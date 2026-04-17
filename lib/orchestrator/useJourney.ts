@@ -40,7 +40,7 @@ const HIGH_CONFIDENCE_INTENTS: ReadonlySet<string> = new Set([
   "BACK", "INTERIOR", "EXTERIOR", "ROOMS", "AMENITIES", "LOCATION",
   "HOTEL_EXPLORE", "BOOK", "TRAVEL_TO_HOTEL", "OTHER_OPTIONS",
   "ROOM_PLAN_CHEAPER", "ROOM_PLAN_COMPACT", "ROOM_TOGETHER",
-  "ROOM_SEPARATE", "ROOM_AUTO", "DOWNLOAD_DATA",
+  "ROOM_SEPARATE", "ROOM_AUTO", "DOWNLOAD_DATA", "AMENITY_BY_NAME",
 ])
 
 // ---------------------------------------------------------------------------
@@ -48,6 +48,12 @@ const HIGH_CONFIDENCE_INTENTS: ReadonlySet<string> = new Set([
 // Intentionally broad: false positives are cheap (LLM returns no_room_change).
 // ---------------------------------------------------------------------------
 const ROOM_PLANNING_RE = /\b(cheap|budget|afford|expensive|price|cost|\$|dollar|room|suite|penthouse|loft|standard|mountain|lake|view|together|separate|own room|fit|compact|fewer|less|one room|two room|nanny|kids|children|split|share)\b/i
+
+// ---------------------------------------------------------------------------
+// Multi-room composition guard — messages like "2 standard rooms and 1 loft"
+// should skip single-room matching and fall through to the room plan LLM.
+// ---------------------------------------------------------------------------
+const MULTI_ROOM_RE = /\d+\s*(?:standard|loft|penthouse|mountain|lake|room|suite)/i
 
 function isRoomPlanningMessage(message: string): boolean {
   return ROOM_PLANNING_RE.test(message)
@@ -892,7 +898,8 @@ export function useJourney(options: UseJourneyOptions) {
     // "the mountain view", "show me the penthouse", "loft suite lake" etc.
     if (
       currentState.stage === "HOTEL_EXPLORATION" &&
-      currentState.subState === "panel_open"
+      currentState.subState === "panel_open" &&
+      !MULTI_ROOM_RE.test(latestMessage)
     ) {
       const matched = matchRoomByName(latestMessage, rooms)
       if (matched) {

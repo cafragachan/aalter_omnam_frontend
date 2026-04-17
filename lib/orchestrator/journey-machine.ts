@@ -426,6 +426,23 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           return { nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" }, effects }
         }
 
+        // Hotel-content intents — user is asking about a specific part of the hotel,
+        // so transition them there directly instead of ignoring the intent.
+        if (
+          intent.type === "ROOMS" || intent.type === "AMENITIES" || intent.type === "AMENITY_BY_NAME" ||
+          intent.type === "LOCATION" || intent.type === "HOTEL_EXPLORE" || intent.type === "BOOK" ||
+          intent.type === "INTERIOR" || intent.type === "EXTERIOR"
+        ) {
+          effects.push({ type: "SET_JOURNEY_STAGE", stage: "HOTEL_EXPLORATION" })
+          effects.push({ type: "UE5_COMMAND", command: "startTEST", value: "startTEST" })
+          effects.push({ type: "FADE_TRANSITION" })
+          effects.push({
+            type: "SPEAK",
+            text: "Let me take you to the hotel. Rooms, amenities, or the grounds — what would you like to see?",
+          })
+          return { nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" }, effects }
+        }
+
       }
 
       // Any other intent while in the lounge — ignore silently
