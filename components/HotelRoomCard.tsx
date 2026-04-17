@@ -19,7 +19,7 @@ export function HotelRoomCard({ room, onClick, recommended, recommendedQuantity 
         {recommended && (
           <div className="absolute top-1.5 right-1.5 z-10 flex items-center gap-1">
             <span className="rounded-full bg-white/90 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-black shadow-lg">
-              Recommended
+              Selected
             </span>
             {recommendedQuantity != null && recommendedQuantity > 1 && (
               <span className="rounded-full bg-white/80 px-1.5 py-0.5 text-[9px] font-bold text-black shadow-lg">
