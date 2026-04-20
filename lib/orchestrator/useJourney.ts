@@ -56,6 +56,16 @@ const ROOM_PLANNING_RE = /\b(cheap|budget|afford|expensive|price|cost|\$|dollar|
 // ---------------------------------------------------------------------------
 const MULTI_ROOM_RE = /\d+\s*(?:standard|loft|penthouse|mountain|lake|room|suite)/i
 
+// Aliases for amenity keywords the user might say that aren't literal amenity
+// names. "Lounge" specifically maps to lobby inside the hotel — the only
+// "lounge" we exit to is the *virtual* lounge, which is caught earlier by
+// RETURN_TO_LOUNGE_RE (requires the literal word "virtual").
+const AMENITY_ALIASES: Record<string, string> = {
+  lounge: "lobby",
+  reception: "lobby",
+  entrance: "lobby",
+}
+
 function isRoomPlanningMessage(message: string): boolean {
   return ROOM_PLANNING_RE.test(message)
 }
@@ -391,10 +401,11 @@ export function useJourney(options: UseJourneyOptions) {
 
   // --- Voice-driven amenity navigation (dispatches rich action to reducer) ---
   const navigateToAmenityByName = useCallback((amenityName: string) => {
+    const normalized = AMENITY_ALIASES[amenityName.toLowerCase()] ?? amenityName.toLowerCase()
     const match = amenities.find((a) => {
       const n = a.name.toLowerCase()
       const s = a.scene.toLowerCase()
-      return n.includes(amenityName) || s.includes(amenityName)
+      return n.includes(normalized) || s.includes(normalized)
     })
 
     if (!match) {

@@ -406,7 +406,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
         effects.push({ type: "FADE_TRANSITION" })
         effects.push({
           type: "SPEAK",
-          text: "Let me take you to the hotel. You can explore available rooms, check out the amenities, or wander the surrounding area. What would you like to see first?",
+          text: "Let me take you to the hotel. You can explore available rooms, check out the amenities, or wander the surrounding area. And whenever you'd like to return to the virtual lounge, just say the word. What would you like to see first?",
         })
         return { nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" }, effects }
       }
@@ -421,7 +421,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           effects.push({ type: "FADE_TRANSITION" })
           effects.push({
             type: "SPEAK",
-            text: "Welcome to the hotel. Rooms, amenities, or the grounds — what would you like to see?",
+            text: "Welcome to the hotel. Rooms, amenities, or the grounds — what would you like to see? And whenever you're ready to head back, just say 'return to the virtual lounge.'",
           })
           return { nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" }, effects }
         }

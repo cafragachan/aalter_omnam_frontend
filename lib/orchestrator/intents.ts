@@ -42,9 +42,13 @@ const END_VERB_NOUN_RE = new RegExp(
   `|\\b(${END_SESSION_NOUNS})\\b.*\\b(${END_EXIT_VERBS})\\b`,
   "i",
 )
+// Tail constraint: the exit verb must be followed by an exit adverb, terminal
+// punctuation, or end-of-string — NOT another destination ("go to the lobby"
+// must not trigger END_EXPERIENCE). See plan: virtual-lounge-exit-phrase.md
 const END_DESIRE_RE = new RegExp(
   `\\b(i\\s+(?:need|want|have|got|would\\s+like|'?d\\s+like)\\s+to|i\\s+(?:must|should|gotta)|let\\s+me|i'?m\\s+(?:going\\s+to|gonna))\\s+` +
-  `(?:.*\\b)?(leave|go|head\\s+out|get\\s+going|take\\s+off|run|bounce|dip|step\\s+out|call\\s+it|end\\s+it|stop|sign\\s+off|log\\s+off)\\b`,
+  `(?:.*\\b)?(leave|go|head\\s+out|get\\s+going|take\\s+off|sign\\s+off|log\\s+off|call\\s+it|end\\s+it|stop|bounce|dip|step\\s+out|run)\\b` +
+  `(?:\\s+(?:now|already|soon|home|away|for\\s+(?:now|good|today)|from\\s+(?:here|this))\\b|\\s*$|[.!?])`,
   "i",
 )
 const END_CLOSERS_RE = /\b(that'?s\s+all|i'?m\s+done|i'?m\s+finished|i'?m\s+good\s+for\s+(?:now|today)|nothing\s+(?:else|more)|no\s+more\s+questions|that\s+(?:was|is)\s+(?:everything|all\s+i\s+needed)|all\s+(?:good|set)|we'?re\s+done|thanks?\s+for\s+everything|thank\s+you\s+for\s+everything|i\s+think\s+(?:that'?s\s+it|we'?re\s+done|i'?m\s+done)|call\s+it\s+a\s+day)\b/i
@@ -55,7 +59,10 @@ function isEndExperience(text: string): boolean {
     || END_DESIRE_RE.test(text)
     || END_CLOSERS_RE.test(text)
 }
-const RETURN_TO_LOUNGE_RE = /\b(?:(?:go|take\s+me|head|travel|return|get)\s+(?:back\s+)?(?:to\s+)?(?:the\s+)?(?:virtual\s+)?(?:lounge|lobby|home\s*page|main\s*page|gallery)|back\s+to\s+(?:the\s+)?(?:virtual\s+)?(?:lounge|lobby|home\s*page|main\s*page|gallery))\b/i
+// Only the literal "virtual lounge" (or unambiguous siblings) exits the hotel.
+// Bare "lobby"/"lounge"/"home page" are hotel-content words and must never
+// route here — see plan: virtual-lounge-exit-phrase.md
+const RETURN_TO_LOUNGE_RE = /\b(?:(?:go|take\s+me|head|travel|return|get|bring\s+me)\s+(?:back\s+)?(?:to\s+)?(?:the\s+)?virtual\s+(?:lounge|space|gallery|showroom)|back\s+to\s+(?:the\s+)?virtual\s+(?:lounge|space|gallery|showroom)|return\s+to\s+(?:the\s+)?virtual\s+(?:lounge|space|gallery|showroom))\b/i
 const DOWNLOAD_DATA_RE = /\bdownload\s+user\s+data\b/
 const TRAVEL_TO_HOTEL_RE = /\b(take me to the hotel|go to the hotel|head to the hotel|travel to the hotel|let'?s go to the hotel|ready to go|let'?s travel|bring me to the hotel|hotel please|straight to the hotel|head over|i'?m ready(?!\s+to\s+(?:book|reserve))|ready when you are|ready to (?:go|continue|proceed|move\s*on|see)|all set|let'?s (?:keep (?:going|moving)|continue|proceed|go on|move on)|keep going|move on|(?:want(?: to)?|wanna|(?:'d|would) like to) (?:see|visit|check out) the hotel|show me the hotel)\b/i
 const AFFIRMATIVE_RE = /\b(yes|yeah|sure|absolutely|definitely|love to|why not|let'?s do it|sounds good|okay|ok|of course|i'?d love|please|certainly|yep|yea)\b/i
