@@ -20,7 +20,6 @@ import { orchestrateLLM } from "./orchestrateLLM"
 import type { SpeechContext } from "./generateSpeechLLM"
 import { journeyReducer, INITIAL_JOURNEY_STATE, buildAmenityNarrative, profileCollectionAwaiting } from "./journey-machine"
 import { useIdleDetection } from "./idle-detection"
-import { buildProfileNudge } from "./profile-nudge"
 import type { JourneyState, JourneyAction, JourneyEffect, AmenityRef } from "./types"
 import {
   getRecommendedAmenity,
@@ -193,7 +192,7 @@ export function useJourney(options: UseJourneyOptions) {
   const { userProfile: authIdentity, returningUserData } = useAuth()
   const { profile: derivedProfile, isExtractionPending, userMessages } = useUserProfileFn()
   const { messages: allMessages } = useAvatarContextFn()
-  const { repeat, interrupt, stopListening, message } = useAvatarActionsFn()
+  const { repeat, interrupt, stopListening } = useAvatarActionsFn()
   const eventBus = useEventBus()
   const guestIntelligence = useGuestIntelligence()
   const { trackQuestion, trackRoomExplored, trackAmenityExplored, trackRequirement, startRoomTimer, startAmenityTimer, stopExplorationTimer, setBookingOutcome } = guestIntelligence
@@ -210,11 +209,9 @@ export function useJourney(options: UseJourneyOptions) {
   // --- Pre-generated speech ref (Phase 4: orchestrate fills this before processIntent) ---
   const preGeneratedSpeechRef = useRef<string | null>(null)
 
-  // --- Profile nudge tracking ---
-  const nudgeAwaitingRef = useRef<string | null>(null)
-  const nudgeCountRef = useRef(0)
-  const nudgeLastSentRef = useRef(0)
-  const avatarMsgsSinceProfileChangeRef = useRef(0)
+  // --- PROFILE_COLLECTION debounce + cancellation refs ---
+  const profileMsgDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const profileOrchestrateCancelRef = useRef<(() => void) | null>(null)
 
   // --- LLM speech generation helpers ---
   const buildSpeechContext = useCallback((
@@ -678,9 +675,6 @@ export function useJourney(options: UseJourneyOptions) {
     if (profileKey === lastProfileKeyRef.current) return
     lastProfileKeyRef.current = profileKey
 
-    // Profile changed — reset nudge counters so HeyGen gets fresh runway
-    avatarMsgsSinceProfileChangeRef.current = 0
-
     // Merge conversation-extracted profile with pre-seeded context values
     // so that returning-user defaults (e.g. guestComposition) are visible
     // to the journey machine even before the user explicitly restates them.
@@ -703,23 +697,17 @@ export function useJourney(options: UseJourneyOptions) {
 
     // Debounce during PROFILE_COLLECTION so compound answers from
     // HeyGen's VAD splitting settle before evaluating profile completeness.
-    // Exception: when all required fields are present, dispatch immediately
-    // so HeyGen's AI persona doesn't keep asking follow-up questions.
+    // Cancel any in-flight orchestrate before dispatching so a stale
+    // follow-up question can't land on top of the reducer's SPEAK.
     if (stateRef.current.stage === "PROFILE_COLLECTION") {
-      const profileReady = !isExtractionPending
-        && mergedProfile.startDate && mergedProfile.endDate
-        && mergedProfile.partySize && mergedProfile.guestComposition
-        && mergedProfile.travelPurpose
-        && ((mergedProfile.partySize ?? 1) <= 1 || mergedProfile.roomAllocation)
-
-      if (profileReady) {
-        if (profileDebounceRef.current) clearTimeout(profileDebounceRef.current)
-        doDispatch()
-        return
-      }
-
       if (profileDebounceRef.current) clearTimeout(profileDebounceRef.current)
-      profileDebounceRef.current = setTimeout(doDispatch, 2500)
+      profileDebounceRef.current = setTimeout(() => {
+        if (profileOrchestrateCancelRef.current) {
+          profileOrchestrateCancelRef.current()
+          profileOrchestrateCancelRef.current = null
+        }
+        doDispatch()
+      }, 2500)
       return () => {
         if (profileDebounceRef.current) clearTimeout(profileDebounceRef.current)
       }
@@ -912,39 +900,30 @@ export function useJourney(options: UseJourneyOptions) {
     // Only classify intent when we're in a stage that cares about voice input
     const stage = stateRef.current.stage
 
-    // During PROFILE_COLLECTION, check if the user wants to move forward
-    // (covers the case where HeyGen's AI advances the conversation before our extraction catches up)
+    // PROFILE_COLLECTION: debounce so chunked VAD utterances settle into one
+    // orchestrate call, then route everything through the LLM. Advance via
+    // preGeneratedSpeechRef substitution so the reducer's hardcoded SPEAK
+    // becomes the contextual transition speech.
     if (stage === "PROFILE_COLLECTION") {
-      // Fast-path: explicit advance intent via regex
-      const intent = classifyIntent(latestMessage)
-      if (intent.type === "TRAVEL_TO_HOTEL" || intent.type === "AFFIRMATIVE") {
-        dispatch({ type: "FORCE_ADVANCE" })
-        return
-      }
+      if (profileMsgDebounceRef.current) clearTimeout(profileMsgDebounceRef.current)
+      profileMsgDebounceRef.current = setTimeout(() => {
+        // Compute awaiting freshly from the merged profile. stateRef.current.awaiting
+        // lags 2.5s behind because profile updates are debounced into the reducer —
+        // the LLM needs the up-to-date picture so it doesn't re-ask already-answered
+        // questions.
+        const mergedProfile = {
+          partySize: profile.familySize ?? derivedProfile.partySize,
+          startDate: derivedProfile.startDate,
+          endDate: derivedProfile.endDate,
+          travelPurpose: profile.travelPurpose ?? derivedProfile.travelPurpose,
+          interests: derivedProfile.interests,
+          guestComposition: profile.guestComposition ?? derivedProfile.guestComposition,
+          roomAllocation: profile.roomAllocation ?? derivedProfile.roomAllocation,
+        }
+        const freshAwaiting = profileCollectionAwaiting(mergedProfile)
 
-      // Compute awaiting freshly from the merged profile. stateRef.current.awaiting
-      // lags 2.5s behind because profile updates are debounced into the reducer —
-      // the LLM needs the up-to-date picture so it doesn't re-ask already-answered
-      // questions.
-      const mergedProfile = {
-        partySize: profile.familySize ?? derivedProfile.partySize,
-        startDate: derivedProfile.startDate,
-        endDate: derivedProfile.endDate,
-        travelPurpose: profile.travelPurpose ?? derivedProfile.travelPurpose,
-        interests: derivedProfile.interests,
-        guestComposition: profile.guestComposition ?? derivedProfile.guestComposition,
-        roomAllocation: profile.roomAllocation ?? derivedProfile.roomAllocation,
-      }
-      const freshAwaiting = profileCollectionAwaiting(mergedProfile)
+        if (!options.enableLLMOrchestrate) return
 
-      // Short-circuit: nothing left to collect — advance without burning an LLM round-trip.
-      if (freshAwaiting === "ready") {
-        dispatch({ type: "FORCE_ADVANCE" })
-        return
-      }
-
-      // Orchestrate: generate a follow-up question
-      if (options.enableLLMOrchestrate) {
         // Last ~10 turns of transcript — the LLM uses this as source of truth
         // because the structured extractor is lossy.
         const conversationHistory = allMessages
@@ -953,6 +932,12 @@ export function useJourney(options: UseJourneyOptions) {
             role: m.sender === MessageSender.AVATAR ? ("avatar" as const) : ("user" as const),
             text: m.message,
           }))
+
+        let cancelled = false
+        profileOrchestrateCancelRef.current = () => {
+          cancelled = true
+          profileOrchestrateCancelRef.current = null
+        }
 
         ;(async () => {
           const result = await orchestrateLLM({
@@ -972,22 +957,43 @@ export function useJourney(options: UseJourneyOptions) {
             loyalty: returningUserData?.loyalty ?? null,
             conversationHistory,
           })
+          if (cancelled) return
+          profileOrchestrateCancelRef.current = null
+
           // Guard: stage may have advanced while LLM was in-flight
           if (stateRef.current.stage !== "PROFILE_COLLECTION") return
-          if (!result) return
+
+          if (!result) {
+            // Degraded mode: LLM unavailable. Preserve advancement using regex + freshAwaiting.
+            // No preGeneratedSpeechRef write — the reducer's hardcoded "Wonderful!..." is the
+            // accepted degraded-mode speech.
+            const fallbackIntent = classifyIntent(latestMessage)
+            if (
+              freshAwaiting === "ready" ||
+              fallbackIntent.type === "TRAVEL_TO_HOTEL" ||
+              fallbackIntent.type === "AFFIRMATIVE"
+            ) {
+              dispatch({ type: "FORCE_ADVANCE" })
+            }
+            return
+          }
 
           if (
             result.tool === "navigate_and_speak" &&
             (result.intent.type === "TRAVEL_TO_HOTEL" || result.intent.type === "AFFIRMATIVE")
           ) {
+            // Substitute the orchestrator's contextual transition speech for the
+            // reducer's hardcoded SPEAK fired by FORCE_ADVANCE.
+            preGeneratedSpeechRef.current = result.speech
             dispatch({ type: "FORCE_ADVANCE" })
             return
           }
 
+          // no_action_speak — direct follow-up question, no reducer SPEAK to coordinate with.
           interrupt()
           repeat(result.speech).catch(() => undefined)
         })()
-      }
+      }, 700)
       return
     }
 
@@ -1122,6 +1128,18 @@ export function useJourney(options: UseJourneyOptions) {
       processIntent(llmIntent ?? regexIntent, latestMessage, currentState, stage)
     })()
     return () => { cancelled = true }
+
+    // Genuine effect cleanup for the PROFILE_COLLECTION debounce timer.
+    // Reachable only when no branch above returned. Critical: do NOT cancel
+    // in-flight orchestrate here — that would kill every legitimate call
+    // when a new user message arrives. Cancellation belongs to (a) the
+    // profile-change effect in Fix 4 and (b) the in-IIFE `cancelled` flag.
+    return () => {
+      if (profileMsgDebounceRef.current) {
+        clearTimeout(profileMsgDebounceRef.current)
+        profileMsgDebounceRef.current = null
+      }
+    }
   }, [userMessages, dispatch, trackQuestion, trackRequirement, processIntent, rooms, eventBus, options.enableLLMClassifier, options.enableLLMRoomPlanning, options.enableLLMOrchestrate, profile, derivedProfile, executeRoomPlanAction, interrupt, repeat])
 
   // --- React to new avatar messages (proposal classification + profile nudges) ---
@@ -1133,38 +1151,6 @@ export function useJourney(options: UseJourneyOptions) {
     const latestAvatarMessage = avatarMessages[avatarMessages.length - 1]?.message ?? ""
     const currentState = stateRef.current
 
-    // --- Profile nudge: steer HeyGen back when it forgets missing fields ---
-    if (currentState.stage === "PROFILE_COLLECTION" && currentState.awaiting !== "ready" && currentState.awaiting !== "extracting") {
-      avatarMsgsSinceProfileChangeRef.current++
-
-      // Reset nudge escalation when the awaiting field changes (new data captured)
-      if (nudgeAwaitingRef.current !== currentState.awaiting) {
-        nudgeAwaitingRef.current = currentState.awaiting
-        nudgeCountRef.current = 0
-      }
-
-      const now = Date.now()
-      const cooldownMs = 15_000
-      const avatarMsgsThreshold = 2
-
-      if (
-        avatarMsgsSinceProfileChangeRef.current >= avatarMsgsThreshold &&
-        now - nudgeLastSentRef.current > cooldownMs
-      ) {
-        const nudgeText = buildProfileNudge(
-          currentState.awaiting,
-          derivedProfile,
-          nudgeCountRef.current,
-        )
-        if (nudgeText) {
-          message(nudgeText)
-          nudgeLastSentRef.current = now
-          nudgeCountRef.current++
-          avatarMsgsSinceProfileChangeRef.current = 0
-        }
-      }
-    }
-
     // --- Proposal classification (only in stages that use lastProposal) ---
     const stage = currentState.stage
     if (stage !== "HOTEL_EXPLORATION" && stage !== "ROOM_SELECTED" && stage !== "AMENITY_VIEWING") return
@@ -1173,7 +1159,7 @@ export function useJourney(options: UseJourneyOptions) {
     if (proposal) {
       dispatch({ type: "AVATAR_PROPOSAL", proposal: proposal.proposal, amenityName: proposal.amenityName })
     }
-  }, [allMessages, dispatch, derivedProfile, message])
+  }, [allMessages, dispatch])
 
   // --- Announce destination overlay when stage transitions ---
   useEffect(() => {
