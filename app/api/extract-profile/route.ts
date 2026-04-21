@@ -27,8 +27,13 @@ const ExtractedProfileSchema = z.object({
 
 type ExtractedProfile = z.infer<typeof ExtractedProfileSchema>
 
-const SYSTEM_PROMPT = `You are a profile data extraction assistant for a luxury hotel booking AI agent.
+function buildSystemPrompt(): string {
+  const today = new Date().toISOString().slice(0, 10)
+  const currentYear = today.slice(0, 4)
+  return `You are a profile data extraction assistant for a luxury hotel booking AI agent.
 Your job is to extract structured information from user utterances in a conversation.
+
+Today's date is ${today}. When the guest mentions a date without a year, use ${currentYear}. Never use a year before ${currentYear} — the model's training-data year does NOT apply here.
 
 Extract the following fields when mentioned:
 - name: The user's name (first name or full name)
@@ -61,6 +66,7 @@ Rules:
 - Be conservative — don't infer information that isn't clearly stated
 
 Respond ONLY with valid JSON matching this schema, no other text.`
+}
 
 export async function POST(request: Request) {
   const openaiKey = process.env.NEXT_PUBLIC_OPENAI_API_KEY
@@ -105,7 +111,7 @@ Extract profile information from these new utterances only. Return null for any 
       body: JSON.stringify({
         model: "gpt-4o-mini",
         messages: [
-          { role: "system", content: SYSTEM_PROMPT },
+          { role: "system", content: buildSystemPrompt() },
           { role: "user", content: userMessage },
         ],
         temperature: 0.1,

@@ -450,40 +450,14 @@ export function buildGuestIntelligenceBlock(input: ContextInput): string {
 // ---------------------------------------------------------------------------
 
 export function buildOpeningText(input: ContextInput): string {
-  const { identity, personality, preferences, loyalty } = input
+  const { identity, loyalty } = input
   const name = identity.firstName
 
-  // Returning guest
   if (loyalty && loyalty.totalSessions > 0) {
-    const parts: string[] = [`Welcome back, ${name}. It's lovely to see you again.`]
-
-    // // Reference a past preference
-    // if (preferences?.preferredRoomTypes && preferences.preferredRoomTypes.length > 0) {
-    //   parts.push(`I remember you enjoyed the ${preferences.preferredRoomTypes[0]} last time — we have some wonderful options for you today.`)
-    // } else if (preferences?.preferredDestinations && preferences.preferredDestinations.length > 0) {
-    //   parts.push(`Great to have you back exploring ${preferences.preferredDestinations[0]}.`)
-    // }
-
-    // Composition-aware question
-    if (preferences?.typicalGuestComposition) {
-      const comp = preferences.typicalGuestComposition
-      const total = comp.adults + comp.children
-      if (comp.adults === 2 && comp.children === 0) {
-        parts.push("When are you thinking of visiting Lake Como, and will it be the two of you again?")
-      } else if (comp.children > 0) {
-        parts.push(`When are you thinking of visiting Lake Como? Will it be the ${total} of you again — ${comp.adults} adults and ${comp.children} little one${comp.children !== 1 ? "s" : ""}?`)
-      } else {
-        parts.push(`When are you thinking of visiting Lake Como? Will it be the ${total} of you again?`)
-      }
-    } else {
-      parts.push("Tell me, when are you thinking of traveling and who will be joining you?")
-    }
-
-    return parts.join("\n")
+    return `Welcome back, ${name}. It's lovely to see you again. Tell me, when are you thinking of visiting Lake Como, how many will be joining you, and will there be any little ones in the group?`
   }
 
-  // New guest
-  return `Hello ${name}, I'm Ava from the Omnam Group. Welcome to our Virtual Lounge. Today you'll be exploring a private preview of our AI-guided booking experience. For this demonstration, we'll be visiting our Edition Hotel at Lake Como together. Tell me, when are you thinking of traveling and who will be joining you?`
+  return `Hello ${name}, I'm Ava from the Omnam Group. Welcome to our Virtual Lounge. Today you'll be exploring a private preview of our AI-guided booking experience. For this demonstration, we'll be visiting our Edition Hotel at Lake Como together. Tell me, when are you thinking of traveling, how many will be joining, and will there be any little ones in the group?`
 }
 
 // ---------------------------------------------------------------------------

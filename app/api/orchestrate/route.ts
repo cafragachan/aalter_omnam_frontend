@@ -70,10 +70,35 @@ const NoActionSpeakSchema = z.object({
   speech: z.string().min(1).max(500),
 })
 
+// profile_turn — used only during PROFILE_COLLECTION. The LLM owns
+// extraction, next-question decision, and speech in a single tool call.
+const ProfileUpdatesSchema = z.object({
+  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  partySize: z.number().int().positive().optional(),
+  guestComposition: z.object({
+    adults: z.number().int().nonnegative(),
+    children: z.number().int().nonnegative(),
+    childrenAges: z.array(z.number().int().nonnegative()).optional(),
+  }).optional(),
+  travelPurpose: z.string().optional(),
+  roomAllocation: z.array(z.number().int().positive()).optional(),
+}).partial()
+
+const ProfileTurnSchema = z.object({
+  // reasoning comes first so the model is forced to think before emitting
+  // structured decisions. We log it but don't route on it.
+  reasoning: z.string().min(1).max(1000),
+  profileUpdates: ProfileUpdatesSchema.optional().default({}),
+  decision: z.enum(["ask_next", "clarify", "ready"]),
+  speech: z.string().min(1).max(500),
+})
+
 const TOOL_SCHEMAS: Record<string, z.ZodTypeAny> = {
   navigate_and_speak: NavigateAndSpeakSchema,
   adjust_room_plan: AdjustRoomPlanSchema,
   no_action_speak: NoActionSpeakSchema,
+  profile_turn: ProfileTurnSchema,
 }
 
 // ---------------------------------------------------------------------------
@@ -211,64 +236,107 @@ function buildSystemPrompt(body: RequestBody): string {
       })}`
     }
 
+    const today = new Date().toISOString().slice(0, 10)
+
     profileCollectionBlock = `\n\n## PROFILE_COLLECTION
 
 ${personaBlock}${intelligenceBlock}${transcriptBlock}
 
-### Source of truth
-Look at the conversation history above. Identify what the guest has ALREADY told you, even if the structured profile data below doesn't reflect it — the extractor sometimes misses things. Never ask about something the guest already mentioned. If the guest has implicitly answered a field (e.g., "we're a family" implies travel purpose = family vacation; "the two of us" implies 2 adults, 0 children), accept it and move on. Then determine what is still missing from the four required fields and ask about the next one in priority order. The structured fields (partySize, guestComposition, etc.) and \`profileAwaiting\` below are HINTS, not authority — the conversation is the source of truth.
+### ABSOLUTE RULES — violating these is worse than any other error
 
-Never ask the guest to confirm something they already said. If a field appears in "Already collected" or anywhere in the conversation history, treat it as definitively captured — acknowledge it on transition, but never re-verify it with a question.
+1. **NEVER invent data the guest didn't state.** If they said "between 12 and 16" for 4 children, you do NOT expand to [12, 13, 14, 15]. You set \`decision: "clarify"\`.
+2. **NEVER set \`decision: "ready"\` unless EVERY required field is captured** (dates, partySize, guestComposition, childrenAges-if-children>0, travelPurpose, roomAllocation-if-partySize>1). If ANY one is missing, decision is \`"ask_next"\` or \`"clarify"\`.
+3. **NEVER claim you've noted something you haven't verified.** "I've noted the ages as 12, 13, 14, 15" is a LIE if the guest only said "between 12 and 16". Ask for clarification instead.
 
-### Required fields (collect in this priority order)
-1. **Travel dates** — when the guest plans to travel
-2. **Guest count** — total party size
-3. **Guest breakdown** — adults vs children split
-4. **Children's ages** — only if the party includes children
-5. **Travel purpose** — why they are traveling (romantic getaway, family vacation, business, celebration, etc.)
-6. **Room distribution** — how to split the guests across rooms (only relevant when party size > 1)
+A server validator will reject \`ready\` with missing fields and reject age lists whose length doesn't match child count. If you violate these, your response is overridden with a canned reask — do it right the first time.
 
-### What is missing
-\`profileAwaiting\` tells you what is still needed:
-- "dates_and_guests" — need both travel dates and guest count
-- "dates" — need travel dates
-- "guests" — need total guest count
-- "guest_breakdown" — need adults vs children split
-- "children_ages" — ask for the ages of the children (e.g., "And how old are the little ones?" or "What ages are your children?"). Keep it warm and natural, never clinical.
-- "travel_purpose" — need why they are traveling
-- "room_distribution" — need how to split guests across rooms
-- "ready" — all required fields are collected
+### Your job each turn
 
-Current profileAwaiting: ${body.profileAwaiting ?? "unknown"}
+Return exactly one \`profile_turn\` tool call. The transcript above is the source of truth — extract every profile field the guest has revealed across ALL their turns, not just the latest one. The "Current profile state" block below may be stale, partial, or outright wrong; always trust the transcript first.
 
-### Already collected
-${collectedSummary}
+\`profile_turn\` has four fields, produced in this order:
 
-### Conversation style
-- Keep responses to 1-2 sentences per turn, 3 max. Spoken aloud, not typed.
-- Sound like a real person, not a chatbot. Use natural filler words occasionally ("Let's see...", "Oh, that's lovely").
-- Ask ONE thing at a time. Never list multiple questions in a single turn.
+1. \`reasoning\` — REQUIRED. Write this FIRST. 2-5 sentences of internal monologue that answers: (a) what did the guest just say, (b) what does the current state show, (c) what is missing, (d) why is the decision and speech you are about to emit the correct one. This is not spoken aloud — it is a thinking pad. Skipping or hand-waving this field produces bad output.
+2. \`profileUpdates\` — any fields you can confidently set from the transcript. Include values even if they're already in the current state (re-assertion is harmless). Omit fields you genuinely cannot determine.
+3. \`decision\` — exactly one of:
+   - \`"ready"\` — every required field below is captured. Produce a warm handoff in \`speech\`.
+   - \`"clarify"\` — the guest's most recent answer is ambiguous, incomplete, or you couldn't parse it. Ask a short, specific clarifying question in \`speech\`.
+   - \`"ask_next"\` — profile is incomplete but the last answer was fine; ask about the next missing field in \`speech\`.
+4. \`speech\` — the exact words Ava will say aloud. 1-2 sentences. No preambles.
 
-### When asking about a missing field (no_action_speak)
-- Ask directly about the missing field. Do NOT preface with "Got it," "Great," "Perfect," or any restatement of captured values. Do NOT ask the guest to confirm anything they already said — values in "Already collected" and the conversation history are definitive, not provisional.
-- 1-2 sentences max.
+### Required fields (priority order)
 
-### When transitioning to the hotel (navigate_and_speak with TRAVEL_TO_HOTEL)
-- Produce a warm, concise handoff that restates 2-4 of the captured details to make the transition feel personal. Example: "Lovely — March 15 to 20, the four of you, a family trip split two and two. Let me take you to the lounge."
-- 1-2 sentences. Never the same phrasing twice, never robotic.
+1. **startDate + endDate** — ISO dates YYYY-MM-DD. Today is ${today}. Assume current year unless the guest said otherwise.
+2. **partySize** — total guest count
+3. **guestComposition** — \`{ adults, children, childrenAges? }\`
+4. **childrenAges** — required only when \`children > 0\`. Must have exactly \`children\` ages.
+5. **travelPurpose** — e.g. "leisure", "business", "family vacation", "honeymoon", "celebration", "romantic getaway"
+6. **roomAllocation** — only when partySize > 1. Array of guest counts per room, e.g. [4, 2]. Must sum to partySize.
 
-- If the guest goes off-topic or asks unrelated questions, answer briefly (one short sentence) and redirect naturally to the next missing field. Examples:
-  - "That sounds lovely — and just so I can get everything ready for you, when were you thinking of visiting?"
-  - "Great question — I'll make a note. By the way, how many of you will be traveling?"
-  - "Absolutely. And what's the occasion for this trip — leisure, business, something special?"
-- Warm luxury concierge tone — observant and proactive, not robotic, not overly enthusiastic.
-- Do NOT invent hotel facts, room names, prices, or amenities not provided in the guest context.
-- Do NOT ask for firstName, lastName, email, phone, or date of birth — those are already known.
+### Parsing rules
 
-### Tool selection
-- If \`profileAwaiting === "ready"\` OR the guest clearly wants to advance ("let's go", "I'm ready", "take me to the hotel", "let's continue") → return **navigate_and_speak** with \`intent: "TRAVEL_TO_HOTEL"\` and a brief transition speech.
-- Otherwise → return **no_action_speak** with the next follow-up question.
-- Do NOT use adjust_room_plan during PROFILE_COLLECTION — room planning happens later.`
+- Dates: "between the 10th and the 15th of May" → \`startDate: "${today.slice(0, 4)}-05-10", endDate: "${today.slice(0, 4)}-05-15"\`. Accept any clear range.
+- Vague dates: "mid-June", "sometime in spring", "next week" → do NOT guess. Set \`decision: "clarify"\`.
+- Party: "2 adults and 4 children" → \`partySize: 6, guestComposition: { adults: 2, children: 4 }\`. "8 guests" alone → \`partySize: 8\` only; leave guestComposition for a follow-up.
+- Ages: "2, 4, 6, and 8" or "2, 4, 6, 8" for 4 children → \`childrenAges: [2, 4, 6, 8]\`. When the latest guest turn is bare numbers AND a previous avatar turn asked about ages, treat them as ages.
+- Age mismatch: if guest gave fewer/more ages than children count, or a range like "between 12 and 16" for 4 kids → \`decision: "clarify"\`. Do NOT silently accept.
+- Room distribution: "all in one room" → \`roomAllocation: [partySize]\`. "separate rooms" → \`[1,1,...]\` (partySize ones). "two rooms, four and two" → \`[4, 2]\`. "evenly" with partySize 8 across 2 rooms → \`[4, 4]\`.
+
+### Decision rules
+
+- If \`profileUpdates\` together with the existing state covers ALL required fields AND you're not clarifying anything → \`"ready"\`.
+- If the guest's latest answer was ambiguous, contradicts earlier answers, or you could not extract it → \`"clarify"\`. Name what you didn't catch.
+- Otherwise → \`"ask_next"\`. Pick the highest-priority missing field and ask about ONLY that one (or combine dates + guests into one natural question when both are missing at the start).
+- Never re-ask a field already captured in the transcript or in \`profileUpdates\`. If it's been answered, move on.
+
+### Clarification style (when decision = "clarify")
+
+- Say briefly that you didn't catch it, then ask specifically. Do NOT pretend you understood.
+- Examples:
+  - "I didn't quite catch the dates — could you give me specific days in June?"
+  - "I caught two ages but there are four children — could you share all four?"
+  - "Could you tell me each child's age individually, rather than a range?"
+  - "Sorry, I missed that — how many guests will be traveling?"
+
+### Worked examples of the LLM getting it wrong (DO NOT DO THESE)
+
+Guest just said "Between 12 and 16" when there are 4 children:
+- WRONG: \`{ profileUpdates: { guestComposition: { adults: 4, children: 4, childrenAges: [12, 13, 14, 15] } }, decision: "ready", speech: "Great, I've noted the children's ages. Let me take you to the hotel!" }\`
+- RIGHT: \`{ profileUpdates: {}, decision: "clarify", speech: "Could you tell me each child's age individually rather than a range?" }\`
+
+Profile only has partySize + guestComposition; dates, travel purpose, room allocation are all missing:
+- WRONG: \`{ decision: "ready", speech: "Lovely, let's head over." }\`
+- RIGHT: \`{ decision: "ask_next", speech: "When are you thinking of traveling?" }\`
+
+Guest said "mid-June":
+- WRONG: \`{ profileUpdates: { startDate: "2026-06-15", endDate: "2026-06-20" }, decision: "ask_next", ... }\` (inventing a specific range)
+- RIGHT: \`{ profileUpdates: {}, decision: "clarify", speech: "Could you give me specific arrival and departure days in June?" }\`
+
+Guest said "8 guests" and "4 are children":
+- WRONG: decision "ready" (travelPurpose, dates, roomAllocation still missing)
+- RIGHT: \`{ profileUpdates: { partySize: 8, guestComposition: { adults: 4, children: 4 } }, decision: "ask_next", speech: "When are you thinking of traveling?" }\` (or ask for ages first, both acceptable)
+
+### Ask-next style (when decision = "ask_next")
+
+- Start directly with the question. Never preface with acknowledgment phrases like "Got it", "Great", "Perfect", "Wonderful", "Lovely", "Noted", "Thank you for sharing", "Excellent", "Amazing", "Awesome".
+- Ask ONE thing per turn. The only exception is asking for dates + guests at the very start when both are missing.
+- 1-2 sentences. Spoken aloud, not typed.
+
+### Ready-handoff style (when decision = "ready")
+
+- Produce a warm 1-2 sentence handoff that restates 2-4 captured details. This is the ONE place warmth is allowed.
+- Examples:
+  - "Lovely — May 10 to 15, four adults and four children, split two and two. Let me take you to the hotel."
+  - "May 10 to 15, the four of you for a family trip. Let's head over."
+
+### Do not
+
+- Do not ask for firstName, lastName, email, phone, or date of birth — those are already known from login.
+- Do not invent hotel facts, room names, prices, or amenities.
+- Do not produce \`decision: "ready"\` unless every required field is satisfied.
+
+### Current profile state (may be partial/stale — trust the transcript first)
+${collectedSummary}`
   }
 
   return `You are Ava, an AI concierge for a luxury hotel metaverse experience. Given a user message and journey context, you must do TWO things in a single call: (1) classify what the user wants, and (2) generate a natural spoken response.
@@ -346,6 +414,196 @@ Every tool call MUST include a "speech" field — a natural spoken response for 
 }
 
 // ---------------------------------------------------------------------------
+// Preamble stripper — gpt-4o-mini doesn't reliably follow the no-preamble rule
+// during PROFILE_COLLECTION even when the rule is hoisted with examples.
+// A deterministic post-process guarantees the avatar never opens with
+// "Thank you for sharing...", "That's wonderful...", etc.
+// ---------------------------------------------------------------------------
+
+// Matches a preamble clause at the start of the string, up to and including
+// the first sentence terminator (., !, ?) and trailing whitespace. We match
+// greedily on common opener phrases then let the rest of the speech pass
+// through unchanged. Returns the original string if nothing matches OR if
+// stripping would leave an empty result (edge case: the whole speech WAS the
+// preamble — better to keep it than go silent).
+function stripPreamble(speech: string): string {
+  // Four arms:
+  //   1. "Thank you ..." — consume up to and including the first terminator
+  //   2. "That's wonderful ..." — same pattern
+  //   3. Standalone openers like "Noted.", "Perfect!", "Got it." — match opener
+  //      followed directly by a terminator (. or !). The old regex used
+  //      `[\s,!.][^.!?]*[.!?]?` which over-consumed past the opener into the
+  //      next sentence when there was no mid-sentence terminator.
+  //   4. Opener followed by comma + clause + terminator, e.g.
+  //      "Great, I've noted the ages. Let me..." — up to the first terminator.
+  const preambleRe =
+    /^\s*(?:thank\s+you[^.!?]*[.!?]|that(?:'s|\s+is|\s+sounds)\s+(?:wonderful|great|lovely|amazing|awesome|fantastic|perfect|excellent)[^.!?]*[.!?]|(?:got\s+it|noted|understood|perfect|great|wonderful|lovely|excellent|amazing|awesome|fantastic|absolutely|certainly|of\s+course|sure\s+thing|sounds\s+(?:good|great|lovely|wonderful))\s*[.!]|(?:got\s+it|noted|understood|perfect|great|wonderful|lovely|excellent|amazing|awesome|fantastic|absolutely|certainly)\s*,[^.!?]*[.!?])\s*/i
+  const stripped = speech.replace(preambleRe, "").trim()
+  return stripped.length > 0 ? stripped : speech
+}
+
+// ---------------------------------------------------------------------------
+// profile_turn server-side validator
+//
+// gpt-4o-mini doesn't reliably follow the multi-constraint rules in the
+// PROFILE_COLLECTION prompt (hallucinates ages, declares ready prematurely,
+// etc). This validator is the hard gate. It:
+//   1. Rejects childrenAges whose length doesn't match children count.
+//   2. Rejects decision=ready when any required field is still missing.
+// On rejection it overrides decision + speech with a deterministic canned
+// response tied to the specific missing/mismatched field.
+// ---------------------------------------------------------------------------
+
+type ProfileUpdatesT = {
+  startDate?: string
+  endDate?: string
+  partySize?: number
+  guestComposition?: { adults: number; children: number; childrenAges?: number[] }
+  travelPurpose?: string
+  roomAllocation?: number[]
+}
+
+type ProfileTurnT = {
+  reasoning?: string
+  profileUpdates?: ProfileUpdatesT
+  decision: "ask_next" | "clarify" | "ready"
+  speech: string
+}
+
+type MergedProfileState = {
+  startDate?: string
+  endDate?: string
+  partySize?: number
+  guestComposition?: { adults: number; children: number; childrenAges?: number[] }
+  travelPurpose?: string
+  roomAllocation?: number[]
+}
+
+type MissingField =
+  | "dates"
+  | "guests"
+  | "guest_breakdown"
+  | "children_ages"
+  | "travel_purpose"
+  | "room_distribution"
+
+function firstMissingField(s: MergedProfileState): MissingField | null {
+  if (!s.startDate || !s.endDate) return "dates"
+  if (!s.partySize) return "guests"
+  if (!s.guestComposition) return "guest_breakdown"
+  if (s.guestComposition.children > 0) {
+    const ages = s.guestComposition.childrenAges
+    if (!ages || ages.length !== s.guestComposition.children) return "children_ages"
+  }
+  if (!s.travelPurpose) return "travel_purpose"
+  if (s.partySize > 1) {
+    const alloc = s.roomAllocation
+    if (!alloc || alloc.length === 0) return "room_distribution"
+    const sum = alloc.reduce((a, b) => a + b, 0)
+    if (sum !== s.partySize) return "room_distribution"
+  }
+  return null
+}
+
+const CANNED_SPEECH: Record<MissingField, string> = {
+  dates: "When are you thinking of traveling?",
+  guests: "How many will be joining you?",
+  guest_breakdown: "Will it be all adults, or are there any little ones in your group?",
+  children_ages: "And how old are the little ones?",
+  travel_purpose: "What brings you to the area?",
+  room_distribution: "How would you like to split the guests across rooms?",
+}
+
+function validateProfileTurn(
+  result: ProfileTurnT,
+  body: RequestBody,
+): { result: ProfileTurnT; overridden: "ages_mismatch" | "ready_premature" | null } {
+  console.log("[VALIDATOR] entered", JSON.stringify({
+    llmDecision: result.decision,
+    llmProfileUpdates: result.profileUpdates,
+    bodyState: {
+      startDate: body.startDate,
+      endDate: body.endDate,
+      partySize: body.partySize,
+      guestComposition: body.guestComposition,
+      travelPurpose: body.travelPurpose,
+      roomAllocation: body.roomAllocation,
+    },
+  }))
+  const updates: ProfileUpdatesT = { ...(result.profileUpdates ?? {}) }
+
+  // --- Check 1: ages length must match children count ---
+  // We validate against the merged composition so we catch cases where the
+  // LLM provides only childrenAges on this turn while children came from
+  // earlier state.
+  const mergedComp = updates.guestComposition ?? body.guestComposition
+  if (mergedComp && updates.guestComposition?.childrenAges) {
+    const ages = updates.guestComposition.childrenAges
+    const n = mergedComp.children
+    if (n > 0 && ages.length !== n) {
+      // Drop the bad field so we don't write hallucinated ages to state.
+      updates.guestComposition = {
+        ...updates.guestComposition,
+        childrenAges: undefined,
+      }
+      const countWord = ages.length === 0 ? "none" : `only ${ages.length}`
+      const speech =
+        ages.length < n
+          ? `I caught ${countWord} of the ${n} ages — could you share all ${n}?`
+          : `I caught ${ages.length} ages but there are ${n} children — could you tell me each child's age?`
+      return {
+        result: {
+          profileUpdates: updates,
+          decision: "clarify",
+          speech,
+        },
+        overridden: "ages_mismatch",
+      }
+    }
+  }
+
+  // --- Check 2: if decision is "ready", every required field must be set ---
+  if (result.decision === "ready") {
+    // Derive partySize from guestComposition if needed — the LLM often sets
+    // one without the other and we want validation to accept either shape.
+    const partySize =
+      updates.partySize ??
+      (updates.guestComposition
+        ? updates.guestComposition.adults + updates.guestComposition.children
+        : undefined) ??
+      body.partySize
+
+    const merged: MergedProfileState = {
+      startDate: updates.startDate ?? body.startDate,
+      endDate: updates.endDate ?? body.endDate,
+      partySize,
+      guestComposition: updates.guestComposition ?? body.guestComposition,
+      travelPurpose: updates.travelPurpose ?? body.travelPurpose,
+      roomAllocation: updates.roomAllocation ?? body.roomAllocation,
+    }
+
+    const missing = firstMissingField(merged)
+    console.log("[VALIDATOR] ready check", JSON.stringify({ merged, missing }))
+    if (missing !== null) {
+      return {
+        result: {
+          profileUpdates: updates,
+          decision: "ask_next",
+          speech: CANNED_SPEECH[missing],
+        },
+        overridden: "ready_premature",
+      }
+    }
+  }
+
+  // No override needed.
+  return {
+    result: { ...result, profileUpdates: updates },
+    overridden: null,
+  }
+}
+
+// ---------------------------------------------------------------------------
 // OpenAI function-calling tool definitions
 // ---------------------------------------------------------------------------
 
@@ -358,7 +616,69 @@ interface OpenAITool {
   }
 }
 
-function buildTools(hasRooms: boolean, includeAdjustRoomPlan = true) {
+const PROFILE_TURN_TOOL: OpenAITool = {
+  type: "function" as const,
+  function: {
+    name: "profile_turn",
+    description:
+      "Single source of truth for a PROFILE_COLLECTION turn. Extract fields from the transcript, decide what to do next, and produce speech.",
+    parameters: {
+      type: "object",
+      properties: {
+        reasoning: {
+          type: "string",
+          description:
+            "Brief internal monologue (2-5 sentences). What did the guest just say? What does the current state show? What's missing? Why is your decision/speech correct? Write this FIRST, before any other field. This is not spoken aloud.",
+        },
+        profileUpdates: {
+          type: "object",
+          description: "Fields you can confidently set from the transcript. Omit any field you can't determine.",
+          properties: {
+            startDate: { type: "string", description: "Travel start date, YYYY-MM-DD" },
+            endDate: { type: "string", description: "Travel end date, YYYY-MM-DD" },
+            partySize: { type: "number", description: "Total guest count" },
+            guestComposition: {
+              type: "object",
+              properties: {
+                adults: { type: "number" },
+                children: { type: "number" },
+                childrenAges: {
+                  type: "array",
+                  items: { type: "number" },
+                  description: "One age per child; length must match children",
+                },
+              },
+              required: ["adults", "children"],
+            },
+            travelPurpose: { type: "string" },
+            roomAllocation: {
+              type: "array",
+              items: { type: "number" },
+              description: "Guest counts per room; must sum to partySize",
+            },
+          },
+        },
+        decision: {
+          type: "string",
+          enum: ["ask_next", "clarify", "ready"],
+          description:
+            "ask_next = ask next missing field; clarify = latest answer was ambiguous; ready = all required fields captured",
+        },
+        speech: {
+          type: "string",
+          description: "Exact words Ava will say. 1-2 sentences. No preamble unless decision=ready.",
+        },
+      },
+      required: ["reasoning", "decision", "speech"],
+    },
+  },
+}
+
+function buildTools(
+  hasRooms: boolean,
+  includeAdjustRoomPlan = true,
+  adjustRoomPlanActions?: string[],
+) {
   const tools: OpenAITool[] = [
     {
       type: "function" as const,
@@ -388,7 +708,15 @@ function buildTools(hasRooms: boolean, includeAdjustRoomPlan = true) {
     },
   ]
 
-  if (hasRooms && includeAdjustRoomPlan) {
+  if (includeAdjustRoomPlan) {
+    const actions = adjustRoomPlanActions ?? [
+      "adjust_budget",
+      "set_room_composition",
+      "compact_plan",
+      "set_distribution",
+      "recompute_with_preferences",
+      "no_room_change",
+    ]
     tools.push({
       type: "function" as const,
       function: {
@@ -399,14 +727,7 @@ function buildTools(hasRooms: boolean, includeAdjustRoomPlan = true) {
           properties: {
             action: {
               type: "string",
-              enum: [
-                "adjust_budget",
-                "set_room_composition",
-                "compact_plan",
-                "set_distribution",
-                "recompute_with_preferences",
-                "no_room_change",
-              ],
+              enum: actions,
               description: "The room plan action to take",
             },
             target_per_night: {
@@ -512,7 +833,15 @@ export async function POST(request: Request) {
     const hasRooms = !!(body.rooms && body.rooms.length > 0)
     const isProfileCollection = body.journeyContext.stage === "PROFILE_COLLECTION"
     const systemPrompt = buildSystemPrompt(body)
-    const tools = buildTools(hasRooms, !isProfileCollection)
+    // PROFILE_COLLECTION uses a single profile_turn tool that owns extraction,
+    // decision, and speech — no navigate/room-plan tools are offered here.
+    // Other stages keep the legacy tools.
+    const tools = isProfileCollection
+      ? [PROFILE_TURN_TOOL]
+      : buildTools(hasRooms, hasRooms, undefined)
+    const toolChoice = isProfileCollection
+      ? ({ type: "function" as const, function: { name: "profile_turn" } })
+      : "auto"
 
     // Build journey context block for user message
     const jc = body.journeyContext
@@ -533,14 +862,18 @@ export async function POST(request: Request) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          model: "gpt-4o-mini",
+          // PROFILE_COLLECTION needs the stronger model — the prompt is
+          // intricate and mini chronically re-asks captured fields, skips
+          // obvious extractions, and ignores negative rules. Other stages
+          // keep mini (cheaper, adequate for navigation intents).
+          model: isProfileCollection ? "gpt-4o" : "gpt-4o-mini",
           messages: [
             { role: "system", content: systemPrompt },
             { role: "user", content: `User message: "${body.message}"${journeyBlock}` },
           ],
           temperature: 0.3,
           tools,
-          tool_choice: "auto",
+          tool_choice: toolChoice,
         }),
         signal: controller.signal,
       })
@@ -592,13 +925,36 @@ export async function POST(request: Request) {
       // gracefully via optional chaining and fallback logic.
 
       // Build response
-      const result = validated.data as Record<string, unknown>
+      let result = validated.data as Record<string, unknown>
+      let validatorOverride: "ages_mismatch" | "ready_premature" | null = null
+
+      // Server-side gate for profile_turn — see validateProfileTurn. Runs
+      // BEFORE strip / response construction so any override flows through
+      // the normal speech pipeline.
+      if (functionName === "profile_turn") {
+        const check = validateProfileTurn(result as unknown as ProfileTurnT, body)
+        result = check.result as unknown as Record<string, unknown>
+        validatorOverride = check.overridden
+      }
+
       const responseBody: Record<string, unknown> = { tool: functionName }
+
+      // Belt-and-suspenders: gpt-4o-mini ignores the no-preamble rule in the
+      // system prompt often enough that a deterministic strip is needed.
+      // Applied during PROFILE_COLLECTION, and skipped only for warm handoffs
+      // (profile_turn with decision=ready, or legacy TRAVEL_TO_HOTEL). After
+      // the validator, decision=ready only survives when it's actually valid.
+      const isReadyHandoff =
+        (functionName === "profile_turn" && result.decision === "ready") ||
+        (functionName === "navigate_and_speak" && result.intent === "TRAVEL_TO_HOTEL")
+      const shouldStripPreamble = isProfileCollection && !isReadyHandoff
+      const cleanSpeech = (s: unknown) =>
+        shouldStripPreamble && typeof s === "string" ? stripPreamble(s) : s
 
       if (functionName === "navigate_and_speak") {
         responseBody.intent = result.intent
         if (result.amenityName) responseBody.amenityName = result.amenityName
-        responseBody.speech = result.speech
+        responseBody.speech = cleanSpeech(result.speech)
       } else if (functionName === "adjust_room_plan") {
         responseBody.action = result.action
         // Pack flat fields back into a params object for the client
@@ -611,11 +967,29 @@ export async function POST(request: Request) {
           distribution_preference: result.distribution_preference,
           room_type_preference: result.room_type_preference,
         }
-        responseBody.speech = result.speech
+        responseBody.speech = cleanSpeech(result.speech)
+      } else if (functionName === "profile_turn") {
+        responseBody.reasoning = result.reasoning
+        responseBody.profileUpdates = result.profileUpdates ?? {}
+        responseBody.decision = result.decision
+        responseBody.speech = cleanSpeech(result.speech)
       } else {
         // no_action_speak
-        responseBody.speech = result.speech
+        responseBody.speech = cleanSpeech(result.speech)
       }
+
+      console.log("[ORCHESTRATE]", JSON.stringify({
+        stage: body.journeyContext.stage,
+        awaiting: body.profileAwaiting,
+        tool: functionName,
+        reasoning: result.reasoning,
+        decision: result.decision,
+        profileUpdates: result.profileUpdates,
+        validatorOverride,
+        rawSpeech: result.speech,
+        stripped: shouldStripPreamble,
+        outSpeech: responseBody.speech,
+      }))
 
       return new Response(JSON.stringify(responseBody), {
         status: 200,

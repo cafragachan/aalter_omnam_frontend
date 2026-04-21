@@ -830,16 +830,13 @@ function HomePageContent({ onHideUE5Stream }: { onHideUE5Stream: () => void }) {
     if (hasHydratedRef.current || !returningUserData) return
     hasHydratedRef.current = true
     const { personality, preferences } = returningUserData
-    const comp = preferences?.typicalGuestComposition ?? undefined
     updateProfile({
       interests: personality?.interests ?? [],
-      travelPurpose: personality?.travelPurposes?.[0] ?? undefined,
       budgetRange: personality?.budgetTendency ?? undefined,
       dietaryRestrictions: personality?.dietaryRestrictions ?? [],
       accessibilityNeeds: personality?.accessibilityNeeds ?? [],
       amenityPriorities: preferences?.preferredAmenities ?? [],
-      guestComposition: comp,
-      familySize: comp ? comp.adults + comp.children : undefined,
+      // REMOVED: travelPurpose, guestComposition, familySize — per-trip, collected fresh
     })
   }, [returningUserData, updateProfile])
 

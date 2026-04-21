@@ -14,6 +14,8 @@ export const useAvatarActions = (mode: "FULL" | "CUSTOM" = "FULL") => {
     async (message: string) => {
       if (!sessionRef.current) return
 
+      console.log("[REPEAT→HeyGen]", JSON.stringify(message))
+
       if (mode === "FULL") {
         return sessionRef.current.repeat(message)
       }

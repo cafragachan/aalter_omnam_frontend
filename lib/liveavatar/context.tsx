@@ -129,6 +129,7 @@ export function LiveAvatarContextProvider({
     if (!session) return
 
     const handleUserTranscription = ({ text }: { text: string }) => {
+      console.log("[USER_TX]", JSON.stringify(text))
       setMessages((prev) => [
         ...prev,
         { sender: MessageSender.USER, message: text, timestamp: Date.now() },
@@ -136,6 +137,7 @@ export function LiveAvatarContextProvider({
     }
 
     const handleAvatarTranscription = ({ text }: { text: string }) => {
+      console.log("[AVATAR_TX]", JSON.stringify(text))
       setMessages((prev) => [
         ...prev,
         { sender: MessageSender.AVATAR, message: text, timestamp: Date.now() },

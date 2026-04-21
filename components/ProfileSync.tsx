@@ -76,23 +76,17 @@ export function ProfileSync({ useProfileHook }: ProfileSyncProps = {}) {
     if (!storedProfile.lastName && inferredLastName) {
       updates.lastName = inferredLastName
     }
-    if (profile.partySize != null) {
-      updates.familySize = profile.partySize
-    }
+    // Phase 2: orchestrate is the sole writer for the six profile-collection
+    // fields (startDate, endDate, partySize/familySize, guestComposition,
+    // travelPurpose, roomAllocation). ProfileSync NEVER writes them —
+    // regex + /api/extract-profile are lossy and would race the LLM.
+    // ProfileSync keeps writing the passive-observation fields below
+    // (interests, destination, budget, preferences, etc.).
     if (profile.destination) {
       updates.destination = profile.destination
     }
-    if (profile.startDate) {
-      updates.startDate = profile.startDate
-    }
-    if (profile.endDate) {
-      updates.endDate = profile.endDate
-    }
     if (profile.interests.length > 0) {
       updates.interests = profile.interests
-    }
-    if (profile.travelPurpose) {
-      updates.travelPurpose = profile.travelPurpose
     }
     if (profile.budgetRange) {
       updates.budgetRange = profile.budgetRange
@@ -114,13 +108,6 @@ export function ProfileSync({ useProfileHook }: ProfileSyncProps = {}) {
     }
     if (profile.arrivalTime) {
       updates.arrivalTime = profile.arrivalTime
-    }
-    if (profile.guestComposition) {
-      updates.guestComposition = profile.guestComposition
-      updates.familySize = profile.guestComposition.adults + profile.guestComposition.children
-    }
-    if (profile.roomAllocation) {
-      updates.roomAllocation = profile.roomAllocation
     }
     if (profile.distributionPreference) {
       updates.distributionPreference = profile.distributionPreference

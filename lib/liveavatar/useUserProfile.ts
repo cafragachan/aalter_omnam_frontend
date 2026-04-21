@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useLiveAvatarContext } from "./context"
+import { useUserProfileContext } from "@/lib/context"
 import { MessageSender } from "./types"
 
 export type AvatarDerivedProfile = {
@@ -44,6 +45,24 @@ type AIExtractedProfile = {
   roomAllocation?: number[] | null
 }
 
+function mergeGuestComposition(
+  prev: AIExtractedProfile["guestComposition"] | undefined,
+  next: AIExtractedProfile["guestComposition"] | undefined,
+): AIExtractedProfile["guestComposition"] {
+  // Deep-merge so a later extraction that only captures childrenAges doesn't
+  // wipe out adults/children from the earlier one, and vice versa.
+  if (!next) return prev ?? null
+  if (!prev) return next
+  return {
+    adults: next.adults ?? prev.adults,
+    children: next.children ?? prev.children,
+    childrenAges:
+      next.childrenAges && next.childrenAges.length > 0
+        ? next.childrenAges
+        : prev.childrenAges,
+  }
+}
+
 function mergeAIProfiles(
   prev: AIExtractedProfile | null,
   next: AIExtractedProfile,
@@ -64,7 +83,7 @@ function mergeAIProfiles(
     amenityPriorities: Array.from(new Set([...(prev.amenityPriorities ?? []), ...(next.amenityPriorities ?? [])])),
     nationality: next.nationality ?? prev.nationality,
     arrivalTime: next.arrivalTime ?? prev.arrivalTime,
-    guestComposition: next.guestComposition ?? prev.guestComposition,
+    guestComposition: mergeGuestComposition(prev.guestComposition ?? undefined, next.guestComposition ?? undefined),
     distributionPreference: next.distributionPreference ?? prev.distributionPreference,
     roomAllocation: next.roomAllocation ?? prev.roomAllocation,
   }
@@ -529,6 +548,7 @@ export const useUserProfile = (): {
   aiAvailable: boolean
 } => {
   const { messages } = useLiveAvatarContext()
+  const { journeyStage } = useUserProfileContext()
   const [aiProfile, setAiProfile] = useState<AIExtractedProfile | null>(null)
   const [isExtracting, setIsExtracting] = useState(false)
   const [aiAvailable, setAiAvailable] = useState(true) // Assume available until proven otherwise
@@ -646,12 +666,23 @@ export const useUserProfile = (): {
       return
     }
 
+    // Phase 2: orchestrate owns profile extraction during PROFILE_COLLECTION.
+    // Skip /api/extract-profile entirely here to stop racing with the
+    // authoritative writer and to stop polluting UserProfileContext with
+    // values from a weaker model. Still mark messages as processed so UI
+    // spinners resolve and the extractor resumes on later stages.
+    if (journeyStage === "PROFILE_COLLECTION") {
+      lastExtractedCount.current = userMessages.length
+      lastSentIndexRef.current = userMessages.length
+      return
+    }
+
     const timer = setTimeout(() => {
       triggerAIExtraction()
     }, 800) // Wait 800ms after last message
 
     return () => clearTimeout(timer)
-  }, [userMessages.length, triggerAIExtraction, aiAvailable])
+  }, [userMessages.length, triggerAIExtraction, aiAvailable, journeyStage])
 
   const isExtractionPending = aiAvailable && (isExtracting || userMessages.length > lastExtractedCount.current)
 

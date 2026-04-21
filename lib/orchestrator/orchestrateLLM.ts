@@ -9,13 +9,31 @@ import type {
 } from "@/lib/firebase/types"
 
 // ---------------------------------------------------------------------------
-// OrchestrateResult — discriminated union of the 3 tool types
+// OrchestrateResult — discriminated union of the 4 tool types
 // ---------------------------------------------------------------------------
+
+export type ProfileUpdates = {
+  startDate?: string
+  endDate?: string
+  partySize?: number
+  guestComposition?: { adults: number; children: number; childrenAges?: number[] }
+  travelPurpose?: string
+  roomAllocation?: number[]
+}
+
+export type ProfileTurnDecision = "ask_next" | "clarify" | "ready"
 
 export type OrchestrateResult =
   | { tool: "navigate_and_speak"; intent: UserIntent; speech: string }
   | { tool: "adjust_room_plan"; action: RoomPlanAction; speech: string }
   | { tool: "no_action_speak"; speech: string }
+  | {
+      tool: "profile_turn"
+      reasoning?: string
+      profileUpdates: ProfileUpdates
+      decision: ProfileTurnDecision
+      speech: string
+    }
 
 // ---------------------------------------------------------------------------
 // OrchestrateInput — the context shape sent to the API route
@@ -108,9 +126,23 @@ export async function orchestrateLLM(
       action?: string
       params?: Record<string, unknown>
       speech?: string
+      reasoning?: string
+      profileUpdates?: ProfileUpdates
+      decision?: ProfileTurnDecision
     }
 
     if (!data.tool || !data.speech) return null
+
+    if (data.tool === "profile_turn") {
+      if (!data.decision) return null
+      return {
+        tool: "profile_turn",
+        reasoning: data.reasoning,
+        profileUpdates: data.profileUpdates ?? {},
+        decision: data.decision,
+        speech: data.speech,
+      }
+    }
 
     if (data.tool === "navigate_and_speak") {
       if (!data.intent) return null

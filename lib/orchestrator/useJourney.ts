@@ -213,6 +213,24 @@ export function useJourney(options: UseJourneyOptions) {
   const profileMsgDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const profileOrchestrateCancelRef = useRef<(() => void) | null>(null)
 
+  // --- Live refs for profile / derivedProfile so the PROFILE_COLLECTION
+  // setTimeout callback reads the FRESHEST values at fire time rather than
+  // the closure snapshot from when it was scheduled. Critical because:
+  //   • Effect re-runs short-circuit at the userMessages.length guard, so the
+  //     already-scheduled timer's closure is never refreshed.
+  //   • AI extraction (800ms debounce + HTTP) typically completes AFTER the
+  //     orchestrate debounce was scheduled, so closure-captured derivedProfile
+  //     missed the new aiProfile.
+  // Updated via the useEffect below on every render.
+  const profileRef = useRef(profile)
+  const derivedProfileRef = useRef(derivedProfile)
+  const isExtractionPendingRef = useRef(isExtractionPending)
+  useEffect(() => {
+    profileRef.current = profile
+    derivedProfileRef.current = derivedProfile
+    isExtractionPendingRef.current = isExtractionPending
+  })
+
   // --- LLM speech generation helpers ---
   const buildSpeechContext = useCallback((
     eventType?: string,
@@ -907,27 +925,35 @@ export function useJourney(options: UseJourneyOptions) {
     if (stage === "PROFILE_COLLECTION") {
       if (profileMsgDebounceRef.current) clearTimeout(profileMsgDebounceRef.current)
       profileMsgDebounceRef.current = setTimeout(() => {
-        // Compute awaiting freshly from the merged profile. stateRef.current.awaiting
-        // lags 2.5s behind because profile updates are debounced into the reducer —
-        // the LLM needs the up-to-date picture so it doesn't re-ask already-answered
-        // questions.
+        // Read the FRESHEST profile/derivedProfile via refs, not closure — the
+        // closure snapshot is from scheduling time and misses AI extractions
+        // that completed during the debounce window (AI extraction has its own
+        // 800ms debounce + HTTP latency).
+        const liveProfile = profileRef.current
+        const liveDerivedProfile = derivedProfileRef.current
+
+        // Prefer context values first because ProfileSync derives correct
+        // composite fields (e.g., familySize = adults + children) while raw
+        // regex partySize can miscount. Fall back to derivedProfile otherwise.
         const mergedProfile = {
-          partySize: profile.familySize ?? derivedProfile.partySize,
-          startDate: derivedProfile.startDate,
-          endDate: derivedProfile.endDate,
-          travelPurpose: profile.travelPurpose ?? derivedProfile.travelPurpose,
-          interests: derivedProfile.interests,
-          guestComposition: profile.guestComposition ?? derivedProfile.guestComposition,
-          roomAllocation: profile.roomAllocation ?? derivedProfile.roomAllocation,
+          partySize: liveProfile.familySize ?? liveDerivedProfile.partySize,
+          startDate: liveDerivedProfile.startDate ?? liveProfile.startDate,
+          endDate: liveDerivedProfile.endDate ?? liveProfile.endDate,
+          travelPurpose: liveProfile.travelPurpose ?? liveDerivedProfile.travelPurpose,
+          interests: liveDerivedProfile.interests,
+          guestComposition: liveProfile.guestComposition ?? liveDerivedProfile.guestComposition,
+          roomAllocation: liveProfile.roomAllocation ?? liveDerivedProfile.roomAllocation,
         }
         const freshAwaiting = profileCollectionAwaiting(mergedProfile)
 
         if (!options.enableLLMOrchestrate) return
 
-        // Last ~10 turns of transcript — the LLM uses this as source of truth
-        // because the structured extractor is lossy.
+        // Full transcript — the LLM is the only writer in PROFILE_COLLECTION
+        // and the earlier slice(-10) caused it to forget fields the guest gave
+        // on the first turn. Token cost is negligible for the short pre-hotel
+        // chat. Cap generously at 80 messages as a runaway guard.
         const conversationHistory = allMessages
-          .slice(-10)
+          .slice(-80)
           .map((m) => ({
             role: m.sender === MessageSender.AVATAR ? ("avatar" as const) : ("user" as const),
             text: m.message,
@@ -939,11 +965,26 @@ export function useJourney(options: UseJourneyOptions) {
           profileOrchestrateCancelRef.current = null
         }
 
+        console.log("[CLIENT→ORCHESTRATE]", JSON.stringify({
+          liveProfile_familySize: liveProfile.familySize,
+          liveProfile_guestComp: liveProfile.guestComposition,
+          liveProfile_startDate: liveProfile.startDate?.toISOString?.() ?? null,
+          liveProfile_endDate: liveProfile.endDate?.toISOString?.() ?? null,
+          liveProfile_travelPurpose: liveProfile.travelPurpose,
+          liveProfile_roomAlloc: liveProfile.roomAllocation,
+          derivedProfile_partySize: liveDerivedProfile.partySize,
+          derivedProfile_startDate: liveDerivedProfile.startDate?.toISOString?.() ?? null,
+          derivedProfile_endDate: liveDerivedProfile.endDate?.toISOString?.() ?? null,
+          mergedPartySize: mergedProfile.partySize,
+          mergedStartDate: mergedProfile.startDate?.toISOString?.() ?? null,
+          mergedEndDate: mergedProfile.endDate?.toISOString?.() ?? null,
+          freshAwaiting,
+        }))
         ;(async () => {
           const result = await orchestrateLLM({
             message: latestMessage,
             state: stateRef.current,
-            guestFirstName: profile.firstName,
+            guestFirstName: liveProfile.firstName,
             travelPurpose: mergedProfile.travelPurpose,
             partySize: mergedProfile.partySize ?? undefined,
             guestComposition: mergedProfile.guestComposition ?? undefined,
@@ -957,7 +998,8 @@ export function useJourney(options: UseJourneyOptions) {
             loyalty: returningUserData?.loyalty ?? null,
             conversationHistory,
           })
-          if (cancelled) return
+          // Do NOT cancel here — profile state writes are idempotent and must
+          // always land. Cancellation only applies to speech/dispatch below.
           profileOrchestrateCancelRef.current = null
 
           // Guard: stage may have advanced while LLM was in-flight
@@ -967,6 +1009,7 @@ export function useJourney(options: UseJourneyOptions) {
             // Degraded mode: LLM unavailable. Preserve advancement using regex + freshAwaiting.
             // No preGeneratedSpeechRef write — the reducer's hardcoded "Wonderful!..." is the
             // accepted degraded-mode speech.
+            if (cancelled) return
             const fallbackIntent = classifyIntent(latestMessage)
             if (
               freshAwaiting === "ready" ||
@@ -978,18 +1021,80 @@ export function useJourney(options: UseJourneyOptions) {
             return
           }
 
+          if (result.tool === "profile_turn") {
+            // Apply LLM-extracted fields to the profile. The LLM is the source
+            // of truth during PROFILE_COLLECTION. Apply happens UNCONDITIONALLY
+            // — even if a newer user turn started an overlapping orchestrate
+            // that set `cancelled=true`. Profile writes are idempotent; losing
+            // them is what caused partySize/guestComposition to never persist
+            // when the user spoke rapidly.
+            const pu = result.profileUpdates
+            const updates: Partial<import("@/lib/context").UserProfile> = {}
+            if (pu.startDate) updates.startDate = new Date(pu.startDate)
+            if (pu.endDate) updates.endDate = new Date(pu.endDate)
+            if (pu.guestComposition) {
+              updates.guestComposition = pu.guestComposition
+              updates.familySize =
+                pu.guestComposition.adults + pu.guestComposition.children
+            } else if (pu.partySize != null) {
+              updates.familySize = pu.partySize
+            }
+            if (pu.travelPurpose) updates.travelPurpose = pu.travelPurpose
+            if (pu.roomAllocation) updates.roomAllocation = pu.roomAllocation
+            console.log("[PROFILE_TURN→APPLY]", JSON.stringify({
+              cancelled,
+              llmProfileUpdates: pu,
+              mappedToContextUpdates: {
+                ...updates,
+                startDate: updates.startDate?.toISOString?.() ?? undefined,
+                endDate: updates.endDate?.toISOString?.() ?? undefined,
+              },
+            }))
+            if (Object.keys(updates).length > 0) updateProfile(updates)
+
+            // Speech IS cancellable — if a newer turn is in flight, don't
+            // step on it with stale dialogue.
+            if (cancelled) return
+
+            if (result.decision === "ready") {
+              // Warm handoff — substitute the reducer's hardcoded advance speech.
+              preGeneratedSpeechRef.current = result.speech
+              dispatch({ type: "FORCE_ADVANCE" })
+              return
+            }
+
+            // ask_next or clarify — speak directly, stay in PROFILE_COLLECTION.
+            interrupt()
+            repeat(result.speech).catch(() => undefined)
+            return
+          }
+
+          // --- Legacy tool fallbacks (should not occur with the new prompt,
+          // but kept defensively in case the model picks a different tool) ---
+
           if (
             result.tool === "navigate_and_speak" &&
             (result.intent.type === "TRAVEL_TO_HOTEL" || result.intent.type === "AFFIRMATIVE")
           ) {
-            // Substitute the orchestrator's contextual transition speech for the
-            // reducer's hardcoded SPEAK fired by FORCE_ADVANCE.
+            if (cancelled) return
             preGeneratedSpeechRef.current = result.speech
             dispatch({ type: "FORCE_ADVANCE" })
             return
           }
 
-          // no_action_speak — direct follow-up question, no reducer SPEAK to coordinate with.
+          if (result.tool === "adjust_room_plan" && result.action.action === "set_distribution") {
+            const allocation = result.action.params?.allocation
+            if (Array.isArray(allocation) && allocation.length > 0 && allocation.every((n) => typeof n === "number" && n > 0)) {
+              // Unconditional write — state is idempotent.
+              updateProfile({ roomAllocation: allocation })
+            }
+            if (cancelled) return
+            interrupt()
+            repeat(result.speech).catch(() => undefined)
+            return
+          }
+
+          if (cancelled) return
           interrupt()
           repeat(result.speech).catch(() => undefined)
         })()
@@ -1099,6 +1204,14 @@ export function useJourney(options: UseJourneyOptions) {
             preGeneratedSpeechRef.current = null
             processIntent(regexIntent, latestMessage, currentState, stage)
           }
+          return
+        }
+
+        if (result.tool === "profile_turn") {
+          // profile_turn is only expected during PROFILE_COLLECTION; if the
+          // model picks it outside that stage, just speak it and bail.
+          interrupt()
+          repeat(result.speech).catch(() => undefined)
           return
         }
 
