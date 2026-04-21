@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef } from "react"
 import { useUserProfileContext } from "@/lib/context"
+import { useAuth } from "@/lib/auth-context"
 import { useUserProfile as useHeyGenUserProfile } from "@/lib/liveavatar"
 import { useAvatarActions as useHeyGenAvatarActions } from "@/lib/liveavatar/useAvatarActions"
 import { useLiveAvatarContext as useHeyGenLiveAvatarContext } from "@/lib/liveavatar/context"
@@ -17,7 +18,7 @@ import type { RoomPlanAction, RoomPlanContext } from "./classifyRoomPlanLLM"
 import { generateSpeechLLM } from "./generateSpeechLLM"
 import { orchestrateLLM } from "./orchestrateLLM"
 import type { SpeechContext } from "./generateSpeechLLM"
-import { journeyReducer, INITIAL_JOURNEY_STATE, buildAmenityNarrative } from "./journey-machine"
+import { journeyReducer, INITIAL_JOURNEY_STATE, buildAmenityNarrative, profileCollectionAwaiting } from "./journey-machine"
 import { useIdleDetection } from "./idle-detection"
 import { buildProfileNudge } from "./profile-nudge"
 import type { JourneyState, JourneyAction, JourneyEffect, AmenityRef } from "./types"
@@ -189,6 +190,7 @@ export function useJourney(options: UseJourneyOptions) {
   const useAvatarActionsFn = options.avatarHooks?.useActions ?? (() => useHeyGenAvatarActions("FULL"))
 
   const { profile, journeyStage, setJourneyStage, updateProfile } = useUserProfileContext()
+  const { userProfile: authIdentity, returningUserData } = useAuth()
   const { profile: derivedProfile, isExtractionPending, userMessages } = useUserProfileFn()
   const { messages: allMessages } = useAvatarContextFn()
   const { repeat, interrupt, stopListening, message } = useAvatarActionsFn()
@@ -913,9 +915,78 @@ export function useJourney(options: UseJourneyOptions) {
     // During PROFILE_COLLECTION, check if the user wants to move forward
     // (covers the case where HeyGen's AI advances the conversation before our extraction catches up)
     if (stage === "PROFILE_COLLECTION") {
+      // Fast-path: explicit advance intent via regex
       const intent = classifyIntent(latestMessage)
       if (intent.type === "TRAVEL_TO_HOTEL" || intent.type === "AFFIRMATIVE") {
         dispatch({ type: "FORCE_ADVANCE" })
+        return
+      }
+
+      // Compute awaiting freshly from the merged profile. stateRef.current.awaiting
+      // lags 2.5s behind because profile updates are debounced into the reducer —
+      // the LLM needs the up-to-date picture so it doesn't re-ask already-answered
+      // questions.
+      const mergedProfile = {
+        partySize: profile.familySize ?? derivedProfile.partySize,
+        startDate: derivedProfile.startDate,
+        endDate: derivedProfile.endDate,
+        travelPurpose: profile.travelPurpose ?? derivedProfile.travelPurpose,
+        interests: derivedProfile.interests,
+        guestComposition: profile.guestComposition ?? derivedProfile.guestComposition,
+        roomAllocation: profile.roomAllocation ?? derivedProfile.roomAllocation,
+      }
+      const freshAwaiting = profileCollectionAwaiting(mergedProfile)
+
+      // Short-circuit: nothing left to collect — advance without burning an LLM round-trip.
+      if (freshAwaiting === "ready") {
+        dispatch({ type: "FORCE_ADVANCE" })
+        return
+      }
+
+      // Orchestrate: generate a follow-up question
+      if (options.enableLLMOrchestrate) {
+        // Last ~10 turns of transcript — the LLM uses this as source of truth
+        // because the structured extractor is lossy.
+        const conversationHistory = allMessages
+          .slice(-10)
+          .map((m) => ({
+            role: m.sender === MessageSender.AVATAR ? ("avatar" as const) : ("user" as const),
+            text: m.message,
+          }))
+
+        ;(async () => {
+          const result = await orchestrateLLM({
+            message: latestMessage,
+            state: stateRef.current,
+            guestFirstName: profile.firstName,
+            travelPurpose: mergedProfile.travelPurpose,
+            partySize: mergedProfile.partySize ?? undefined,
+            guestComposition: mergedProfile.guestComposition ?? undefined,
+            profileAwaiting: freshAwaiting,
+            startDate: mergedProfile.startDate ? mergedProfile.startDate.toISOString().slice(0, 10) : undefined,
+            endDate: mergedProfile.endDate ? mergedProfile.endDate.toISOString().slice(0, 10) : undefined,
+            roomAllocation: mergedProfile.roomAllocation ?? undefined,
+            identity: authIdentity,
+            personality: returningUserData?.personality ?? null,
+            preferences: returningUserData?.preferences ?? null,
+            loyalty: returningUserData?.loyalty ?? null,
+            conversationHistory,
+          })
+          // Guard: stage may have advanced while LLM was in-flight
+          if (stateRef.current.stage !== "PROFILE_COLLECTION") return
+          if (!result) return
+
+          if (
+            result.tool === "navigate_and_speak" &&
+            (result.intent.type === "TRAVEL_TO_HOTEL" || result.intent.type === "AFFIRMATIVE")
+          ) {
+            dispatch({ type: "FORCE_ADVANCE" })
+            return
+          }
+
+          interrupt()
+          repeat(result.speech).catch(() => undefined)
+        })()
       }
       return
     }

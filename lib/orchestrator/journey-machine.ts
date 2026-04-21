@@ -26,7 +26,7 @@ export function buildAmenityNarrative(name: string, scene: string): string {
 
 type ProfileCollectionAwaiting = Extract<JourneyState, { stage: "PROFILE_COLLECTION" }>["awaiting"]
 
-function profileCollectionAwaiting(
+export function profileCollectionAwaiting(
   profile: {
     partySize?: number; startDate?: Date | null; endDate?: Date | null;
     travelPurpose?: string; interests: string[];

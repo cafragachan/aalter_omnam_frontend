@@ -1,6 +1,12 @@
 import type { UserIntent } from "./intents"
 import type { RoomPlanAction } from "./classifyRoomPlanLLM"
 import type { JourneyState } from "./types"
+import type { UserDBProfile } from "@/lib/auth-context"
+import type {
+  PersistedPersonality,
+  PersistedPreferences,
+  PersistedLoyalty,
+} from "@/lib/firebase/types"
 
 // ---------------------------------------------------------------------------
 // OrchestrateResult — discriminated union of the 3 tool types
@@ -25,6 +31,15 @@ export interface OrchestrateInput {
   partySize?: number
   budgetRange?: string
   guestComposition?: { adults: number; children: number } | null
+  profileAwaiting?: string
+  startDate?: string
+  endDate?: string
+  roomAllocation?: number[]
+  identity?: UserDBProfile | null
+  personality?: PersistedPersonality | null
+  preferences?: PersistedPreferences | null
+  loyalty?: PersistedLoyalty | null
+  conversationHistory?: { role: "user" | "avatar"; text: string }[]
 }
 
 // ---------------------------------------------------------------------------
@@ -72,6 +87,15 @@ export async function orchestrateLLM(
         partySize: rest.partySize,
         budgetRange: rest.budgetRange,
         guestComposition: rest.guestComposition,
+        profileAwaiting: rest.profileAwaiting,
+        startDate: rest.startDate,
+        endDate: rest.endDate,
+        roomAllocation: rest.roomAllocation,
+        identity: rest.identity,
+        personality: rest.personality,
+        preferences: rest.preferences,
+        loyalty: rest.loyalty,
+        conversationHistory: rest.conversationHistory,
       }),
     })
 

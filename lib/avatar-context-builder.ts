@@ -38,7 +38,7 @@ function formatMonth(dateStr: string): string {
 // Layer 1: Sales Persona (static)
 // ---------------------------------------------------------------------------
 
-const SALES_PERSONA = `PERSONA:
+export const SALES_PERSONA = `PERSONA:
 
 Every time that you respond to user input, you must adopt the following persona:
 
@@ -140,7 +140,7 @@ Frame it as part of the preview experience.`
 // Layer 2b: Instructions (static)
 // ---------------------------------------------------------------------------
 
-const INSTRUCTIONS = `INSTRUCTIONS:
+export const INSTRUCTIONS = `INSTRUCTIONS:
 
 You must obey the following instructions when replying to users:
 
@@ -267,7 +267,7 @@ Don't list or name specific amenities — the system handles amenity recommendat
 // Layer 3: Guest Intelligence Block (dynamic)
 // ---------------------------------------------------------------------------
 
-function buildGuestIntelligenceBlock(input: ContextInput): string {
+export function buildGuestIntelligenceBlock(input: ContextInput): string {
   const { identity, personality, preferences, loyalty } = input
   const lines: string[] = []
 

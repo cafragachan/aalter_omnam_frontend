@@ -1,4 +1,11 @@
 import { z } from "zod"
+import { SALES_PERSONA, buildGuestIntelligenceBlock } from "@/lib/avatar-context-builder"
+import type { UserDBProfile } from "@/lib/auth-context"
+import type {
+  PersistedPersonality,
+  PersistedPreferences,
+  PersistedLoyalty,
+} from "@/lib/firebase/types"
 
 // ---------------------------------------------------------------------------
 // Intent enum — mirrors UserIntent from lib/orchestrator/intents.ts
@@ -98,6 +105,15 @@ interface RequestBody {
   travelPurpose?: string
   guestFirstName?: string
   interests?: string[]
+  profileAwaiting?: string
+  startDate?: string
+  endDate?: string
+  roomAllocation?: number[]
+  identity?: UserDBProfile | null
+  personality?: PersistedPersonality | null
+  preferences?: PersistedPreferences | null
+  loyalty?: PersistedLoyalty | null
+  conversationHistory?: { role: "user" | "avatar"; text: string }[]
 }
 
 // ---------------------------------------------------------------------------
@@ -105,6 +121,7 @@ interface RequestBody {
 // ---------------------------------------------------------------------------
 
 function buildSystemPrompt(body: RequestBody): string {
+  const isProfileCollection = body.journeyContext.stage === "PROFILE_COLLECTION"
   const hasRooms = body.rooms && body.rooms.length > 0
 
   // --- Room catalog block (only when rooms are provided) ---
@@ -127,6 +144,113 @@ function buildSystemPrompt(body: RequestBody): string {
   if (body.guestFirstName) contextBlock += `\n- Guest name: ${body.guestFirstName}`
   if (body.interests?.length) contextBlock += `\n- Interests: ${body.interests.join(", ")}`
   const guestBlock = contextBlock ? `\n\n## Guest context${contextBlock}` : ""
+
+  // --- Profile collection block ---
+  let profileCollectionBlock = ""
+  if (isProfileCollection) {
+    // Summarise what's actually on file so the LLM reasons about present data,
+    // not just the single profileAwaiting label.
+    const collectedLines: string[] = []
+    if (body.startDate && body.endDate) {
+      collectedLines.push(`- Dates: ${body.startDate} to ${body.endDate}`)
+    } else if (body.startDate) {
+      collectedLines.push(`- Start date: ${body.startDate} (end date missing)`)
+    } else if (body.endDate) {
+      collectedLines.push(`- End date: ${body.endDate} (start date missing)`)
+    }
+    if (body.partySize) {
+      collectedLines.push(`- Party size: ${body.partySize} guest${body.partySize === 1 ? "" : "s"}`)
+    }
+    if (body.guestComposition) {
+      collectedLines.push(`- Guest composition: ${body.guestComposition.adults} adults, ${body.guestComposition.children} children`)
+    }
+    if (body.travelPurpose) {
+      collectedLines.push(`- Travel purpose: ${body.travelPurpose}`)
+    }
+    if (body.roomAllocation?.length) {
+      collectedLines.push(`- Room distribution: ${body.roomAllocation.join(" + ")} (${body.roomAllocation.length} room${body.roomAllocation.length === 1 ? "" : "s"})`)
+    }
+    if (body.guestFirstName) {
+      collectedLines.push(`- Guest name: ${body.guestFirstName}`)
+    }
+    const collectedSummary = collectedLines.length
+      ? collectedLines.join("\n")
+      : "- (nothing collected yet)"
+
+    // Full Ava persona replaces the minimal "you are Ava" blurb.
+    const personaBlock = SALES_PERSONA
+
+    // Conversation transcript. Truth-source for what's been discussed —
+    // the structured profile extractor is lossy, so the LLM should trust
+    // the transcript first.
+    let transcriptBlock = ""
+    if (body.conversationHistory?.length) {
+      const lines = body.conversationHistory.map((m) => {
+        const speaker = m.role === "avatar" ? "Avatar" : "Guest"
+        return `${speaker}: ${m.text}`
+      })
+      transcriptBlock = `\n\n## Conversation so far\n${lines.join("\n")}`
+    }
+
+    // Guest intelligence (personality, preferences, loyalty) is only useful
+    // when we have an identity to anchor it. Without identity we skip the
+    // block entirely — the fallback generic prompt is fine for cold starts.
+    let intelligenceBlock = ""
+    if (body.identity && (body.personality || body.preferences || body.loyalty)) {
+      intelligenceBlock = `\n\n${buildGuestIntelligenceBlock({
+        identity: body.identity,
+        personality: body.personality ?? null,
+        preferences: body.preferences ?? null,
+        loyalty: body.loyalty ?? null,
+      })}`
+    }
+
+    profileCollectionBlock = `\n\n## PROFILE_COLLECTION
+
+${personaBlock}${intelligenceBlock}${transcriptBlock}
+
+### Source of truth
+Look at the conversation history above. Identify what the guest has ALREADY told you, even if the structured profile data below doesn't reflect it — the extractor sometimes misses things. Never ask about something the guest already mentioned. If the guest has implicitly answered a field (e.g., "we're a family" implies travel purpose = family vacation; "the two of us" implies 2 adults, 0 children), accept it and move on. Then determine what is still missing from the four required fields and ask about the next one in priority order. The structured fields (partySize, guestComposition, etc.) and \`profileAwaiting\` below are HINTS, not authority — the conversation is the source of truth.
+
+### Required fields (collect in this priority order)
+1. **Travel dates** — when the guest plans to travel
+2. **Guest composition** — total party size, broken down into adults vs children
+3. **Travel purpose** — why they are traveling (romantic getaway, family vacation, business, celebration, etc.)
+4. **Room distribution** — how to split the guests across rooms (only relevant when party size > 1)
+
+### What is missing
+\`profileAwaiting\` tells you what is still needed:
+- "dates_and_guests" — need both travel dates and guest count
+- "dates" — need travel dates
+- "guests" — need total guest count
+- "guest_breakdown" — need adults vs children split
+- "travel_purpose" — need why they are traveling
+- "room_distribution" — need how to split guests across rooms
+- "ready" — all required fields are collected
+
+Current profileAwaiting: ${body.profileAwaiting ?? "unknown"}
+
+### Already collected
+${collectedSummary}
+
+### Conversation style
+- Keep responses to 1-2 sentences per turn, 3 max. Spoken aloud, not typed.
+- Sound like a real person, not a chatbot. Use natural filler words occasionally ("Let's see...", "Oh, that's lovely").
+- Ask ONE thing at a time. Never list multiple questions in a single turn.
+- Briefly acknowledge what the guest just said, then ask about the next missing field.
+- If the guest goes off-topic or asks unrelated questions, answer briefly (one short sentence) and redirect naturally to the next missing field. Examples:
+  - "That sounds lovely — and just so I can get everything ready for you, when were you thinking of visiting?"
+  - "Great question — I'll make a note. By the way, how many of you will be traveling?"
+  - "Absolutely. And what's the occasion for this trip — leisure, business, something special?"
+- Warm luxury concierge tone — observant and proactive, not robotic, not overly enthusiastic.
+- Do NOT invent hotel facts, room names, prices, or amenities not provided in the guest context.
+- Do NOT ask for firstName, lastName, email, phone, or date of birth — those are already known.
+
+### Tool selection
+- If \`profileAwaiting === "ready"\` OR the guest clearly wants to advance ("let's go", "I'm ready", "take me to the hotel", "let's continue") → return **navigate_and_speak** with \`intent: "TRAVEL_TO_HOTEL"\` and a brief transition speech.
+- Otherwise → return **no_action_speak** with the next follow-up question.
+- Do NOT use adjust_room_plan during PROFILE_COLLECTION — room planning happens later.`
+  }
 
   return `You are Ava, an AI concierge for a luxury hotel metaverse experience. Given a user message and journey context, you must do TWO things in a single call: (1) classify what the user wants, and (2) generate a natural spoken response.
 
@@ -199,7 +323,7 @@ Every tool call MUST include a "speech" field — a natural spoken response for 
 ## Tool Selection
 
 - Use **navigate_and_speak** for navigation intents (ROOMS, BACK, AMENITY_BY_NAME, AFFIRMATIVE, NEGATIVE, TRAVEL_TO_HOTEL, etc.) and other non-room-plan intents.${hasRooms ? "\n- Use **adjust_room_plan** for room plan requests (budget changes, room composition, distribution, preferences)." : ""}
-- Use **no_action_speak** when the message doesn't map to any navigation or room plan action — just generate a helpful spoken response.${roomBlock}${guestBlock}`
+- Use **no_action_speak** when the message doesn't map to any navigation or room plan action — just generate a helpful spoken response.${roomBlock}${guestBlock}${profileCollectionBlock}`
 }
 
 // ---------------------------------------------------------------------------
@@ -215,7 +339,7 @@ interface OpenAITool {
   }
 }
 
-function buildTools(hasRooms: boolean) {
+function buildTools(hasRooms: boolean, includeAdjustRoomPlan = true) {
   const tools: OpenAITool[] = [
     {
       type: "function" as const,
@@ -245,7 +369,7 @@ function buildTools(hasRooms: boolean) {
     },
   ]
 
-  if (hasRooms) {
+  if (hasRooms && includeAdjustRoomPlan) {
     tools.push({
       type: "function" as const,
       function: {
@@ -367,8 +491,9 @@ export async function POST(request: Request) {
     }
 
     const hasRooms = !!(body.rooms && body.rooms.length > 0)
+    const isProfileCollection = body.journeyContext.stage === "PROFILE_COLLECTION"
     const systemPrompt = buildSystemPrompt(body)
-    const tools = buildTools(hasRooms)
+    const tools = buildTools(hasRooms, !isProfileCollection)
 
     // Build journey context block for user message
     const jc = body.journeyContext

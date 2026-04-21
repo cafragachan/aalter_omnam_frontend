@@ -15,6 +15,8 @@ import { UnitDetailPanel } from "@/components/panels/UnitDetailPanel"
 import { useUserProfileContext } from "@/lib/context"
 import { useApp } from "@/lib/store"
 import { useAuth } from "@/lib/auth-context"
+import { buildOpeningText, type ContextInput } from "@/lib/avatar-context-builder"
+import { useAvatarActions } from "@/lib/liveavatar/useAvatarActions"
 import { useEmit } from "@/lib/events"
 import { useJourney } from "@/lib/orchestrator"
 import { useUE5Bridge } from "@/lib/ue5/bridge"
@@ -26,7 +28,7 @@ import { GlassPanel } from "@/components/glass-panel"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { useIncrementalPersistence } from "@/lib/firebase/useIncrementalPersistence"
-import { SessionState } from "@heygen/liveavatar-web-sdk"
+import { SessionState, VoiceChatState } from "@heygen/liveavatar-web-sdk"
 
 // ---------------------------------------------------------------------------
 // Typewriter intro constants & component
@@ -650,8 +652,6 @@ export default function HomePage() {
   const [ue5Ready, setUe5Ready] = useState(false)
   const [ue5Hidden, setUe5Hidden] = useState(false)
   const [sessionToken, setSessionToken] = useState<string | null>(null)
-  const [contextId, setContextId] = useState<string | null>(null)
-  const contextIdRef = useRef<string | null>(null)
   const sessionUserIdRef = useRef<string | null>(null)
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const [error, setError] = useState<string | null>(null)
@@ -668,20 +668,9 @@ export default function HomePage() {
     vagonMachineIdRef.current = vagon.machineId
   }, [vagon.machineId])
 
-  // Cleanup ephemeral context + Vagon machine on tab close / navigation away
+  // Cleanup Vagon machine on tab close / navigation away
   useEffect(() => {
     const handleUnload = () => {
-      // Cleanup HeyGen ephemeral context
-      if (contextIdRef.current) {
-        navigator.sendBeacon(
-          "/api/cleanup-context",
-          new Blob(
-            [JSON.stringify({ context_id: contextIdRef.current })],
-            { type: "application/json" },
-          ),
-        )
-      }
-
       // Stop Vagon machine via server-side proxy (beacon can't set HMAC headers)
       if (vagonMachineIdRef.current) {
         navigator.sendBeacon(
@@ -746,9 +735,6 @@ export default function HomePage() {
         }
         const data = await res.json()
         setSessionToken(data.session_token)
-        const newContextId = data.context_id ?? null
-        setContextId(newContextId)
-        contextIdRef.current = newContextId
       } catch (err) {
         setError((err as Error).message)
       }
@@ -815,7 +801,7 @@ export default function HomePage() {
           )} */}
           {sessionToken && (
             <LiveAvatarContextProvider sessionAccessToken={sessionToken}>
-              <HomePageContent ephemeralContextId={contextId} onHideUE5Stream={() => setUe5Hidden(true)} />
+              <HomePageContent onHideUE5Stream={() => setUe5Hidden(true)} />
             </LiveAvatarContextProvider>
           )}
         </>
@@ -828,14 +814,15 @@ export default function HomePage() {
 // HomePageContent — thin layout shell (all hooks available)
 // ---------------------------------------------------------------------------
 
-function HomePageContent({ ephemeralContextId, onHideUE5Stream }: { ephemeralContextId: string | null; onHideUE5Stream: () => void }) {
+function HomePageContent({ onHideUE5Stream }: { onHideUE5Stream: () => void }) {
   const { selectHotel, selectedHotel } = useApp()
   const { profile, journeyStage, setJourneyStage, updateProfile } = useUserProfileContext()
   const emit = useEmit()
-  const { sessionState, sessionRef } = useLiveAvatarContext()
+  const { sessionState, sessionRef, voiceChatState } = useLiveAvatarContext()
+  const { repeat } = useAvatarActions()
   useDebugLogger()
   const { writeEndOfSessionSnapshot } = useIncrementalPersistence()
-  const { returningUserData } = useAuth()
+  const { userProfile, returningUserData } = useAuth()
 
   // --- Pre-populate profile from returning user's persisted preferences ---
   const hasHydratedRef = useRef(false)
@@ -855,6 +842,21 @@ function HomePageContent({ ephemeralContextId, onHideUE5Stream }: { ephemeralCon
       familySize: comp ? comp.adults + comp.children : undefined,
     })
   }, [returningUserData, updateProfile])
+
+  // --- Speak opening greeting when avatar stream is ready ---
+  const hasGreetedRef = useRef(false)
+  useEffect(() => {
+    if (voiceChatState !== VoiceChatState.ACTIVE || hasGreetedRef.current || !userProfile) return
+    hasGreetedRef.current = true
+
+    const contextInput: ContextInput = {
+      identity: userProfile,
+      personality: returningUserData?.personality ?? null,
+      preferences: returningUserData?.preferences ?? null,
+      loyalty: returningUserData?.loyalty ?? null,
+    }
+    repeat(buildOpeningText(contextInput))
+  }, [voiceChatState, userProfile, returningUserData, repeat])
 
   // --- UI panel visibility (local state, driven by orchestrator callbacks) ---
   const [showRoomsPanel, setShowRoomsPanel] = useState(false)
@@ -961,21 +963,12 @@ function HomePageContent({ ephemeralContextId, onHideUE5Stream }: { ephemeralCon
     enableLLMOrchestrate: true,
   })
 
-  // --- End-of-session snapshot + cleanup ephemeral context on HeyGen disconnect ---
+  // --- End-of-session snapshot on HeyGen disconnect ---
   useEffect(() => {
     if (sessionState === SessionState.DISCONNECTED) {
       writeEndOfSessionSnapshot()
-      if (ephemeralContextId) {
-        fetch("/api/cleanup-context", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ context_id: ephemeralContextId }),
-        }).catch(() => {
-          // Non-critical — fire and forget
-        })
-      }
     }
-  }, [sessionState, writeEndOfSessionSnapshot, ephemeralContextId])
+  }, [sessionState, writeEndOfSessionSnapshot])
 
   // NOTE: visibilitychange persistence is now handled inside useIncrementalPersistence.
   // Data is written incrementally throughout the session, so closing the tab only
