@@ -101,7 +101,7 @@ interface RequestBody {
   rooms?: RoomInfo[]
   partySize?: number
   budgetRange?: string
-  guestComposition?: { adults: number; children: number }
+  guestComposition?: { adults: number; children: number; childrenAges?: number[] }
   travelPurpose?: string
   guestFirstName?: string
   interests?: string[]
@@ -137,7 +137,10 @@ function buildSystemPrompt(body: RequestBody): string {
   let contextBlock = ""
   if (body.partySize) contextBlock += `\n- Party size: ${body.partySize} guests`
   if (body.guestComposition) {
-    contextBlock += `\n- Guest composition: ${body.guestComposition.adults} adults, ${body.guestComposition.children} children`
+    const agesSuffix = body.guestComposition.childrenAges?.length
+      ? ` (ages ${body.guestComposition.childrenAges.join(", ")})`
+      : ""
+    contextBlock += `\n- Guest composition: ${body.guestComposition.adults} adults, ${body.guestComposition.children} children${agesSuffix}`
   }
   if (body.budgetRange) contextBlock += `\n- Budget range: ${body.budgetRange}`
   if (body.travelPurpose) contextBlock += `\n- Travel purpose: ${body.travelPurpose}`
@@ -162,7 +165,10 @@ function buildSystemPrompt(body: RequestBody): string {
       collectedLines.push(`- Party size: ${body.partySize} guest${body.partySize === 1 ? "" : "s"}`)
     }
     if (body.guestComposition) {
-      collectedLines.push(`- Guest composition: ${body.guestComposition.adults} adults, ${body.guestComposition.children} children`)
+      const agesSuffix = body.guestComposition.childrenAges?.length
+        ? ` (ages ${body.guestComposition.childrenAges.join(", ")})`
+        : ""
+      collectedLines.push(`- Guest composition: ${body.guestComposition.adults} adults, ${body.guestComposition.children} children${agesSuffix}`)
     }
     if (body.travelPurpose) {
       collectedLines.push(`- Travel purpose: ${body.travelPurpose}`)
@@ -216,9 +222,11 @@ Never ask the guest to confirm something they already said. If a field appears i
 
 ### Required fields (collect in this priority order)
 1. **Travel dates** — when the guest plans to travel
-2. **Guest composition** — total party size, broken down into adults vs children
-3. **Travel purpose** — why they are traveling (romantic getaway, family vacation, business, celebration, etc.)
-4. **Room distribution** — how to split the guests across rooms (only relevant when party size > 1)
+2. **Guest count** — total party size
+3. **Guest breakdown** — adults vs children split
+4. **Children's ages** — only if the party includes children
+5. **Travel purpose** — why they are traveling (romantic getaway, family vacation, business, celebration, etc.)
+6. **Room distribution** — how to split the guests across rooms (only relevant when party size > 1)
 
 ### What is missing
 \`profileAwaiting\` tells you what is still needed:
@@ -226,6 +234,7 @@ Never ask the guest to confirm something they already said. If a field appears i
 - "dates" — need travel dates
 - "guests" — need total guest count
 - "guest_breakdown" — need adults vs children split
+- "children_ages" — ask for the ages of the children (e.g., "And how old are the little ones?" or "What ages are your children?"). Keep it warm and natural, never clinical.
 - "travel_purpose" — need why they are traveling
 - "room_distribution" — need how to split guests across rooms
 - "ready" — all required fields are collected

@@ -30,7 +30,7 @@ export function profileCollectionAwaiting(
   profile: {
     partySize?: number; startDate?: Date | null; endDate?: Date | null;
     travelPurpose?: string; interests: string[];
-    guestComposition?: { adults: number; children: number };
+    guestComposition?: { adults: number; children: number; childrenAges?: number[] };
     roomAllocation?: number[];
   },
 ): ProfileCollectionAwaiting {
@@ -41,6 +41,12 @@ export function profileCollectionAwaiting(
   if (missingDates) return "dates"
   if (missingGuests) return "guests"
   if (profile.partySize && !profile.guestComposition) return "guest_breakdown"
+  // Ask for ages when there are children but ages aren't captured.
+  if (
+    profile.guestComposition &&
+    profile.guestComposition.children > 0 &&
+    (!profile.guestComposition.childrenAges || profile.guestComposition.childrenAges.length === 0)
+  ) return "children_ages"
   if (!profile.travelPurpose) return "travel_purpose"
   // Solo travelers don't need room distribution
   if ((profile.partySize ?? 1) > 1 && !profile.roomAllocation) return "room_distribution"
