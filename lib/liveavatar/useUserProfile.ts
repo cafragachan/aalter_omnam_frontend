@@ -1,8 +1,7 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useMemo } from "react"
 import { useLiveAvatarContext } from "./context"
-import { useUserProfileContext } from "@/lib/context"
 import { MessageSender } from "./types"
 
 export type AvatarDerivedProfile = {
@@ -23,70 +22,6 @@ export type AvatarDerivedProfile = {
   guestComposition?: { adults: number; children: number; childrenAges?: number[] }
   distributionPreference?: "together" | "separate" | "auto"
   roomAllocation?: number[]
-}
-
-type AIExtractedProfile = {
-  name?: string | null
-  partySize?: number | null
-  destination?: string | null
-  startDate?: string | null
-  endDate?: string | null
-  interests?: string[]
-  travelPurpose?: string | null
-  budgetRange?: string | null
-  roomTypePreference?: string | null
-  dietaryRestrictions?: string[]
-  accessibilityNeeds?: string[]
-  amenityPriorities?: string[]
-  nationality?: string | null
-  arrivalTime?: string | null
-  guestComposition?: { adults: number; children: number; childrenAges?: number[] } | null
-  distributionPreference?: "together" | "separate" | "auto" | null
-  roomAllocation?: number[] | null
-}
-
-function mergeGuestComposition(
-  prev: AIExtractedProfile["guestComposition"] | undefined,
-  next: AIExtractedProfile["guestComposition"] | undefined,
-): AIExtractedProfile["guestComposition"] {
-  // Deep-merge so a later extraction that only captures childrenAges doesn't
-  // wipe out adults/children from the earlier one, and vice versa.
-  if (!next) return prev ?? null
-  if (!prev) return next
-  return {
-    adults: next.adults ?? prev.adults,
-    children: next.children ?? prev.children,
-    childrenAges:
-      next.childrenAges && next.childrenAges.length > 0
-        ? next.childrenAges
-        : prev.childrenAges,
-  }
-}
-
-function mergeAIProfiles(
-  prev: AIExtractedProfile | null,
-  next: AIExtractedProfile,
-): AIExtractedProfile {
-  if (!prev) return next
-  return {
-    name: next.name ?? prev.name,
-    partySize: next.partySize ?? prev.partySize,
-    destination: next.destination ?? prev.destination,
-    startDate: next.startDate ?? prev.startDate,
-    endDate: next.endDate ?? prev.endDate,
-    interests: Array.from(new Set([...(prev.interests ?? []), ...(next.interests ?? [])])),
-    travelPurpose: next.travelPurpose ?? prev.travelPurpose,
-    budgetRange: next.budgetRange ?? prev.budgetRange,
-    roomTypePreference: next.roomTypePreference ?? prev.roomTypePreference,
-    dietaryRestrictions: Array.from(new Set([...(prev.dietaryRestrictions ?? []), ...(next.dietaryRestrictions ?? [])])),
-    accessibilityNeeds: Array.from(new Set([...(prev.accessibilityNeeds ?? []), ...(next.accessibilityNeeds ?? [])])),
-    amenityPriorities: Array.from(new Set([...(prev.amenityPriorities ?? []), ...(next.amenityPriorities ?? [])])),
-    nationality: next.nationality ?? prev.nationality,
-    arrivalTime: next.arrivalTime ?? prev.arrivalTime,
-    guestComposition: mergeGuestComposition(prev.guestComposition ?? undefined, next.guestComposition ?? undefined),
-    distributionPreference: next.distributionPreference ?? prev.distributionPreference,
-    roomAllocation: next.roomAllocation ?? prev.roomAllocation,
-  }
 }
 
 const clean = (text: string) => text.trim().replace(/\s+/g, " ")
@@ -535,21 +470,22 @@ export const extractWithRegex = (
   return result
 }
 
+/**
+ * Phase 9: regex is the sole client-side extractor. All authoritative profile
+ * writes come through orchestrate (profile_turn during PROFILE_COLLECTION,
+ * or `profileUpdates` on the non-profile tools post-PROFILE_COLLECTION).
+ *
+ * `isExtracting` / `isExtractionPending` are kept in the return type for
+ * consumer stability (SandboxLiveAvatar, ProfileSync, useJourney still read
+ * them) but they always resolve to `false` now — regex is synchronous.
+ */
 export const useUserProfile = (): {
   profile: AvatarDerivedProfile
   userMessages: { message: string; timestamp: number }[]
-  triggerAIExtraction: () => Promise<void>
   isExtracting: boolean
   isExtractionPending: boolean
-  aiAvailable: boolean
 } => {
   const { messages } = useLiveAvatarContext()
-  const { journeyStage } = useUserProfileContext()
-  const [aiProfile, setAiProfile] = useState<AIExtractedProfile | null>(null)
-  const [isExtracting, setIsExtracting] = useState(false)
-  const [aiAvailable, setAiAvailable] = useState(true) // Assume available until proven otherwise
-  const lastExtractedCount = useRef(0)
-  const lastSentIndexRef = useRef(0)
 
   const userMessages = useMemo(
     () =>
@@ -559,128 +495,7 @@ export const useUserProfile = (): {
     [messages],
   )
 
-  const regexProfile = useMemo(() => extractWithRegex(userMessages), [userMessages])
+  const profile = useMemo(() => extractWithRegex(userMessages), [userMessages])
 
-  // Merge regex and AI extracted profiles
-  const profile = useMemo((): AvatarDerivedProfile => {
-    if (!aiProfile) return regexProfile
-
-    const mergedInterests = new Set([
-      ...regexProfile.interests,
-      ...(aiProfile.interests ?? []),
-    ])
-
-    const mergedDietary = new Set([
-      ...(regexProfile.dietaryRestrictions ?? []),
-      ...(aiProfile.dietaryRestrictions ?? []),
-    ])
-    const mergedAccessibility = new Set([
-      ...(regexProfile.accessibilityNeeds ?? []),
-      ...(aiProfile.accessibilityNeeds ?? []),
-    ])
-
-    return {
-      name: aiProfile.name ?? regexProfile.name,
-      partySize: aiProfile.partySize ?? regexProfile.partySize,
-      destination: aiProfile.destination ?? regexProfile.destination,
-      startDate: aiProfile.startDate ? new Date(aiProfile.startDate) : regexProfile.startDate,
-      endDate: aiProfile.endDate ? new Date(aiProfile.endDate) : regexProfile.endDate,
-      interests: Array.from(mergedInterests),
-      travelPurpose: aiProfile.travelPurpose ?? regexProfile.travelPurpose,
-      budgetRange: aiProfile.budgetRange ?? regexProfile.budgetRange,
-      roomTypePreference: aiProfile.roomTypePreference ?? regexProfile.roomTypePreference,
-      dietaryRestrictions: mergedDietary.size > 0 ? Array.from(mergedDietary) : undefined,
-      accessibilityNeeds: mergedAccessibility.size > 0 ? Array.from(mergedAccessibility) : undefined,
-      amenityPriorities: aiProfile.amenityPriorities ?? regexProfile.amenityPriorities,
-      nationality: aiProfile.nationality ?? regexProfile.nationality,
-      arrivalTime: aiProfile.arrivalTime ?? regexProfile.arrivalTime,
-      guestComposition: aiProfile.guestComposition ?? regexProfile.guestComposition,
-      distributionPreference: aiProfile.distributionPreference ?? regexProfile.distributionPreference,
-      roomAllocation: aiProfile.roomAllocation ?? regexProfile.roomAllocation,
-    }
-  }, [regexProfile, aiProfile])
-
-  const triggerAIExtraction = useCallback(async () => {
-    // Skip if AI is not available or already extracting
-    if (!aiAvailable) return
-    if (userMessages.length === 0 || isExtracting) return
-    if (userMessages.length === lastExtractedCount.current) return
-
-    // Only send utterances the AI hasn't seen yet
-    const newUtterances = userMessages.slice(lastSentIndexRef.current).map((m) => m.message)
-    if (newUtterances.length === 0) return
-
-    setIsExtracting(true)
-    try {
-      const response = await fetch("/api/extract-profile", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          utterances: newUtterances,
-          currentProfile: aiProfile ?? regexProfile,
-        }),
-      })
-
-      // 501 means AI extraction is not configured - stop trying
-      if (response.status === 501) {
-        console.info("AI extraction not configured, using regex-only extraction")
-        lastExtractedCount.current = userMessages.length
-        lastSentIndexRef.current = userMessages.length
-        setAiAvailable(false)
-        return
-      }
-
-      if (response.ok) {
-        const data = await response.json()
-        if (data.profile) {
-          setAiProfile((prev) => mergeAIProfiles(prev, data.profile))
-          lastExtractedCount.current = userMessages.length
-        }
-      } else {
-        // Other errors - log but don't disable AI
-        console.warn("AI extraction returned error:", response.status)
-      }
-    } catch (error) {
-      console.error("AI extraction failed:", error)
-    } finally {
-      // Even if extraction fails, mark current batch as processed so the UI doesn't stay blocked
-      lastExtractedCount.current = userMessages.length
-      lastSentIndexRef.current = userMessages.length
-      setIsExtracting(false)
-    }
-  }, [userMessages, regexProfile, aiProfile, isExtracting, aiAvailable])
-
-  // Auto-trigger AI extraction when new messages arrive (debounced)
-  useEffect(() => {
-    if (userMessages.length === 0) return
-    if (userMessages.length === lastExtractedCount.current) return
-
-    // When AI is not available, immediately mark messages as processed
-    // so isExtractionPending resolves to false (regex-only mode works fine)
-    if (!aiAvailable) {
-      lastExtractedCount.current = userMessages.length
-      return
-    }
-
-    // Phase 2: orchestrate owns profile extraction during PROFILE_COLLECTION.
-    // Skip /api/extract-profile entirely here to stop racing with the
-    // authoritative writer and to stop polluting UserProfileContext with
-    // values from a weaker model. Still mark messages as processed so UI
-    // spinners resolve and the extractor resumes on later stages.
-    if (journeyStage === "PROFILE_COLLECTION") {
-      lastExtractedCount.current = userMessages.length
-      lastSentIndexRef.current = userMessages.length
-      return
-    }
-
-    const timer = setTimeout(() => {
-      triggerAIExtraction()
-    }, 800) // Wait 800ms after last message
-
-    return () => clearTimeout(timer)
-  }, [userMessages.length, triggerAIExtraction, aiAvailable, journeyStage])
-
-  const isExtractionPending = aiAvailable && (isExtracting || userMessages.length > lastExtractedCount.current)
-
-  return { profile, userMessages, triggerAIExtraction, isExtracting, isExtractionPending, aiAvailable }
+  return { profile, userMessages, isExtracting: false, isExtractionPending: false }
 }

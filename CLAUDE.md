@@ -16,7 +16,7 @@ The user talks to an AI avatar concierge (Ava) who guides them through a multi-s
 - **Styling**: Tailwind CSS v4, glassmorphism design system
 - **AI Avatar**: HeyGen LiveAvatar SDK (`@heygen/liveavatar-web-sdk`) — voice chat, TTS, green-screen chroma-key canvas rendering
 - **3D Backend**: UE5 pixel stream via iframe + WebSocket signalling on `ws://localhost:7788`
-- **NLP**: OpenAI `gpt-4o-mini` for profile extraction (optional, falls back to regex)
+- **NLP**: OpenAI `gpt-4o-mini` via `/api/orchestrate` — unified decider for intent classification, profile extraction, and speech generation every turn
 - **UI Components**: shadcn/ui library in `components/ui/`
 
 ## Architecture Overview
@@ -46,7 +46,7 @@ The user talks to an AI avatar concierge (Ava) who guides them through a multi-s
 ### Data Flow
 
 1. **User speaks** → HeyGen transcribes → messages stored in `LiveAvatarContext`
-2. **useUserProfile** extracts structured data (regex + optional AI) → `AvatarDerivedProfile`
+2. **useUserProfile** extracts structured data via regex → `AvatarDerivedProfile` (authoritative writes come from orchestrate's `profile_turn` tool and `profileUpdates` on the navigation tools)
 3. **ProfileSync** syncs extracted data → `UserProfileContext` (global state)
 4. **useJourney** watches profile + messages → runs through `journeyReducer` (pure state machine) → produces effects
 5. **Effects** execute: avatar speaks (`repeat()`), UE5 commands sent, UI panels open/close, fade transitions
@@ -69,8 +69,8 @@ app/
 ├── login/page.tsx             # Auth page
 ├── layout.tsx                 # Root layout: UserProfileProvider > AppProvider > EventBusProvider
 ├── api/
-│   ├── start-sandbox-session/ # POST → HeyGen session token
-│   └── extract-profile/       # POST → OpenAI profile extraction
+│   ├── start-sandbox-session/ # POST → HeyGen session token + hotel catalog
+│   └── orchestrate/           # POST → unified LLM decider (intent + profile + speech)
 
 lib/
 ├── orchestrator/              # AI orchestration layer
@@ -84,7 +84,7 @@ lib/
 ├── useUE5WebSocket.ts         # Low-level WebSocket transport (ws://localhost:7788)
 ├── liveavatar/                # HeyGen SDK integration
 │   ├── context.tsx            # LiveAvatarContextProvider (session, messages, voice state)
-│   ├── useUserProfile.ts      # Dual-mode extraction (regex + AI) → AvatarDerivedProfile
+│   ├── useUserProfile.ts      # Regex-only extraction → AvatarDerivedProfile (authoritative writes come from orchestrate)
 │   ├── useAvatarActions.ts    # interrupt(), repeat(text), startListening(), stopListening()
 │   ├── useSession.ts          # Session lifecycle (start, attach, stop)
 │   ├── types.ts               # Message types, sender enum
@@ -149,7 +149,7 @@ HEYGEN_AVATAR_ID=
 HEYGEN_VOICE_ID=
 HEYGEN_CONTEXT_ID=
 
-# OpenAI (optional — regex fallback if missing)
+# OpenAI (required for /api/orchestrate)
 OPENAI_API_KEY=
 
 # UE5 stream URL

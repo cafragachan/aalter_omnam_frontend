@@ -64,12 +64,12 @@ export function ProfileSync() {
     if (!storedProfile.lastName && inferredLastName) {
       updates.lastName = inferredLastName
     }
-    // Phase 2: orchestrate is the sole writer for the six profile-collection
-    // fields (startDate, endDate, partySize/familySize, guestComposition,
-    // travelPurpose, roomAllocation). ProfileSync NEVER writes them —
-    // regex + /api/extract-profile are lossy and would race the LLM.
-    // ProfileSync keeps writing the passive-observation fields below
-    // (interests, destination, budget, preferences, etc.).
+    // Orchestrate is the sole writer for the six profile-collection fields
+    // (startDate, endDate, partySize/familySize, guestComposition,
+    // travelPurpose, roomAllocation) at every stage — `profile_turn` during
+    // PROFILE_COLLECTION, `profileUpdates` on the navigation tools after.
+    // ProfileSync NEVER writes them; it only persists passive-observation
+    // fields (interests, destination, budget, preferences, etc.).
     if (profile.destination) {
       updates.destination = profile.destination
     }

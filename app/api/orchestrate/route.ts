@@ -40,10 +40,26 @@ const INTENT_VALUES = [
 // Zod schemas for tool argument validation
 // ---------------------------------------------------------------------------
 
+// ProfileUpdatesSchema — shared by profile_turn (PROFILE_COLLECTION) and the
+// three non-profile tools (mid-conversation corrections at all other stages).
+const ProfileUpdatesSchema = z.object({
+  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  partySize: z.number().int().positive().optional(),
+  guestComposition: z.object({
+    adults: z.number().int().nonnegative().optional(),
+    children: z.number().int().nonnegative().optional(),
+    childrenAges: z.array(z.number().int().nonnegative()).optional(),
+  }).optional(),
+  travelPurpose: z.string().optional(),
+  roomAllocation: z.array(z.number().int().positive()).optional(),
+}).partial()
+
 const NavigateAndSpeakSchema = z.object({
   intent: z.enum(INTENT_VALUES),
   amenityName: z.string().optional(),
   speech: z.string().min(1).max(500),
+  profileUpdates: ProfileUpdatesSchema.optional(),
 })
 
 const AdjustRoomPlanSchema = z.object({
@@ -64,26 +80,13 @@ const AdjustRoomPlanSchema = z.object({
   budget_range: z.string().optional(),
   distribution_preference: z.string().optional(),
   room_type_preference: z.string().optional(),
+  profileUpdates: ProfileUpdatesSchema.optional(),
 })
 
 const NoActionSpeakSchema = z.object({
   speech: z.string().min(1).max(500),
+  profileUpdates: ProfileUpdatesSchema.optional(),
 })
-
-// profile_turn — used only during PROFILE_COLLECTION. The LLM owns
-// extraction, next-question decision, and speech in a single tool call.
-const ProfileUpdatesSchema = z.object({
-  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-  endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-  partySize: z.number().int().positive().optional(),
-  guestComposition: z.object({
-    adults: z.number().int().nonnegative().optional(),
-    children: z.number().int().nonnegative().optional(),
-    childrenAges: z.array(z.number().int().nonnegative()).optional(),
-  }).optional(),
-  travelPurpose: z.string().optional(),
-  roomAllocation: z.array(z.number().int().positive()).optional(),
-}).partial()
 
 const ProfileTurnSchema = z.object({
   // reasoning comes first so the model is forced to think before emitting
@@ -538,14 +541,10 @@ ${collectedSummary}`
   // profile view, the LLM can override stale body fields when the conversation
   // clearly disagrees (e.g., guest said "we're 6 not 8" mid-exploration).
   //
-  // Known gap flagged for Phase 9: the `navigate_and_speak` / `adjust_room_plan`
-  // / `no_action_speak` tools do NOT accept profileUpdates. So if the LLM
-  // detects a party-size correction in the transcript here, it cannot persist
-  // it server-side this turn — it can only use the corrected value to shape
-  // its reply. Actual profile writes still come through profile_turn (which
-  // only fires in PROFILE_COLLECTION) or client-side extract-profile spam
-  // (which Phase 9 will delete, replacing with a universal profileUpdates
-  // slot on the envelope).
+  // Phase 9: all four tools (`navigate_and_speak`, `adjust_room_plan`,
+  // `no_action_speak`, `profile_turn`) accept `profileUpdates`. Mid-exploration
+  // corrections ("we're 6 not 8", "switch to May 15–20") are persisted by
+  // setting that field on whichever tool the LLM is calling this turn.
   let transcriptReconstructionBlock = ""
   if (!isProfileCollection && body.conversationHistory?.length) {
     const lines = body.conversationHistory.map((m) => {
@@ -567,7 +566,7 @@ ${reconstructedSummary}
 
 The transcript above is ground truth. The "Reconstructed profile" block is assembled from the client's local state which is frequently stale (React context lags debounced extraction). When the transcript and the reconstructed profile disagree — e.g., the guest said "we're 8 people" but Party size reads "1", or the guest corrected themselves mid-journey ("actually we're 6 not 8") — TRUST THE TRANSCRIPT. Let your speech and any navigation intent reflect the transcript-derived truth, not the stale field.
 
-This is advisory only; do not emit hallucinated navigation to "fix" profile data — the current tools (navigate_and_speak / adjust_room_plan / no_action_speak) don't persist profile updates. Just make sure your speech references the correct numbers and your intent classification doesn't act on a stale prior.`
+When you detect a correction or supplement (e.g., "we're 6 not 8", "switch to May 15–20", "actually mom is joining too"), ALSO set the \`profileUpdates\` field on whichever tool you're calling this turn with the corrected field(s). Only include fields that actually changed from the reconstructed profile; omit everything else. This is how mid-journey corrections get persisted — don't just mention the correction in speech and move on.`
   }
 
   return `You are Ava, an AI concierge for a luxury hotel metaverse experience. Given a user message and journey context, you must do TWO things in a single call: (1) classify what the user wants, and (2) generate a natural spoken response.
@@ -641,7 +640,11 @@ Every tool call MUST include a "speech" field — a natural spoken response for 
 ## Tool Selection
 
 - Use **navigate_and_speak** for navigation intents (ROOMS, BACK, AMENITY_BY_NAME, AFFIRMATIVE, NEGATIVE, TRAVEL_TO_HOTEL, etc.) and other non-room-plan intents.${hasRooms ? "\n- Use **adjust_room_plan** for room plan requests (budget changes, room composition, distribution, preferences)." : ""}
-- Use **no_action_speak** when the message doesn't map to any navigation or room plan action — just generate a helpful spoken response.${regexHintBlock}${roomBlock}${guestBlock}${transcriptReconstructionBlock}${profileCollectionBlock}`
+- Use **no_action_speak** when the message doesn't map to any navigation or room plan action — just generate a helpful spoken response.
+
+## Profile Corrections (all stages)
+
+If during any turn the user corrects or supplements profile data (examples: "we're 6 not 8", "actually mom is joining too", "switch to May 15–20", "call me Lisa not Cesar"), set the optional \`profileUpdates\` field on whichever tool you're calling with the corrected field(s). Do NOT use \`profile_turn\` for mid-exploration corrections — only use \`profileUpdates\` on the tool that fits the user's primary intent (usually \`navigate_and_speak\` or \`no_action_speak\`; \`adjust_room_plan\` if party size change requires rebalancing rooms). Only include fields that changed — omit everything else. Profile writes are idempotent and safe to emit alongside any action.${regexHintBlock}${roomBlock}${guestBlock}${transcriptReconstructionBlock}${profileCollectionBlock}`
 }
 
 // ---------------------------------------------------------------------------
@@ -1077,6 +1080,12 @@ type TurnDecisionWire = {
   speech: string
   reasoning?: string
   proposal?: { kind: TurnDecisionProposalKind; targetId?: string; label?: string }
+  /**
+   * Phase 9: mid-conversation profile corrections can ride on any tool's
+   * response. Top-level field so callers apply it uniformly regardless of
+   * which action type fired. Identical shape to profile_turn.profileUpdates.
+   */
+  profileUpdates?: Record<string, unknown>
 }
 
 function proposalForIntent(
@@ -1117,6 +1126,18 @@ function buildTurnDecision(args: {
     ? `${reasoning ? `${reasoning} | ` : ""}validator_override=${validatorOverride}`
     : reasoning
 
+  // Phase 9: any tool can carry mid-conversation profileUpdates. Extract once
+  // and surface as a top-level envelope field when non-empty.
+  const envelopeProfileUpdates =
+    result.profileUpdates &&
+    typeof result.profileUpdates === "object" &&
+    Object.keys(result.profileUpdates as Record<string, unknown>).length > 0
+      ? (result.profileUpdates as Record<string, unknown>)
+      : undefined
+  const profileUpdatesSuffix = envelopeProfileUpdates
+    ? { profileUpdates: envelopeProfileUpdates }
+    : {}
+
   if (functionName === "navigate_and_speak") {
     const intent = typeof result.intent === "string" ? result.intent : "UNKNOWN"
     const amenityName =
@@ -1135,6 +1156,7 @@ function buildTurnDecision(args: {
       speech,
       ...(reasoningAnnotated ? { reasoning: reasoningAnnotated } : {}),
       ...(proposal ? { proposal } : {}),
+      ...profileUpdatesSuffix,
     }
   }
 
@@ -1160,6 +1182,7 @@ function buildTurnDecision(args: {
       action: { type: "ROOM_PLAN_ACTION", action, updates },
       speech,
       ...(reasoningAnnotated ? { reasoning: reasoningAnnotated } : {}),
+      ...profileUpdatesSuffix,
     }
   }
 
@@ -1169,20 +1192,15 @@ function buildTurnDecision(args: {
       decisionVal === "ask_next" || decisionVal === "clarify" || decisionVal === "ready"
         ? decisionVal
         : "ask_next"
-    const profileUpdates =
-      result.profileUpdates && typeof result.profileUpdates === "object"
-        ? (result.profileUpdates as Record<string, unknown>)
-        : undefined
     return {
       action: {
         type: "PROFILE_TURN_RESULT",
         decision,
-        ...(profileUpdates && Object.keys(profileUpdates).length > 0
-          ? { profileUpdates }
-          : {}),
+        ...(envelopeProfileUpdates ? { profileUpdates: envelopeProfileUpdates } : {}),
       },
       speech,
       ...(reasoningAnnotated ? { reasoning: reasoningAnnotated } : {}),
+      ...profileUpdatesSuffix,
     }
   }
 
@@ -1192,6 +1210,7 @@ function buildTurnDecision(args: {
     action: { type: "NO_ACTION" },
     speech,
     ...(reasoningAnnotated ? { reasoning: reasoningAnnotated } : {}),
+    ...profileUpdatesSuffix,
   }
 }
 
@@ -1359,10 +1378,25 @@ export async function POST(request: Request) {
       const cleanSpeech = (s: unknown) =>
         shouldStripPreamble && typeof s === "string" ? stripPreamble(s) : s
 
+      // Phase 9: mid-conversation profile corrections surface on the 3
+      // non-profile tools via an optional `profileUpdates` field. Pass it
+      // through to the client whenever present so the correction is applied
+      // with the same idempotent write path as profile_turn.
+      const passThroughProfileUpdates = (): void => {
+        if (
+          result.profileUpdates &&
+          typeof result.profileUpdates === "object" &&
+          Object.keys(result.profileUpdates).length > 0
+        ) {
+          responseBody.profileUpdates = result.profileUpdates
+        }
+      }
+
       if (functionName === "navigate_and_speak") {
         responseBody.intent = result.intent
         if (result.amenityName) responseBody.amenityName = result.amenityName
         responseBody.speech = cleanSpeech(result.speech)
+        passThroughProfileUpdates()
       } else if (functionName === "adjust_room_plan") {
         responseBody.action = result.action
         // Pack flat fields back into a params object for the client
@@ -1376,6 +1410,7 @@ export async function POST(request: Request) {
           room_type_preference: result.room_type_preference,
         }
         responseBody.speech = cleanSpeech(result.speech)
+        passThroughProfileUpdates()
       } else if (functionName === "profile_turn") {
         responseBody.reasoning = result.reasoning
         responseBody.profileUpdates = result.profileUpdates ?? {}
@@ -1384,6 +1419,7 @@ export async function POST(request: Request) {
       } else {
         // no_action_speak
         responseBody.speech = cleanSpeech(result.speech)
+        passThroughProfileUpdates()
       }
 
       // --- Phase 1: TurnDecision envelope -------------------------------

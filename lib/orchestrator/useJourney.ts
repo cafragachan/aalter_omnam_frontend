@@ -386,6 +386,54 @@ export function useJourney(options: UseJourneyOptions) {
     URL.revokeObjectURL(url)
   }, [profile, derivedProfile, guestIntelligence, journeyStage, userMessages])
 
+  // --- Apply profileUpdates from any orchestrate tool result ---
+  //
+  // Shared mapping: server `profileUpdates` (startDate / endDate as ISO
+  // strings, partySize or guestComposition, travelPurpose, roomAllocation)
+  // → UserProfile context updates. Idempotent. Logs [PROFILE_UPDATE→APPLY]
+  // with the source tool so mid-conversation corrections are traceable.
+  const applyOrchestrateProfileUpdates = useCallback((
+    pu: Record<string, unknown> | null | undefined,
+    source: "profile_turn" | "navigate_and_speak" | "adjust_room_plan" | "no_action_speak" | "envelope",
+  ) => {
+    if (!pu || typeof pu !== "object" || Object.keys(pu).length === 0) return
+    const updates: Partial<import("@/lib/context").UserProfile> = {}
+    const startDate = pu.startDate
+    const endDate = pu.endDate
+    const partySize = pu.partySize
+    const guestComposition = pu.guestComposition
+    const travelPurpose = pu.travelPurpose
+    const roomAllocation = pu.roomAllocation
+    if (typeof startDate === "string") updates.startDate = new Date(startDate)
+    if (typeof endDate === "string") updates.endDate = new Date(endDate)
+    if (guestComposition && typeof guestComposition === "object") {
+      const gc = guestComposition as { adults?: number; children?: number; childrenAges?: number[] }
+      // UPDATE_PROFILE deep-merges guestComposition, so partial updates
+      // (e.g. just childrenAges) preserve adults/children from prior state.
+      updates.guestComposition = gc as import("@/lib/context").GuestComposition
+      if (typeof gc.adults === "number" && typeof gc.children === "number") {
+        updates.familySize = gc.adults + gc.children
+      }
+    } else if (typeof partySize === "number") {
+      updates.familySize = partySize
+    }
+    if (typeof travelPurpose === "string") updates.travelPurpose = travelPurpose
+    if (Array.isArray(roomAllocation)) updates.roomAllocation = roomAllocation as number[]
+    if (Object.keys(updates).length > 0) {
+      // eslint-disable-next-line no-console
+      console.log("[PROFILE_UPDATE→APPLY]", JSON.stringify({
+        source,
+        llmProfileUpdates: pu,
+        mappedToContextUpdates: {
+          ...updates,
+          startDate: updates.startDate?.toISOString?.() ?? undefined,
+          endDate: updates.endDate?.toISOString?.() ?? undefined,
+        },
+      }))
+      updateProfile(updates)
+    }
+  }, [updateProfile])
+
   // --- Effect executor ---
   //
   // `source` explains where the effect list originated so the [EFFECT] log
@@ -805,9 +853,16 @@ export function useJourney(options: UseJourneyOptions) {
           match: envelope ? decisionsMatch(legacy, envelope.action) : false,
           envelopeSpeech: envelope?.speech,
         })
+        // Phase 9: even in shadow mode (where regex drives dispatch), apply
+        // any mid-conversation profile correction the LLM attached. Writes
+        // are idempotent; this is the sole write path post-extract-profile.
+        applyOrchestrateProfileUpdates(
+          (envelope as { profileUpdates?: Record<string, unknown> } | undefined)?.profileUpdates,
+          "envelope",
+        )
       })()
     },
-    [profile, derivedProfile, rooms, allMessages],
+    [profile, derivedProfile, rooms, allMessages, applyOrchestrateProfileUpdates],
   )
 
   /** Dispatch LIST_AMENITIES action with pre-computed hotel data */
@@ -1720,6 +1775,13 @@ export function useJourney(options: UseJourneyOptions) {
             latencyMs,
             pathway: "orchestrate",
           })
+          // Phase 9: apply any mid-conversation profile correction the LLM
+          // attached to this envelope, regardless of whether dispatch came
+          // from regex or envelope action. Profile writes are idempotent.
+          applyOrchestrateProfileUpdates(
+            (envelope as { profileUpdates?: Record<string, unknown> }).profileUpdates,
+            "envelope",
+          )
           preGeneratedSpeechRef.current = envelope.speech
           processIntent(fullIntentObject, latestMessage, currentState, stage)
           logDecisionCompare(
@@ -1740,6 +1802,10 @@ export function useJourney(options: UseJourneyOptions) {
             latencyMs,
             pathway: "orchestrate",
           })
+          applyOrchestrateProfileUpdates(
+            (result as { profileUpdates?: Record<string, unknown> }).profileUpdates,
+            "no_action_speak",
+          )
           interrupt()
           repeat(result.speech).catch(() => undefined)
           logDecisionCompare({ type: "NO_ACTION" }, result.decision_envelope)
@@ -1757,6 +1823,10 @@ export function useJourney(options: UseJourneyOptions) {
             latencyMs,
             pathway: "orchestrate",
           })
+          applyOrchestrateProfileUpdates(
+            (result as { profileUpdates?: Record<string, unknown> }).profileUpdates,
+            "adjust_room_plan",
+          )
           preGeneratedSpeechRef.current = result.speech
           const handled = executeRoomPlanAction(result.action, latestMessage)
           if (!handled) {
@@ -1814,6 +1884,10 @@ export function useJourney(options: UseJourneyOptions) {
           latencyMs,
           pathway: "orchestrate",
         })
+        applyOrchestrateProfileUpdates(
+          (result as { profileUpdates?: Record<string, unknown> }).profileUpdates,
+          "navigate_and_speak",
+        )
         preGeneratedSpeechRef.current = result.speech
         processIntent(result.intent, latestMessage, currentState, stage)
         logDecisionCompare(
@@ -1841,8 +1915,8 @@ export function useJourney(options: UseJourneyOptions) {
 
     // Note: `profile` and `derivedProfile` are intentionally NOT in this deps
     // array. They churn constantly during a session (ProfileSync updates,
-    // regex extractor updates per transcription, /api/extract-profile spam) —
-    // every churn re-runs this effect and fires the `cancelled = true`
+    // regex extractor updates per transcription) — every churn re-runs this
+    // effect and fires the `cancelled = true`
     // cleanup on the previous run, which silently killed legitimate in-flight
     // orchestrate calls (see Phase 3 on-mode blocker). We read the freshest
     // profile/derivedProfile via profileRef.current / derivedProfileRef.current
