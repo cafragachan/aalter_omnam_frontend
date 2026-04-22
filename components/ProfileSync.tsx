@@ -1,23 +1,11 @@
 "use client"
 
 import { useEffect, useRef } from "react"
-import { useUserProfile as useHeyGenUserProfile } from "@/lib/liveavatar"
+import { useUserProfile } from "@/lib/liveavatar"
 import { useUserProfileContext, type UserProfile } from "@/lib/context"
-import type { AvatarDerivedProfile } from "@/lib/liveavatar/useUserProfile"
 
-// Stage 5: same DI pattern as useJourney / useIncrementalPersistence.
-// /home renders <ProfileSync /> (defaults to HeyGen). /home-v2 passes
-// the @/lib/livekit useUserProfile hook via the prop.
-type ProfileSyncProps = {
-  useProfileHook?: () => {
-    profile: AvatarDerivedProfile
-    isExtractionPending: boolean
-  }
-}
-
-export function ProfileSync({ useProfileHook }: ProfileSyncProps = {}) {
-  const useProfileFn = useProfileHook ?? useHeyGenUserProfile
-  const { profile, isExtractionPending } = useProfileFn()
+export function ProfileSync() {
+  const { profile, isExtractionPending } = useUserProfile()
   const { profile: storedProfile, updateProfile } = useUserProfileContext()
   const lastSyncRef = useRef<string>("")
 

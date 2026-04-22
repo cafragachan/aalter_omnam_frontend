@@ -6,7 +6,6 @@ import "./globals.css"
 import { OmnamStoreProvider } from "@/lib/omnam-store"
 import { Toaster } from "@/components/ui/toaster"
 import { AuthProvider } from "@/lib/auth-context"
-import { EventBusProvider } from "@/lib/events"
 import { GuestIntelligenceProvider } from "@/lib/guest-intelligence"
 
 const manrope = Manrope({ subsets: ["latin"], variable: "--font-sans-custom" })
@@ -49,19 +48,17 @@ export default function RootLayout({
       <body className={`${manrope.variable} ${jetbrainsMono.variable} ${openSans.variable} font-sans antialiased`}>
         <AuthProvider>
           <OmnamStoreProvider>
-            <EventBusProvider>
-              <GuestIntelligenceProvider>
-                {children}
-                <Toaster />
-                <div className="pointer-events-none fixed bottom-8 right-8 z-50">
-                  <img
-                    src="/omnam-logo-white.png"
-                    alt="Omnam"
-                    className="h-10 w-auto opacity-75"
-                  />
-                </div>
-              </GuestIntelligenceProvider>
-            </EventBusProvider>
+            <GuestIntelligenceProvider>
+              {children}
+              <Toaster />
+              <div className="pointer-events-none fixed bottom-8 right-8 z-50">
+                <img
+                  src="/omnam-logo-white.png"
+                  alt="Omnam"
+                  className="h-10 w-auto opacity-75"
+                />
+              </div>
+            </GuestIntelligenceProvider>
           </OmnamStoreProvider>
         </AuthProvider>
       </body>

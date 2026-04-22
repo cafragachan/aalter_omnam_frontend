@@ -1,23 +1,6 @@
 # Omnam Metaverse Frontend — Project Context
 
-## ⚠️ DUAL AVATAR PATHS — READ BEFORE EDITING
-
-This project currently has **two parallel avatar implementations** during the HeyGen → LiveKit migration. Both must remain functional until cutover is explicitly approved.
-
-| Path | Page | Provider folder | Status |
-|---|---|---|---|
-| Current | `/home` | `lib/liveavatar/` (HeyGen LiveAvatar SDK) | Production, fully working |
-| Deprecated | `/home-v2` | `lib/livekit/` (LiveKit + Hedra + OpenAI Realtime) | Delete soon|
-
-**Rules when editing:**
-
-1. **Always state which path you are touching.** Every edit, plan, or PR description must name the path (`/home` current, `/home-v2` deprecated) so reviewers can reason about scope.
-2. **Shared code must work for both paths; no path-specific changes** to `lib/orchestrator/`, `lib/events.ts`, `lib/ue5/`, `components/panels/`, `lib/hotel-data.ts`, `lib/guest-intelligence/`, or the profile contexts. Never make a change in those areas that only fits one provider.
-3. **Do NOT delete `lib/liveavatar/` or `app/home/page.tsx` until cutover is explicitly approved.** The legacy path is the production fallback while the LiveKit path is being built and validated.
-4. **New LiveKit code lives only in:** `lib/livekit/`, `agent/`, `app/home-v2/`, `components/livekit/`, `app/api/livekit-token/`, `app/api/start-livekit-session/`. Never put LiveKit code under `lib/liveavatar/`.
-5. **The two paths share the user-profile context, hotel data, and the journey machine.** When changing those, manually verify both `/home` and `/home-v2` still behave correctly before declaring done.
-
-The full migration plan lives at `C:\Users\CesarFragachan\.claude\plans\declarative-crafting-pixel.md`.
+> **Historical note.** The project was migrating from HeyGen (`/home`) to LiveKit + Hedra + OpenAI-Realtime (`/home-v2`). The migration was abandoned; only the `/home` path remains. Historical context is preserved in git history.
 
 ---
 
@@ -43,19 +26,21 @@ The user talks to an AI avatar concierge (Ava) who guides them through a multi-s
 │              HomePage (app/home/page.tsx)        │
 │   Session init → LiveAvatarContextProvider      │
 │   └─ HomePageContent (thin layout shell)        │
-└──────┬──────────────────────────┬───────────────┘
-       │                          │
-┌──────▼──────┐          ┌────────▼────────┐
-│  EventBus   │◄────────►│ useJourney()    │
-│  (pub/sub)  │          │ (state machine) │
-│ lib/events  │          │ lib/orchestrator│
-└──────┬──────┘          └────────┬────────┘
-       │                          │
-┌──────▼──────┐          ┌────────▼────────┐
-│ UE5 Bridge  │          │ IntentClassifier│
-│ lib/ue5/    │          │ lib/orchestrator│
-│ bridge.ts   │          │ /intents.ts     │
-└─────────────┘          └─────────────────┘
+└──────────────────────┬───────────────────────────┘
+                       │
+              ┌────────▼────────┐
+              │ useJourney()    │
+              │ (state machine) │
+              │ lib/orchestrator│
+              └────────┬────────┘
+                       │
+        ┌──────────────┼────────────────┐
+        │              │                │
+┌───────▼─────┐ ┌──────▼──────┐ ┌───────▼────────┐
+│ UE5 Bridge  │ │ Orchestrate │ │ IntentClassifier│
+│ lib/ue5/    │ │ /api/       │ │ lib/orchestrator│
+│ bridge.ts   │ │ orchestrate │ │ /intents.ts     │
+└─────────────┘ └─────────────┘ └─────────────────┘
 ```
 
 ### Data Flow
@@ -65,7 +50,7 @@ The user talks to an AI avatar concierge (Ava) who guides them through a multi-s
 3. **ProfileSync** syncs extracted data → `UserProfileContext` (global state)
 4. **useJourney** watches profile + messages → runs through `journeyReducer` (pure state machine) → produces effects
 5. **Effects** execute: avatar speaks (`repeat()`), UE5 commands sent, UI panels open/close, fade transitions
-6. **UI panels** emit events via **EventBus** (e.g., `ROOM_CARD_TAPPED`) → consumed by `useJourney`
+6. **UI panels** call the handlers exposed by `useJourney` directly (`onRoomCardTapped`, `onUnitSelectedUE5`, etc.) — no pub/sub
 
 ### Journey Stages
 
@@ -91,12 +76,11 @@ lib/
 ├── orchestrator/              # AI orchestration layer
 │   ├── intents.ts             # classifyIntent(message) → UserIntent (pure function, regex-based)
 │   ├── journey-machine.ts     # journeyReducer(state, action) → { nextState, effects[] } (pure)
-│   ├── useJourney.ts          # React hook: wires state machine to EventBus + avatar + UE5
+│   ├── useJourney.ts          # React hook: wires state machine to avatar + UE5
 │   ├── types.ts               # JourneyState, JourneyAction, JourneyEffect
 │   └── index.ts               # Public exports
 ├── ue5/
 │   └── bridge.ts              # useUE5Bridge(): typed UE5 commands, fade transitions, unit state
-├── events.ts                  # EventBus class + useEventBus/useEventListener/useEmit hooks
 ├── useUE5WebSocket.ts         # Low-level WebSocket transport (ws://localhost:7788)
 ├── liveavatar/                # HeyGen SDK integration
 │   ├── context.tsx            # LiveAvatarContextProvider (session, messages, voice state)
@@ -134,8 +118,8 @@ components/
 ### 2. Journey orchestration is a pure state machine
 `journeyReducer()` in `lib/orchestrator/journey-machine.ts` is a **pure function** — no React, no side effects. It takes `(state, action)` and returns `{ nextState, effects[] }`. Effects are descriptive objects (`SPEAK`, `UE5_COMMAND`, `OPEN_PANEL`, etc.) executed by the `useJourney` hook. This makes the orchestration testable and traceable.
 
-### 3. EventBus replaces pending* state
-UI panels communicate with the orchestrator through a typed pub/sub EventBus (`lib/events.ts`), not through global mutable state. Events: `ROOM_CARD_TAPPED`, `AMENITY_CARD_TAPPED`, `UNIT_SELECTED_UE5`, `HOTEL_SELECTED`, `NAVIGATE_BACK`, etc.
+### 3. UI panels call useJourney handlers directly
+UI panels (rooms, amenities, destinations, unit detail) invoke the handlers exposed by `useJourney` — `onRoomCardTapped`, `onUnitSelectedUE5`, `onAmenityCardTapped`, `onNavigateBack`, `onHotelSelected` — as props. There is no event bus; the orchestrator owns the journey transitions and the panels are pure views driven by reducer state.
 
 ### 4. Intent classification is centralized
 All regex-based user intent detection lives in `lib/orchestrator/intents.ts`. The `classifyIntent(message)` function returns a typed `UserIntent` (`ROOMS`, `AMENITIES`, `LOCATION`, `INTERIOR`, `EXTERIOR`, `BACK`, `HOTEL_EXPLORE`, `UNKNOWN`). Designed to be swappable for AI-based NLU.
@@ -175,18 +159,18 @@ NEXT_PUBLIC_VAGON_STREAM_URL=http://127.0.0.1
 ## Context Providers (nesting order in layout + page)
 
 ```
-<UserProfileProvider>           ← lib/context.tsx (profile, journeyStage)
-  <AppProvider>                 ← lib/store.tsx (auth, selectedHotel, bookings)
-    <EventBusProvider>          ← lib/events.ts (pub/sub)
-      <LiveAvatarContextProvider>  ← lib/liveavatar/context.tsx (avatar session, messages)
-        <HomePageContent />        ← app/home/page.tsx
+<AuthProvider>                         ← lib/auth-context (user identity)
+  <OmnamStoreProvider>                 ← lib/omnam-store.tsx (profile + app + journey state)
+    <GuestIntelligenceProvider>        ← lib/guest-intelligence (behavioral tracking)
+      <LiveAvatarContextProvider>      ← lib/liveavatar/context.tsx (avatar session, messages)
+        <HomePageContent />            ← app/home/page.tsx
       </LiveAvatarContextProvider>
-    </EventBusProvider>
-  </AppProvider>
-</UserProfileProvider>
+    </GuestIntelligenceProvider>
+  </OmnamStoreProvider>
+</AuthProvider>
 ```
 
-Note: `LiveAvatarContextProvider` is rendered conditionally in `app/home/page.tsx` only after the session token is fetched. The other three providers wrap the entire app in `app/layout.tsx`.
+Note: `LiveAvatarContextProvider` is rendered conditionally in `app/home/page.tsx` only after the session token is fetched. The other providers wrap the entire app in `app/layout.tsx`. `lib/context.tsx` (`UserProfileProvider` / `useUserProfileContext`) and `lib/store.tsx` (`AppProvider` / `useApp`) are thin compat shims that read from `OmnamStoreProvider`.
 
 ## Commands
 

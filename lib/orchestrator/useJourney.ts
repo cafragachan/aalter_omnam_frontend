@@ -8,8 +8,6 @@ import { useUserProfile as useHeyGenUserProfile } from "@/lib/liveavatar"
 import { useAvatarActions as useHeyGenAvatarActions } from "@/lib/liveavatar/useAvatarActions"
 import { useLiveAvatarContext as useHeyGenLiveAvatarContext } from "@/lib/liveavatar/context"
 import { MessageSender } from "@/lib/liveavatar/types"
-import type { LiveAvatarSessionMessage } from "@/lib/liveavatar/types"
-import type { AvatarDerivedProfile } from "@/lib/liveavatar/useUserProfile"
 import { useGuestIntelligence } from "@/lib/guest-intelligence"
 import { classifyIntent, classifyAvatarProposal, type UserIntent } from "./intents"
 import { classifyIntentLLM } from "./classifyIntentLLM"
@@ -167,30 +165,6 @@ function useJourneyStateRef(omnamStore: ReturnType<typeof useOmnamStore>): {
 // useJourney — wires the pure state machine to React
 // ---------------------------------------------------------------------------
 
-/**
- * Shape of the avatar-backend hooks useJourney depends on. Structural
- * subset shared by the legacy `@/lib/liveavatar` hooks and the new
- * `@/lib/livekit` hooks (Stage 3 mirrored the shape byte-for-byte).
- */
-export type UseJourneyAvatarHooks = {
-  useContext: () => { messages: LiveAvatarSessionMessage[]; isAvatarTalking: boolean; isUserTalking: boolean }
-  useActions: () => {
-    interrupt: () => unknown
-    repeat: (text: string) => Promise<unknown>
-    startListening: () => unknown
-    stopListening: () => unknown
-    message: (text: string) => void
-  }
-  useProfile: () => {
-    profile: AvatarDerivedProfile
-    userMessages: { message: string; timestamp: number }[]
-    triggerAIExtraction: () => Promise<void>
-    isExtracting: boolean
-    isExtractionPending: boolean
-    aiAvailable: boolean
-  }
-}
-
 type UseJourneyOptions = {
   onOpenPanel: (panel: "rooms" | "amenities" | "location") => void
   onClosePanels: () => void
@@ -273,28 +247,6 @@ type UseJourneyOptions = {
    * instant rollback to the pure LLM path.
    */
   useProfileFastPath?: boolean
-  /**
-   * Stage 5 (LiveKit path): when provided, SPEAK effects are routed
-   * through this callback instead of interrupt()+repeat() on the avatar
-   * session. Legacy /home does not pass this — default behavior is
-   * preserved exactly. /home-v2 passes a function that forwards the
-   * text as a `narration_nudge` on the LiveKit data channel.
-   */
-  onSpeak?: (text: string) => void
-  /**
-   * Stage 5 (LiveKit path): pluggable avatar-backend hooks. When
-   * omitted, defaults to `@/lib/liveavatar` (HeyGen) — legacy /home's
-   * behavior is byte-for-byte unchanged. /home-v2 passes the matching
-   * `@/lib/livekit` hooks so the same reducer runs against the LiveKit
-   * data flow (messages, repeat/interrupt, profile extraction) without
-   * touching useJourney's imports.
-   *
-   * This is the seam that lets a single shared orchestrator power both
-   * avatar paths. It is mandatory — not just optional — for /home-v2,
-   * because the default HeyGen hooks throw when called without a
-   * LiveAvatarContextProvider mounted.
-   */
-  avatarHooks?: UseJourneyAvatarHooks
 }
 
 export function useJourney(options: UseJourneyOptions) {
@@ -352,19 +304,11 @@ export function useJourney(options: UseJourneyOptions) {
   // Phase 2.5: default ON. Caller passes false to disable.
   const useProfileFastPath = options.useProfileFastPath ?? true
 
-  // Resolve avatar-backend hooks. Default: legacy HeyGen hooks. /home-v2
-  // passes the `@/lib/livekit` equivalents via options.avatarHooks. The
-  // resolved functions are stable across renders because options.avatarHooks
-  // is fixed for the component's lifetime, so Rules of Hooks is satisfied.
-  const useAvatarContextFn = options.avatarHooks?.useContext ?? useHeyGenLiveAvatarContext
-  const useUserProfileFn = options.avatarHooks?.useProfile ?? useHeyGenUserProfile
-  const useAvatarActionsFn = options.avatarHooks?.useActions ?? (() => useHeyGenAvatarActions("FULL"))
-
   const { profile, journeyStage, setJourneyStage, updateProfile } = useUserProfileContext()
   const { userProfile: authIdentity, returningUserData } = useAuth()
-  const { profile: derivedProfile, isExtractionPending, userMessages } = useUserProfileFn()
-  const { messages: allMessages } = useAvatarContextFn()
-  const { repeat, interrupt, stopListening } = useAvatarActionsFn()
+  const { profile: derivedProfile, isExtractionPending, userMessages } = useHeyGenUserProfile()
+  const { messages: allMessages } = useHeyGenLiveAvatarContext()
+  const { repeat, interrupt, stopListening } = useHeyGenAvatarActions("FULL")
   const guestIntelligence = useGuestIntelligence()
   const { trackQuestion, trackRoomExplored, trackAmenityExplored, trackRequirement, startRoomTimer, startAmenityTimer, stopExplorationTimer, setBookingOutcome } = guestIntelligence
 
@@ -537,32 +481,15 @@ export function useJourney(options: UseJourneyOptions) {
     effects: JourneyEffect[],
     source: EffectEntry["source"] = "reducer",
   ) => {
-    // Phase 7 Pass (a): the reducer dual-emits SPEAK_INTENT then SPEAK for the
-    // same logical utterance. The executor prefers SPEAK_INTENT (structured);
-    // when it fires, the paired legacy SPEAK in the same batch is skipped so
-    // we don't speak twice. Reset per-batch (per `executeEffects` call).
-    let speechFiredThisBatch = false
     for (const effect of effects) {
       // Log every effect before running it. Strip only the discriminant.
       const { type: _effectType, ...params } = effect as { type: string } & Record<string, unknown>
-      // Speech effects (SPEAK, SPEAK_INTENT) log themselves inside their case
-      // so they can attach `speechSource`. Everything else logs here.
-      if (effect.type !== "SPEAK" && effect.type !== "SPEAK_INTENT") {
+      // SPEAK_INTENT logs itself inside its case so it can attach `speechSource`.
+      if (effect.type !== "SPEAK_INTENT") {
         logEffect({ type: effect.type, params: params as Record<string, unknown>, source })
       }
       switch (effect.type) {
         case "SPEAK_INTENT": {
-          if (speechFiredThisBatch) {
-            // Shouldn't normally happen — reducer emits at most one speech
-            // pair per batch — but stay defensive.
-            logEffect({
-              type: effect.type,
-              params: params as Record<string, unknown>,
-              source,
-              speechSource: "legacy_SPEAK_skipped",
-            })
-            break
-          }
           let text: string
           let speechSource: EffectEntry["speechSource"]
           if (preGeneratedSpeechRef.current !== null) {
@@ -579,49 +506,10 @@ export function useJourney(options: UseJourneyOptions) {
             source,
             speechSource,
           })
-          if (options.onSpeak) {
-            options.onSpeak(text)
-          } else {
-            interrupt()
-            repeat(text).catch(() => undefined)
-          }
-          speechFiredThisBatch = true
+          interrupt()
+          repeat(text).catch(() => undefined)
           break
         }
-        case "SPEAK":
-          if (speechFiredThisBatch) {
-            // A SPEAK_INTENT already fired for this logical utterance. The
-            // paired legacy SPEAK is a no-op in Pass (a); Pass (b) will drop
-            // the reducer-side push entirely.
-            logEffect({
-              type: effect.type,
-              params: params as Record<string, unknown>,
-              source,
-              speechSource: "legacy_SPEAK_skipped",
-            })
-            break
-          }
-          logEffect({
-            type: effect.type,
-            params: params as Record<string, unknown>,
-            source,
-            speechSource: "legacy_SPEAK",
-          })
-          if (options.onSpeak) {
-            options.onSpeak(effect.text)
-          } else if (preGeneratedSpeechRef.current !== null) {
-            const preGenerated = preGeneratedSpeechRef.current
-            preGeneratedSpeechRef.current = null
-            interrupt()
-            repeat(preGenerated).catch(() => undefined)
-          } else if (options.enableLLMSpeech || useUnifiedOrchestrator) {
-            void speakWithLLM(effect.text, buildSpeechContext())
-          } else {
-            interrupt()
-            repeat(effect.text).catch(() => undefined)
-          }
-          speechFiredThisBatch = true
-          break
         case "UE5_COMMAND":
           onUE5Command(effect.command, effect.value)
           break
@@ -1034,7 +922,6 @@ export function useJourney(options: UseJourneyOptions) {
   useIdleDetection({
     journeyStage,
     onIdle: handleIdle,
-    hooks: options.avatarHooks ? { useContext: options.avatarHooks.useContext } : undefined,
   })
 
   // --- React to profile changes ---

@@ -157,7 +157,6 @@ export type SpeechKey =
 export type SpeechArgs = Record<string, unknown>
 
 export type JourneyEffect =
-  | { type: "SPEAK"; text: string }
   | { type: "SPEAK_INTENT"; key: SpeechKey; args?: SpeechArgs }
   | { type: "UE5_COMMAND"; command: string; value: unknown }
   | { type: "OPEN_PANEL"; panel: "rooms" | "amenities" | "location" }

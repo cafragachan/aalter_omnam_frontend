@@ -30,12 +30,11 @@ export type EffectEntry = {
   params: Record<string, unknown>
   source: "reducer" | "orchestrate" | "event"
   /**
-   * Populated only for speech-related effects (SPEAK, SPEAK_INTENT). Phase 7
-   * Pass (a) dual-emits both variants; this field tells us which path actually
-   * spoke and whether legacy SPEAK was skipped because a SPEAK_INTENT in the
-   * same batch already fired.
+   * Populated only for SPEAK_INTENT effects. Distinguishes speech resolved
+   * from orchestrate (`llm`) vs rendered from the local key→string map
+   * (`rendered`).
    */
-  speechSource?: "llm" | "rendered" | "legacy_SPEAK" | "legacy_SPEAK_skipped"
+  speechSource?: "llm" | "rendered"
 }
 
 export type OmnamStateGetter = () => {

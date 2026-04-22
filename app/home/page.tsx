@@ -874,7 +874,7 @@ function HomePageContent({
    * Phase 2: server-packed hotel catalog. When non-null, its `rooms` and
    * `amenities` are used in place of the synchronous `getRoomsByHotelId` /
    * `getAmenitiesByHotelId` lookups. Null falls back to client-side lookups
-   * so `/home-v2` and env-flagged fallback paths keep working.
+   * so env-flagged fallback paths keep working.
    */
   catalog: HotelCatalog | null
 }) {
@@ -949,8 +949,8 @@ function HomePageContent({
   // doesn't carry (image, hotelId) are hydrated from the client-side lookups
   // so downstream panels keep the exact `Room` / `Amenity` shapes they expect.
   // When catalog is null OR the slug mismatches, fall back entirely to the
-  // legacy client-side helpers — this preserves `/home-v2` behavior and
-  // permits a rollback by dropping the server field.
+  // legacy client-side helpers — this permits a rollback by dropping the
+  // server field.
   const catalogMatchesSelected =
     catalog !== null && selectedHotelData !== undefined && catalog.hotelSlug === selectedHotelData.slug
 
@@ -1057,7 +1057,7 @@ function HomePageContent({
   // --- Journey orchestrator (runs as a hook, not a component) ---
   // Phase 6: `getInternalState` is no longer destructured here — the debug
   // surface below reads JourneyState directly from `useOmnamStore().stateRef`
-  // instead. The hook still exposes it for /home-v2's state sync bridge.
+  // instead.
   const {
     dispatch: journeyDispatch,
     onRoomCardTapped: journeyOnRoomCardTapped,

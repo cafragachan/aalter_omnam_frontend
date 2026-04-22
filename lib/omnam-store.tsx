@@ -23,9 +23,8 @@
 //   • A live `stateRef` mirrors the latest state so `useJourney` can read the
 //     freshest slice synchronously without depending on closures or timing.
 //
-// Nothing in /home-v2 imports from this file directly — it uses the compat
-// shims in `lib/context.tsx` / `lib/store.tsx`. Those shims forward to this
-// store under the hood, so both paths share the same state when rendered.
+// Consumers reach this via the compat shims in `lib/context.tsx` /
+// `lib/store.tsx`, which forward to this store under the hood.
 // ---------------------------------------------------------------------------
 
 import {
@@ -43,7 +42,7 @@ import type { JourneyState, JourneyAction, JourneyEffect } from "@/lib/orchestra
 
 // ---------------------------------------------------------------------------
 // AppState — mirror of the old AppContext shape in lib/store.tsx. Kept verbatim
-// so consumers (home page, home-v2, Firebase persistence) see the same fields.
+// so consumers (home page, Firebase persistence) see the same fields.
 // ---------------------------------------------------------------------------
 
 export type AppSearchCriteria = {

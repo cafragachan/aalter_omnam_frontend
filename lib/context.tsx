@@ -6,9 +6,9 @@
 // The actual state lives in `lib/omnam-store.tsx`. This file keeps the
 // pre-Phase-6 import surface alive so every existing consumer
 // (`useUserProfileContext`, `UserProfileProvider`, the `UserProfile` and
-// `JourneyStage` types, etc.) continues to work without changes. Both the
-// /home path and the /home-v2 path read through this shim; flipping them to
-// import from `@/lib/omnam-store` directly can happen gradually later.
+// `JourneyStage` types, etc.) continues to work without changes. Flipping
+// consumers to import from `@/lib/omnam-store` directly can happen gradually
+// later.
 //
 // See `lib/omnam-store.tsx` for the real reducer + provider.
 // ---------------------------------------------------------------------------
@@ -73,7 +73,7 @@ type UserProfileContextValue = {
 }
 
 /**
- * No-op wrapper kept for backwards compatibility with `/home-v2` imports.
+ * No-op wrapper kept for backwards compatibility with legacy imports.
  * The real store is mounted at `OmnamStoreProvider` in `app/layout.tsx`, so
  * rendering this provider simply passes children through — stacking both
  * providers is a safe no-op.
