@@ -14,7 +14,9 @@ type RoomsPanelProps = {
   onClose: () => void
   /** @deprecated Use recommendedPlan instead */
   recommendedRoomId?: string | null
-  /** Multi-room recommendation plan */
+  /** Multi-room recommendation plan — drives highlight + quantity badge. The
+   * full catalog is always rendered so the guest can see alternatives; rooms
+   * in the plan get a highlighted border and optional quantity badge. */
   recommendedPlan?: RoomPlan | null
 }
 

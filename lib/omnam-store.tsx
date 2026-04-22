@@ -76,11 +76,25 @@ export type AppState = {
 // Unified store state
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Room Planner (Phase 1) — single source of truth for the room plan displayed
+// in the rooms panel. Populated by the `useRoomPlanner` hook whenever the
+// `/api/room-planner` endpoint returns a fresh plan (on panel open or on a
+// room-edit voice message while the panel is open). `null` means "no planner
+// call has landed yet"; RoomsPanel falls back to its static catalog render.
+// ---------------------------------------------------------------------------
+export type CurrentRoomPlan = {
+  rooms: Array<{ roomId: string; quantity: number }>
+  totalPerNight: number
+  capacity: number
+}
+
 export type OmnamStoreState = {
   profile: UserProfile
   journeyStage: JourneyStage
   app: AppState
   journey: JourneyState
+  currentRoomPlan: CurrentRoomPlan | null
 }
 
 // ---------------------------------------------------------------------------
@@ -99,6 +113,8 @@ export type AppAction =
   | { type: "ADD_BOOKING"; booking: Omit<AppBooking, "id" | "createdAt"> }
   | { type: "SET_LOADING"; loading: boolean }
 
+export type RoomPlanAction = { type: "SET_ROOM_PLAN"; plan: CurrentRoomPlan }
+
 /**
  * Imperative override used to replace the pre-Phase-6 direct
  * `stateRef.current = {...}` writes in `useJourney`. Does not run the journey
@@ -112,6 +128,7 @@ export type OmnamStoreAction =
   | AppAction
   | JourneyAction
   | JourneyOverrideAction
+  | RoomPlanAction
 
 // ---------------------------------------------------------------------------
 // Profile merge — copied from lib/context.tsx so the deep-merge semantics for
@@ -184,6 +201,7 @@ export const INITIAL_OMNAM_STORE_STATE: OmnamStoreState = {
   journeyStage: "PROFILE_COLLECTION",
   app: INITIAL_APP_STATE,
   journey: INITIAL_JOURNEY_STATE,
+  currentRoomPlan: null,
 }
 
 // ---------------------------------------------------------------------------
@@ -206,6 +224,9 @@ function isAppAction(a: OmnamStoreAction): a is AppAction {
 }
 function isJourneyOverride(a: OmnamStoreAction): a is JourneyOverrideAction {
   return a.type === "JOURNEY_STATE_OVERRIDE"
+}
+function isRoomPlanAction(a: OmnamStoreAction): a is RoomPlanAction {
+  return a.type === "SET_ROOM_PLAN"
 }
 
 // ---------------------------------------------------------------------------
@@ -264,6 +285,11 @@ function omnamRootReducer(
     return { ...state, journey: action.state }
   }
 
+  // Room planner (Phase 1) — additive, writes only the plan slice.
+  if (isRoomPlanAction(action)) {
+    return { ...state, currentRoomPlan: action.plan }
+  }
+
   // Journey action — delegate to the pure journey reducer. Effects are
   // discarded in this reducer body (the `dispatch` wrapper runs the journey
   // reducer separately against the live mirror so it can collect them).
@@ -318,7 +344,8 @@ export function OmnamStoreProvider({ children }: { children: ReactNode }) {
     if (
       !isProfileAction(action) &&
       !isAppAction(action) &&
-      !isJourneyOverride(action)
+      !isJourneyOverride(action) &&
+      !isRoomPlanAction(action)
     ) {
       // Journey action — run journeyReducer directly to capture effects.
       const journeyResult = journeyReducer(stateRef.current.journey, action)

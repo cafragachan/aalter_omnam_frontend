@@ -92,7 +92,9 @@
       "Bash(grep -E \"^[A-Za-z_\\\\\\\\./].*\\\\.tsx?\\\\\\(\")",
       "Bash(grep -c 'effects\\\\.push\\({ type: \"SPEAK\",' lib/orchestrator/journey-machine.ts)",
       "Bash(grep -c 'effects\\\\.push\\({ type: \"SPEAK\",')",
-      "Bash(git rm *)"
+      "Bash(git rm *)",
+      "Bash(tee /tmp/tsc.log)",
+      "Bash(echo \"EXIT:$?\")"
     ]
   }
 }

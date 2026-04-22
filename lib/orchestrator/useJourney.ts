@@ -186,6 +186,22 @@ type UseJourneyOptions = {
    * instant rollback to the pure LLM path.
    */
   useProfileFastPath?: boolean
+  /**
+   * Phase 1 Room Planner: when provided, the orchestrate result handler
+   * forwards room-edit intents to the dedicated `/api/room-planner` pipeline
+   * while the rooms panel is visible. Passed as a ref so useJourney never
+   * re-renders on planner identity changes.
+   *
+   * The companion `isRoomsPanelVisibleRef` gates the call — planner runs
+   * only when the rooms panel is currently on screen.
+   */
+  requestRoomPlanRef?: {
+    current: (
+      trigger: "panel_opened" | "user_message",
+      latestMessage?: string,
+    ) => Promise<void>
+  }
+  isRoomsPanelVisibleRef?: { current: boolean }
 }
 
 export function useJourney(options: UseJourneyOptions) {
@@ -433,6 +449,42 @@ export function useJourney(options: UseJourneyOptions) {
       updateProfile(updates)
     }
   }, [updateProfile])
+
+  // --- Phase 1 Room Planner: shared gate for Trigger 2 ---
+  //
+  // Invoked from every orchestrate-response / dispatch branch after the
+  // intent has been routed. Kicks `/api/room-planner` only when:
+  //   1) A request function was provided via options.requestRoomPlanRef,
+  //   2) The rooms panel is currently visible (options.isRoomsPanelVisibleRef),
+  //   3) The intent is a room-edit intent (ROOMS, ROOM_TOGETHER, ROOM_SEPARATE,
+  //      ROOM_AUTO, ROOM_PLAN_CHEAPER, ROOM_PLAN_COMPACT) OR the orchestrate
+  //      response fired `adjust_room_plan` (carried here as "ROOM_PLAN_ACTION").
+  //
+  // The existing `adjust_room_plan` handler + the `ROOM_CARD_TAPPED` handler
+  // remain untouched — the planner runs additively and its later-landing
+  // SET_ROOM_PLAN dispatch wins when both paths update the UI.
+  const ROOM_EDIT_INTENT_TAGS = useRef(
+    new Set<string>([
+      "ROOMS",
+      "ROOM_TOGETHER",
+      "ROOM_SEPARATE",
+      "ROOM_AUTO",
+      "ROOM_PLAN_CHEAPER",
+      "ROOM_PLAN_COMPACT",
+      "ROOM_PLAN_ACTION",
+    ]),
+  )
+  const requestRoomPlanRef = options.requestRoomPlanRef
+  const isRoomsPanelVisibleRef = options.isRoomsPanelVisibleRef
+  const maybeKickRoomPlanner = useCallback(
+    (intentTag: string, latestMessage: string) => {
+      if (!requestRoomPlanRef?.current) return
+      if (!isRoomsPanelVisibleRef?.current) return
+      if (!ROOM_EDIT_INTENT_TAGS.current.has(intentTag)) return
+      void requestRoomPlanRef.current("user_message", latestMessage)
+    },
+    [requestRoomPlanRef, isRoomsPanelVisibleRef],
+  )
 
   // --- Effect executor ---
   //
@@ -1654,6 +1706,11 @@ export function useJourney(options: UseJourneyOptions) {
         pathway: "regex-shortcircuit",
       })
       processIntent(regexIntent, latestMessage, currentState, stage)
+      // Phase 1 Room Planner: trigger 2 is flag-agnostic — room-edit intents
+      // while the panel is open should route to the planner regardless of
+      // shadow vs on mode. Kicks after processIntent so SET_ROOM_PLAN lands
+      // after any legacy-path UI mutations.
+      maybeKickRoomPlanner(regexIntent.type, latestMessage)
       fireShadowOrchestrate(
         latestMessage,
         currentState,
@@ -1784,6 +1841,13 @@ export function useJourney(options: UseJourneyOptions) {
           )
           preGeneratedSpeechRef.current = envelope.speech
           processIntent(fullIntentObject, latestMessage, currentState, stage)
+          // Phase 1 Room Planner: when the envelope intent is a room-edit
+          // intent AND the rooms panel is visible, ALSO kick the dedicated
+          // planner. The planner's SET_ROOM_PLAN dispatch fires later than
+          // the existing path's UI updates (planOverride etc.), so its
+          // output wins when both land. The existing `adjust_room_plan`
+          // handler stays — planner is additive, not a replacement.
+          maybeKickRoomPlanner(intentTag, latestMessage)
           logDecisionCompare(
             { type: "USER_INTENT", intent: intentTag },
             envelope,
@@ -1833,6 +1897,11 @@ export function useJourney(options: UseJourneyOptions) {
             preGeneratedSpeechRef.current = null
             processIntent(regexIntent, latestMessage, currentState, stage)
           }
+          // Phase 1 Room Planner: any adjust_room_plan action is a room-edit
+          // by definition. Kick the dedicated planner in parallel so the
+          // LLM-driven room list is refreshed (it will land after the
+          // executeRoomPlanAction-driven UI change and supersede it).
+          maybeKickRoomPlanner("ROOM_PLAN_ACTION", latestMessage)
           logDecisionCompare(
             { type: "ROOM_PLAN_ACTION", action: result.action.action },
             result.decision_envelope,
@@ -1890,6 +1959,11 @@ export function useJourney(options: UseJourneyOptions) {
         )
         preGeneratedSpeechRef.current = result.speech
         processIntent(result.intent, latestMessage, currentState, stage)
+        // Phase 1 Room Planner: fallback path — same room-edit intent gate
+        // as the envelope branch above. Covers the case where the envelope
+        // shape is missing/malformed but the legacy tool carried a room-edit
+        // intent.
+        maybeKickRoomPlanner(result.intent.type, latestMessage)
         logDecisionCompare(
           { type: "USER_INTENT", intent: result.intent.type },
           result.decision_envelope,
@@ -1912,6 +1986,8 @@ export function useJourney(options: UseJourneyOptions) {
       pathway: "regex-shortcircuit",
     })
     processIntent(regexIntent, latestMessage, currentState, stage)
+    // Phase 1 Room Planner: see comment in shadow branch above.
+    maybeKickRoomPlanner(regexIntent.type, latestMessage)
 
     // Note: `profile` and `derivedProfile` are intentionally NOT in this deps
     // array. They churn constantly during a session (ProfileSync updates,
@@ -1921,7 +1997,7 @@ export function useJourney(options: UseJourneyOptions) {
     // orchestrate calls (see Phase 3 on-mode blocker). We read the freshest
     // profile/derivedProfile via profileRef.current / derivedProfileRef.current
     // at call time inside the on-mode IIFE instead.
-  }, [userMessages, dispatch, trackQuestion, trackRequirement, processIntent, rooms, useUnifiedOrchestrator, useUnifiedOrchestratorMode, profileStageUsesOrchestrate, fireShadowOrchestrate, executeRoomPlanAction, interrupt, repeat])
+  }, [userMessages, dispatch, trackQuestion, trackRequirement, processIntent, rooms, useUnifiedOrchestrator, useUnifiedOrchestratorMode, profileStageUsesOrchestrate, fireShadowOrchestrate, executeRoomPlanAction, interrupt, repeat, maybeKickRoomPlanner])
 
   // --- Abort in-flight PROFILE_COLLECTION orchestrate on stage transition ---
   // When the journey leaves PROFILE_COLLECTION (e.g., FORCE_ADVANCE fired),

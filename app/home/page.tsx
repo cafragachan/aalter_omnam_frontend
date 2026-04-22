@@ -19,6 +19,7 @@ import { useAuth } from "@/lib/auth-context"
 import { buildOpeningText, type ContextInput } from "@/lib/avatar-context-builder"
 import { useAvatarActions } from "@/lib/liveavatar/useAvatarActions"
 import { useJourney } from "@/lib/orchestrator"
+import { useRoomPlanner } from "@/lib/orchestrator/useRoomPlanner"
 import { useUE5Bridge } from "@/lib/ue5/bridge"
 import { useVagonSession } from "@/lib/ue5/useVagonSession"
 import { hotels, getHotelBySlug, getRoomsByHotelId, getAmenitiesByHotelId, getRecommendedRoomId, getRecommendedRoomPlan } from "@/lib/hotel-data"
@@ -1011,7 +1012,38 @@ function HomePageContent({
   // Mutable plan override — set by dynamic adjustments (budget, compact, explicit composition)
   // Falls back to computedPlan when null. Reset when the rooms panel closes.
   const [planOverride, setPlanOverride] = useState<import("@/lib/hotel-data").RoomPlan | null>(null)
-  const recommendedPlan = planOverride ?? computedPlan
+
+  // Phase 1 Room Planner: the LLM-driven plan lives in the OmnamStore. When
+  // non-null, it supersedes both the dynamic override and the heuristic
+  // computedPlan. Resolved to a full `RoomPlan` by looking up each entry in
+  // the hotel's room catalog. When the store's plan is null (no planner call
+  // has landed yet, e.g., first paint), we fall back to the legacy plan chain.
+  const currentRoomPlan = useOmnamStore().state.currentRoomPlan
+  const plannerPlan = useMemo<import("@/lib/hotel-data").RoomPlan | null>(() => {
+    if (!currentRoomPlan || currentRoomPlan.rooms.length === 0) return null
+    const byId = new Map(rooms.map((r) => [r.id, r]))
+    const entries: import("@/lib/hotel-data").RoomPlanEntry[] = []
+    for (const entry of currentRoomPlan.rooms) {
+      const room = byId.get(entry.roomId)
+      if (!room) continue
+      const occ = parseInt(room.occupancy, 10) || 0
+      entries.push({
+        roomId: room.id,
+        roomName: room.name,
+        quantity: entry.quantity,
+        pricePerNight: room.price,
+        occupancy: occ,
+      })
+    }
+    if (entries.length === 0) return null
+    return {
+      entries,
+      totalCapacity: entries.reduce((s, e) => s + e.occupancy * e.quantity, 0),
+      totalPricePerNight: entries.reduce((s, e) => s + e.pricePerNight * e.quantity, 0),
+    }
+  }, [currentRoomPlan, rooms])
+
+  const recommendedPlan = plannerPlan ?? planOverride ?? computedPlan
 
   // --- Panel open/close callbacks (passed to useJourney) ---
   const handleOpenPanel = useCallback((panel: "rooms" | "amenities" | "location") => {
@@ -1058,6 +1090,24 @@ function HomePageContent({
   // Phase 6: `getInternalState` is no longer destructured here — the debug
   // surface below reads JourneyState directly from `useOmnamStore().stateRef`
   // instead.
+  // --- Room planner (Phase 1) ---
+  // Trigger 1 (panel_opened) fires from the useEffect below; trigger 2
+  // (user_message) fires from useJourney via the `requestRoomPlanRef` it
+  // receives as an option. We forward the stable `requestPlan` through a ref
+  // so useJourney can invoke it without needing it in a dep array.
+  const roomPlanner = useRoomPlanner()
+  const requestRoomPlanRef = useRef(roomPlanner.requestPlan)
+  useEffect(() => {
+    requestRoomPlanRef.current = roomPlanner.requestPlan
+  }, [roomPlanner.requestPlan])
+
+  // Ref view of showRoomsPanel so useJourney can tell whether the rooms panel
+  // is currently visible (Trigger 2 gate) without taking it as a reactive dep.
+  const showRoomsPanelRef = useRef(showRoomsPanel)
+  useEffect(() => {
+    showRoomsPanelRef.current = showRoomsPanel
+  }, [showRoomsPanel])
+
   const {
     dispatch: journeyDispatch,
     onRoomCardTapped: journeyOnRoomCardTapped,
@@ -1074,6 +1124,11 @@ function HomePageContent({
     onHideUE5Stream,
     amenities,
     rooms,
+    // Phase 1 Room Planner: invoked from inside useJourney's orchestrate
+    // "on"-mode result handler whenever a room-edit intent fires and the
+    // rooms panel is visible. See useJourney.ts for the gate logic.
+    requestRoomPlanRef,
+    isRoomsPanelVisibleRef: showRoomsPanelRef,
     // Phase 2: forward the server-packed catalog. useJourney stores it for
     // Phase 3 but does not use it yet — the existing amenities/rooms props
     // remain the operative channel until Phase 3 plumbs catalog into orchestrate.
@@ -1151,6 +1206,19 @@ function HomePageContent({
       occupancy: room.occupancy,
     })
   }, [journeyOnRoomCardTapped])
+
+  // --- Trigger 1: rooms panel opens → ask the planner for a fresh plan ---
+  // Fires exactly once on the false → true transition. A ref guards against
+  // React StrictMode double-effect-invocation and any incidental re-renders
+  // while the panel stays open.
+  const prevShowRoomsPanelRef = useRef(false)
+  useEffect(() => {
+    const wasOpen = prevShowRoomsPanelRef.current
+    prevShowRoomsPanelRef.current = showRoomsPanel
+    if (!wasOpen && showRoomsPanel) {
+      void requestRoomPlanRef.current("panel_opened")
+    }
+  }, [showRoomsPanel])
 
   // Phase 8: forward UE5 unit-selection events from the bridge directly to
   // useJourney. The ref indirection is needed because `useUE5Bridge` is called
