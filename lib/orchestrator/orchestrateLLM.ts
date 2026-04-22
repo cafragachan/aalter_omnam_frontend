@@ -1,7 +1,21 @@
 import { z } from "zod"
 import type { UserIntent } from "./intents"
-import type { RoomPlanAction } from "./classifyRoomPlanLLM"
 import type { JourneyState, TurnDecision } from "./types"
+
+// ---------------------------------------------------------------------------
+// RoomPlanAction — discriminated union of the 6 `adjust_room_plan` tool
+// actions returned by /api/orchestrate. Previously lived alongside the
+// standalone classifyRoomPlanLLM client; folded here after Phase 9 deletions
+// since orchestrate is the sole decider.
+// ---------------------------------------------------------------------------
+
+export type RoomPlanAction =
+  | { action: "adjust_budget"; params: { target_per_night?: number } }
+  | { action: "set_room_composition"; params: { rooms: { room_id: string; quantity: number }[] } }
+  | { action: "compact_plan"; params: { max_rooms?: number } }
+  | { action: "set_distribution"; params: { allocation: number[] } }
+  | { action: "recompute_with_preferences"; params: { budget_range?: string; distribution_preference?: string; room_type_preference?: string } }
+  | { action: "no_room_change"; params: Record<string, never> }
 import type { UserDBProfile } from "@/lib/auth-context"
 import type {
   PersistedPersonality,
