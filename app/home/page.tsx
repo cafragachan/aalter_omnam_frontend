@@ -14,6 +14,7 @@ import { RoomsPanel } from "@/components/panels/RoomsPanel"
 import { UnitDetailPanel } from "@/components/panels/UnitDetailPanel"
 import { useUserProfileContext } from "@/lib/context"
 import { useApp } from "@/lib/store"
+import { useOmnamStore } from "@/lib/omnam-store"
 import { useAuth } from "@/lib/auth-context"
 import { buildOpeningText, type ContextInput } from "@/lib/avatar-context-builder"
 import { useAvatarActions } from "@/lib/liveavatar/useAvatarActions"
@@ -1044,7 +1045,10 @@ function HomePageContent({
   }, [sessionRef])
 
   // --- Journey orchestrator (runs as a hook, not a component) ---
-  const { dispatch: journeyDispatch, getInternalState } = useJourney({
+  // Phase 6: `getInternalState` is no longer destructured here — the debug
+  // surface below reads JourneyState directly from `useOmnamStore().stateRef`
+  // instead. The hook still exposes it for /home-v2's state sync bridge.
+  const { dispatch: journeyDispatch } = useJourney({
     onOpenPanel: handleOpenPanel,
     onClosePanels: handleClosePanels,
     onUE5Command: ue5.sendCommand,
@@ -1075,17 +1079,20 @@ function HomePageContent({
   })
 
   // --- Debug surface (dev only): wire `window.__omnamDebug` ---
-  // Read profile + app + journey into a single snapshot so [TURN]/[EFFECT]
-  // ring buffers can be cross-referenced with live state during manual
-  // validation. No-op in production.
-  const omnamApp = useApp()
+  // Phase 6: the three legacy contexts collapsed into `OmnamStoreProvider`.
+  // Pull the live mirror ref directly so every call to `__omnamDebug.state()`
+  // returns the freshest committed snapshot, not a render-time closure.
+  const omnamStoreForDebug = useOmnamStore()
   useEffect(() => {
-    initDebug(() => ({
-      profile: { profile, journeyStage },
-      app: { selectedHotel: omnamApp.selectedHotel, bookings: omnamApp.bookings, isLoading: omnamApp.isLoading },
-      journey: getInternalState(),
-    }))
-  }, [profile, journeyStage, omnamApp.selectedHotel, omnamApp.bookings, omnamApp.isLoading, getInternalState])
+    initDebug(() => {
+      const s = omnamStoreForDebug.stateRef.current
+      return {
+        profile: { profile: s.profile, journeyStage: s.journeyStage },
+        app: { selectedHotel: s.app.selectedHotel, bookings: s.app.bookings, isLoading: s.app.isLoading },
+        journey: s.journey,
+      }
+    })
+  }, [omnamStoreForDebug])
 
   // --- End-of-session snapshot on HeyGen disconnect ---
   useEffect(() => {

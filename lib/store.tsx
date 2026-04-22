@@ -1,104 +1,87 @@
 "use client"
 
-import { createContext, useCallback, useContext, useState, type ReactNode } from "react"
+// ---------------------------------------------------------------------------
+// AppContext — Phase 6 compat shim.
+//
+// The actual state lives in `lib/omnam-store.tsx`. This file keeps the
+// pre-Phase-6 import surface alive so every existing consumer
+// (`useApp`, `AppProvider`) continues to work without changes. Both the
+// /home path and the /home-v2 path read through this shim; flipping them to
+// import from `@/lib/omnam-store` directly can happen gradually later.
+//
+// See `lib/omnam-store.tsx` for the real reducer + provider.
+// ---------------------------------------------------------------------------
 
-interface SearchCriteria {
-  destination: string
-  checkIn: Date | null
-  checkOut: Date | null
-  adults: number
-  children: number
-  rooms: number
-}
+import { useCallback, useMemo, type ReactNode } from "react"
+import {
+  useOmnamStore,
+  type AppBooking,
+  type AppSearchCriteria,
+} from "@/lib/omnam-store"
 
-interface Booking {
-  id: string
-  hotelName: string
-  roomName: string
-  checkIn: Date
-  checkOut: Date
-  guests: number
-  totalPrice: number
-  createdAt: Date
-}
-
-interface AppState {
-  searchCriteria: SearchCriteria
+interface AppContextType {
+  searchCriteria: AppSearchCriteria
   selectedHotel: string | null
-  bookings: Booking[]
+  bookings: AppBooking[]
   isLoading: boolean
-}
-
-interface AppContextType extends AppState {
-  updateSearchCriteria: (criteria: Partial<SearchCriteria>) => void
+  updateSearchCriteria: (criteria: Partial<AppSearchCriteria>) => void
   selectHotel: (slug: string) => void
-  addBooking: (booking: Omit<Booking, "id" | "createdAt">) => void
+  addBooking: (booking: Omit<AppBooking, "id" | "createdAt">) => void
   setLoading: (loading: boolean) => void
 }
 
-const AppContext = createContext<AppContextType | undefined>(undefined)
-
+/**
+ * No-op wrapper kept for backwards compatibility with `/home-v2` imports.
+ * The real store is mounted at `OmnamStoreProvider` in `app/layout.tsx`, so
+ * rendering this provider simply passes children through — stacking both
+ * providers is a safe no-op.
+ */
 export function AppProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<AppState>({
-    searchCriteria: {
-      destination: "",
-      checkIn: null,
-      checkOut: null,
-      adults: 2,
-      children: 0,
-      rooms: 1,
-    },
-    selectedHotel: null,
-    bookings: [],
-    isLoading: false,
-  })
-
-  const updateSearchCriteria = (criteria: Partial<SearchCriteria>) => {
-    setState((prev) => ({
-      ...prev,
-      searchCriteria: { ...prev.searchCriteria, ...criteria },
-    }))
-  }
-
-  const selectHotel = useCallback((slug: string) => {
-    setState((prev) => ({ ...prev, selectedHotel: slug }))
-  }, [])
-
-  const addBooking = (booking: Omit<Booking, "id" | "createdAt">) => {
-    const newBooking: Booking = {
-      ...booking,
-      id: Math.random().toString(36).substr(2, 9),
-      createdAt: new Date(),
-    }
-    setState((prev) => ({
-      ...prev,
-      bookings: [...prev.bookings, newBooking],
-    }))
-  }
-
-  const setLoading = (loading: boolean) => {
-    setState((prev) => ({ ...prev, isLoading: loading }))
-  }
-
-  return (
-    <AppContext.Provider
-      value={{
-        ...state,
-        updateSearchCriteria,
-        selectHotel,
-        addBooking,
-        setLoading,
-      }}
-    >
-      {children}
-    </AppContext.Provider>
-  )
+  return <>{children}</>
 }
 
-export function useApp() {
-  const context = useContext(AppContext)
-  if (context === undefined) {
-    throw new Error("useApp must be used within an AppProvider")
-  }
-  return context
+export function useApp(): AppContextType {
+  const { state, dispatch } = useOmnamStore()
+
+  const updateSearchCriteria = useCallback(
+    (criteria: Partial<AppSearchCriteria>) => {
+      dispatch({ type: "UPDATE_SEARCH_CRITERIA", criteria })
+    },
+    [dispatch],
+  )
+
+  const selectHotel = useCallback(
+    (slug: string) => {
+      dispatch({ type: "SELECT_HOTEL", slug })
+    },
+    [dispatch],
+  )
+
+  const addBooking = useCallback(
+    (booking: Omit<AppBooking, "id" | "createdAt">) => {
+      dispatch({ type: "ADD_BOOKING", booking })
+    },
+    [dispatch],
+  )
+
+  const setLoading = useCallback(
+    (loading: boolean) => {
+      dispatch({ type: "SET_LOADING", loading })
+    },
+    [dispatch],
+  )
+
+  return useMemo<AppContextType>(
+    () => ({
+      searchCriteria: state.app.searchCriteria,
+      selectedHotel: state.app.selectedHotel,
+      bookings: state.app.bookings,
+      isLoading: state.app.isLoading,
+      updateSearchCriteria,
+      selectHotel,
+      addBooking,
+      setLoading,
+    }),
+    [state.app, updateSearchCriteria, selectHotel, addBooking, setLoading],
+  )
 }

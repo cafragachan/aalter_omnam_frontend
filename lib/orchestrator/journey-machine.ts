@@ -285,8 +285,20 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
   // END_EXPERIENCE — global handler, reachable from any stage
   // -----------------------------------------------------------------------
   if (action.type === "USER_INTENT" && action.intent.type === "END_EXPERIENCE") {
-    if (state.stage === "END_CONFIRMING" || state.stage === "END_EXPERIENCE") {
+    if (state.stage === "END_EXPERIENCE") {
       return { nextState: state, effects: [] }
+    }
+    // Already in END_CONFIRMING and the user says another farewell —
+    // treat it as a re-confirmation (equivalent to AFFIRMATIVE). Otherwise
+    // repeated "bye", "I need to go", etc. would be silently swallowed.
+    if (state.stage === "END_CONFIRMING") {
+      effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.endFarewell })
+      effects.push({ type: "STOP_LISTENING" })
+      effects.push({ type: "CLOSE_PANELS" })
+      effects.push({ type: "STOP_AVATAR" })
+      effects.push({ type: "HIDE_UE5_STREAM" })
+      effects.push({ type: "SET_JOURNEY_STAGE", stage: "END_EXPERIENCE" })
+      return { nextState: { stage: "END_EXPERIENCE" }, effects }
     }
     effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.endConfirm })
     return { nextState: { stage: "END_CONFIRMING", previousState: state }, effects }

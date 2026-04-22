@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef } from "react"
 import { useUserProfileContext } from "@/lib/context"
+import { useOmnamStore } from "@/lib/omnam-store"
 import { useAuth } from "@/lib/auth-context"
 import { useUserProfile as useHeyGenUserProfile } from "@/lib/liveavatar"
 import { useAvatarActions as useHeyGenAvatarActions } from "@/lib/liveavatar/useAvatarActions"
@@ -18,7 +19,7 @@ import type { RoomPlanAction, RoomPlanContext } from "./classifyRoomPlanLLM"
 import { generateSpeechLLM } from "./generateSpeechLLM"
 import { orchestrateLLM } from "./orchestrateLLM"
 import type { SpeechContext } from "./generateSpeechLLM"
-import { journeyReducer, INITIAL_JOURNEY_STATE, buildAmenityNarrative, profileCollectionAwaiting } from "./journey-machine"
+import { buildAmenityNarrative, profileCollectionAwaiting } from "./journey-machine"
 import { evaluateFastPath, CLIENT_CANNED_SPEECH, type ProfileAwaiting } from "./profileFastPath"
 import { useIdleDetection } from "./idle-detection"
 import type { JourneyState, JourneyAction, JourneyEffect, AmenityRef } from "./types"
@@ -124,6 +125,42 @@ function logDecisionCompare(
     match: decisionsMatch(legacyAction, envelope.action),
     speech: envelope.speech,
   })
+}
+
+// ---------------------------------------------------------------------------
+// Phase 6 — stateRef shim.
+//
+// Pre-Phase-6 useJourney held a private `stateRef = useRef<JourneyState>(...)`
+// and mutated it imperatively (`stateRef.current = {...}`) from multiple call
+// sites. Phase 6 moved JourneyState into the unified OmnamStore. To avoid
+// rewriting every read/write in useJourney we return a proxy object that
+// looks like a React ref but:
+//   • reads go through the store's live mirror (`omnamStore.stateRef.current.journey`)
+//   • writes dispatch a `JOURNEY_STATE_OVERRIDE` action so React, the store's
+//     mirror, and any observers stay consistent.
+//
+// Consumers continue to see a `{current: JourneyState}` object.
+// ---------------------------------------------------------------------------
+function useJourneyStateRef(omnamStore: ReturnType<typeof useOmnamStore>): {
+  current: JourneyState
+} {
+  // Stable across renders — the proxy closes over the store context, which is
+  // itself stable for the Provider's lifetime (dispatch is memoized, stateRef
+  // is a stable useRef object).
+  const proxyRef = useRef<{ current: JourneyState } | null>(null)
+  if (!proxyRef.current) {
+    proxyRef.current = Object.defineProperty({} as { current: JourneyState }, "current", {
+      get() {
+        return omnamStore.stateRef.current.journey
+      },
+      set(next: JourneyState) {
+        omnamStore.dispatch({ type: "JOURNEY_STATE_OVERRIDE", state: next })
+      },
+      configurable: true,
+      enumerable: true,
+    }) as { current: JourneyState }
+  }
+  return proxyRef.current
 }
 
 // ---------------------------------------------------------------------------
@@ -332,8 +369,18 @@ export function useJourney(options: UseJourneyOptions) {
   const guestIntelligence = useGuestIntelligence()
   const { trackQuestion, trackRoomExplored, trackAmenityExplored, trackRequirement, startRoomTimer, startAmenityTimer, stopExplorationTimer, setBookingOutcome } = guestIntelligence
 
-  // --- State machine state (kept in ref to avoid re-render cascades) ---
-  const stateRef = useRef<JourneyState>(INITIAL_JOURNEY_STATE)
+  // --- Phase 6: unified store ---
+  // The internal JourneyState was previously held in a local ref (the third
+  // source of truth in /home). It now lives in `OmnamStoreProvider.state.journey`.
+  // `stateRef` keeps the SAME shape and API as before — a ref object with a
+  // `.current` property — so the rest of this hook can read and write it
+  // identically to the pre-Phase-6 code. Under the hood it delegates to the
+  // store's live mirror via a proxy object:
+  //   • reads (`stateRef.current`)         → pull from the store's mirror
+  //   • writes (`stateRef.current = ...`)  → dispatch JOURNEY_STATE_OVERRIDE
+  // so every access stays consistent with what React will commit.
+  const omnamStore = useOmnamStore()
+  const stateRef = useJourneyStateRef(omnamStore)
   // Phase 5: initialized lazily on the first effect tick so hydrated
   // messages (seeded via `LiveAvatarContextProvider.initialMessages`) do
   // not trigger phantom orchestrate dispatches on mount. `null` means
@@ -568,13 +615,15 @@ export function useJourney(options: UseJourneyOptions) {
   }, [interrupt, repeat, stopListening, onUE5Command, onOpenPanel, onClosePanels, onFadeTransition, setJourneyStage, onResetToDefault, onSelectHotel, downloadUserData, rooms, setBookingOutcome, options, speakWithLLM, buildSpeechContext])
 
   // --- Dispatch helper ---
+  // Phase 6: delegate to the unified store. The store runs `journeyReducer`
+  // internally and returns its effect list synchronously; we just feed those
+  // to `executeEffects`. No local state mutation happens here anymore.
   const dispatch = useCallback((action: JourneyAction) => {
-    const result = journeyReducer(stateRef.current, action)
-    stateRef.current = result.nextState
-    if (result.effects.length > 0) {
-      executeEffects(result.effects, "reducer")
+    const effects = omnamStore.dispatch(action)
+    if (effects.length > 0) {
+      executeEffects(effects, "reducer")
     }
-  }, [executeEffects])
+  }, [executeEffects, omnamStore])
 
   // Expose the current internal JourneyState so outside observers
   // (e.g., useStateSyncBridge) can read the fine-grained substate.

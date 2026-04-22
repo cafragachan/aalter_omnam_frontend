@@ -3,9 +3,8 @@ import type { Metadata } from "next"
 import { JetBrains_Mono, Manrope, Open_Sans } from "next/font/google"
 import Script from "next/script"
 import "./globals.css"
-import { AppProvider } from "@/lib/store"
+import { OmnamStoreProvider } from "@/lib/omnam-store"
 import { Toaster } from "@/components/ui/toaster"
-import { UserProfileProvider } from "@/lib/context"
 import { AuthProvider } from "@/lib/auth-context"
 import { EventBusProvider } from "@/lib/events"
 import { GuestIntelligenceProvider } from "@/lib/guest-intelligence"
@@ -49,23 +48,21 @@ export default function RootLayout({
       </head>
       <body className={`${manrope.variable} ${jetbrainsMono.variable} ${openSans.variable} font-sans antialiased`}>
         <AuthProvider>
-          <UserProfileProvider>
-            <AppProvider>
-              <EventBusProvider>
+          <OmnamStoreProvider>
+            <EventBusProvider>
               <GuestIntelligenceProvider>
-              {children}
-              <Toaster />
-              <div className="pointer-events-none fixed bottom-8 right-8 z-50">
-                <img
-                  src="/omnam-logo-white.png"
-                  alt="Omnam"
-                  className="h-10 w-auto opacity-75"
-                />
-              </div>
+                {children}
+                <Toaster />
+                <div className="pointer-events-none fixed bottom-8 right-8 z-50">
+                  <img
+                    src="/omnam-logo-white.png"
+                    alt="Omnam"
+                    className="h-10 w-auto opacity-75"
+                  />
+                </div>
               </GuestIntelligenceProvider>
-              </EventBusProvider>
-            </AppProvider>
-          </UserProfileProvider>
+            </EventBusProvider>
+          </OmnamStoreProvider>
         </AuthProvider>
       </body>
     </html>

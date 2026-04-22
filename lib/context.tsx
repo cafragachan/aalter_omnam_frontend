@@ -1,6 +1,20 @@
-﻿"use client"
+"use client"
 
-import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react"
+// ---------------------------------------------------------------------------
+// UserProfileContext — Phase 6 compat shim.
+//
+// The actual state lives in `lib/omnam-store.tsx`. This file keeps the
+// pre-Phase-6 import surface alive so every existing consumer
+// (`useUserProfileContext`, `UserProfileProvider`, the `UserProfile` and
+// `JourneyStage` types, etc.) continues to work without changes. Both the
+// /home path and the /home-v2 path read through this shim; flipping them to
+// import from `@/lib/omnam-store` directly can happen gradually later.
+//
+// See `lib/omnam-store.tsx` for the real reducer + provider.
+// ---------------------------------------------------------------------------
+
+import { useCallback, useMemo, type ReactNode } from "react"
+import { useOmnamStore } from "@/lib/omnam-store"
 
 export type GuestComposition = {
   adults: number
@@ -58,78 +72,47 @@ type UserProfileContextValue = {
   resetProfile: () => void
 }
 
-const createEmptyProfile = (): UserProfile => ({
-  interests: [],
-  startDate: null,
-  endDate: null,
-})
-
-const UserProfileContext = createContext<UserProfileContextValue | null>(null)
-
+/**
+ * No-op wrapper kept for backwards compatibility with `/home-v2` imports.
+ * The real store is mounted at `OmnamStoreProvider` in `app/layout.tsx`, so
+ * rendering this provider simply passes children through — stacking both
+ * providers is a safe no-op.
+ */
 export function UserProfileProvider({ children }: { children: ReactNode }) {
-  const [profile, setProfile] = useState<UserProfile>(createEmptyProfile())
-  const [journeyStage, setJourneyStage] = useState<JourneyStage>("PROFILE_COLLECTION")
+  return <>{children}</>
+}
 
-  const updateProfile = useCallback((updates: Partial<UserProfile>) => {
-    setProfile((prev) => {
-      // guestComposition must deep-merge — a partial update like
-      // { childrenAges: [10, 15] } otherwise wipes adults/children from prior
-      // turns. Same applies if a future turn sends just { adults: 3 }.
-      const mergedGuestComposition = updates.guestComposition
-        ? { ...(prev.guestComposition ?? {}), ...updates.guestComposition }
-        : prev.guestComposition
-      // Drop familySize from incoming updates if it's NaN (caller computed it
-      // from an incomplete guestComposition). We'll recompute below when we
-      // have the full merged composition.
-      const { familySize: incomingFamilySize, ...restUpdates } = updates
-      const safeFamilySize =
-        typeof incomingFamilySize === "number" && Number.isFinite(incomingFamilySize)
-          ? incomingFamilySize
-          : mergedGuestComposition &&
-              typeof mergedGuestComposition.adults === "number" &&
-              typeof mergedGuestComposition.children === "number"
-            ? mergedGuestComposition.adults + mergedGuestComposition.children
-            : prev.familySize
-      return {
-        ...prev,
-        ...restUpdates,
-        guestComposition: mergedGuestComposition as GuestComposition | undefined,
-        familySize: safeFamilySize,
-        interests: mergeUnique(prev.interests, updates.interests),
-        dietaryRestrictions: mergeUnique(prev.dietaryRestrictions ?? [], updates.dietaryRestrictions),
-        accessibilityNeeds: mergeUnique(prev.accessibilityNeeds ?? [], updates.accessibilityNeeds),
-        amenityPriorities: mergeUnique(prev.amenityPriorities ?? [], updates.amenityPriorities),
-      }
-    })
-  }, [])
+export function useUserProfileContext(): UserProfileContextValue {
+  const { state, dispatch } = useOmnamStore()
 
-  const resetProfile = useCallback(() => setProfile(createEmptyProfile()), [])
+  const setJourneyStage = useCallback(
+    (stage: JourneyStage) => {
+      dispatch({ type: "SET_JOURNEY_STAGE", stage })
+    },
+    [dispatch],
+  )
 
-  const value = useMemo(
+  const updateProfile = useCallback(
+    (updates: Partial<UserProfile>) => {
+      dispatch({ type: "UPDATE_PROFILE", updates })
+    },
+    [dispatch],
+  )
+
+  const resetProfile = useCallback(() => {
+    dispatch({ type: "RESET_PROFILE" })
+  }, [dispatch])
+
+  // Memoize the returned object against the slices this hook actually reads,
+  // so consumers' dependency arrays stay stable when unrelated slices change.
+  return useMemo<UserProfileContextValue>(
     () => ({
-      profile,
-      journeyStage,
+      profile: state.profile,
+      journeyStage: state.journeyStage,
       setJourneyStage,
       updateProfile,
       resetProfile,
     }),
-    [journeyStage, profile, resetProfile, setJourneyStage, updateProfile],
+    [state.profile, state.journeyStage, setJourneyStage, updateProfile, resetProfile],
   )
-
-  return <UserProfileContext.Provider value={value}>{children}</UserProfileContext.Provider>
 }
-
-export function useUserProfileContext() {
-  const context = useContext(UserProfileContext)
-  if (!context) {
-    throw new Error("useUserProfileContext must be used within a UserProfileProvider")
-  }
-  return context
-}
-
-const mergeUnique = (current: string[], incoming?: string[]) => {
-  if (!incoming) return current
-  const unique = new Set([...current, ...incoming.filter(Boolean)])
-  return Array.from(unique)
-}
-
