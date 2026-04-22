@@ -18,7 +18,6 @@ import { useOmnamStore } from "@/lib/omnam-store"
 import { useAuth } from "@/lib/auth-context"
 import { buildOpeningText, type ContextInput } from "@/lib/avatar-context-builder"
 import { useAvatarActions } from "@/lib/liveavatar/useAvatarActions"
-import { useEmit } from "@/lib/events"
 import { useJourney } from "@/lib/orchestrator"
 import { useUE5Bridge } from "@/lib/ue5/bridge"
 import { useVagonSession } from "@/lib/ue5/useVagonSession"
@@ -881,7 +880,6 @@ function HomePageContent({
 }) {
   const { selectHotel, selectedHotel } = useApp()
   const { profile, journeyStage, setJourneyStage, updateProfile } = useUserProfileContext()
-  const emit = useEmit()
   const { sessionState, sessionRef, voiceChatState } = useLiveAvatarContext()
   const { repeat } = useAvatarActions()
   useDebugLogger()
@@ -923,7 +921,19 @@ function HomePageContent({
   const [showRoomsPanel, setShowRoomsPanel] = useState(false)
 
   // --- UE5 Bridge (WebSocket + fade transitions + unit state) ---
-  const ue5 = useUE5Bridge()
+  // Phase 8: UE5 unit selections are forwarded directly to useJourney via a
+  // forward-referencing ref. `useJourney` is called below (it depends on
+  // `rooms`/`amenities`), so we stash its `onUnitSelectedUE5` handler into
+  // `unitSelectedHandlerRef` after the hook returns, then the bridge calls
+  // `.current?.(...)` at runtime — no pub/sub hop.
+  const unitSelectedHandlerRef = useRef<
+    ((payload: { roomName: string; description?: string; price?: string; level?: string }) => void) | null
+  >(null)
+  const ue5 = useUE5Bridge({
+    onUnitSelected: (payload) => {
+      unitSelectedHandlerRef.current?.(payload)
+    },
+  })
 
   // --- Stream mode (for debug hud visibility) ---
   const streamMode = process.env.NEXT_PUBLIC_STREAM_MODE || "local"
@@ -1048,7 +1058,11 @@ function HomePageContent({
   // Phase 6: `getInternalState` is no longer destructured here — the debug
   // surface below reads JourneyState directly from `useOmnamStore().stateRef`
   // instead. The hook still exposes it for /home-v2's state sync bridge.
-  const { dispatch: journeyDispatch } = useJourney({
+  const {
+    dispatch: journeyDispatch,
+    onRoomCardTapped: journeyOnRoomCardTapped,
+    onUnitSelectedUE5: journeyOnUnitSelectedUE5,
+  } = useJourney({
     onOpenPanel: handleOpenPanel,
     onClosePanels: handleClosePanels,
     onUE5Command: ue5.sendCommand,
@@ -1129,15 +1143,24 @@ function HomePageContent({
     })
   }, [selectHotel, setJourneyStage, updateProfile, journeyDispatch])
 
-  // --- Room selection handler (emits to EventBus) ---
+  // --- Room selection handler (Phase 8: direct call into useJourney) ---
   const handleSelectRoom = useCallback((room: Room) => {
-    emit({
-      type: "ROOM_CARD_TAPPED",
+    journeyOnRoomCardTapped({
       roomId: room.id,
       roomName: room.name,
       occupancy: room.occupancy,
     })
-  }, [emit])
+  }, [journeyOnRoomCardTapped])
+
+  // Phase 8: forward UE5 unit-selection events from the bridge directly to
+  // useJourney. The ref indirection is needed because `useUE5Bridge` is called
+  // above `useJourney` and cannot see the handler at that point.
+  useEffect(() => {
+    unitSelectedHandlerRef.current = journeyOnUnitSelectedUE5
+    return () => {
+      unitSelectedHandlerRef.current = null
+    }
+  }, [journeyOnUnitSelectedUE5])
 
   // --- Panel close handlers ---
   const closeRoomsPanel = useCallback(() => {

@@ -10,7 +10,6 @@ import { useLiveAvatarContext as useHeyGenLiveAvatarContext } from "@/lib/liveav
 import { MessageSender } from "@/lib/liveavatar/types"
 import type { LiveAvatarSessionMessage } from "@/lib/liveavatar/types"
 import type { AvatarDerivedProfile } from "@/lib/liveavatar/useUserProfile"
-import { useEventBus, useEventListener } from "@/lib/events"
 import { useGuestIntelligence } from "@/lib/guest-intelligence"
 import { classifyIntent, classifyAvatarProposal, type UserIntent } from "./intents"
 import { classifyIntentLLM } from "./classifyIntentLLM"
@@ -23,6 +22,7 @@ import { buildAmenityNarrative, profileCollectionAwaiting } from "./journey-mach
 import { evaluateFastPath, CLIENT_CANNED_SPEECH, type ProfileAwaiting } from "./profileFastPath"
 import { useIdleDetection } from "./idle-detection"
 import type { JourneyState, JourneyAction, JourneyEffect, AmenityRef } from "./types"
+import { renderSpeech } from "./speech-renderer"
 import { logTurn, logEffect, type EffectEntry } from "@/lib/debug"
 import {
   getRecommendedAmenity,
@@ -365,7 +365,6 @@ export function useJourney(options: UseJourneyOptions) {
   const { profile: derivedProfile, isExtractionPending, userMessages } = useUserProfileFn()
   const { messages: allMessages } = useAvatarContextFn()
   const { repeat, interrupt, stopListening } = useAvatarActionsFn()
-  const eventBus = useEventBus()
   const guestIntelligence = useGuestIntelligence()
   const { trackQuestion, trackRoomExplored, trackAmenityExplored, trackRequirement, startRoomTimer, startAmenityTimer, stopExplorationTimer, setBookingOutcome } = guestIntelligence
 
@@ -538,12 +537,76 @@ export function useJourney(options: UseJourneyOptions) {
     effects: JourneyEffect[],
     source: EffectEntry["source"] = "reducer",
   ) => {
+    // Phase 7 Pass (a): the reducer dual-emits SPEAK_INTENT then SPEAK for the
+    // same logical utterance. The executor prefers SPEAK_INTENT (structured);
+    // when it fires, the paired legacy SPEAK in the same batch is skipped so
+    // we don't speak twice. Reset per-batch (per `executeEffects` call).
+    let speechFiredThisBatch = false
     for (const effect of effects) {
       // Log every effect before running it. Strip only the discriminant.
       const { type: _effectType, ...params } = effect as { type: string } & Record<string, unknown>
-      logEffect({ type: effect.type, params: params as Record<string, unknown>, source })
+      // Speech effects (SPEAK, SPEAK_INTENT) log themselves inside their case
+      // so they can attach `speechSource`. Everything else logs here.
+      if (effect.type !== "SPEAK" && effect.type !== "SPEAK_INTENT") {
+        logEffect({ type: effect.type, params: params as Record<string, unknown>, source })
+      }
       switch (effect.type) {
+        case "SPEAK_INTENT": {
+          if (speechFiredThisBatch) {
+            // Shouldn't normally happen — reducer emits at most one speech
+            // pair per batch — but stay defensive.
+            logEffect({
+              type: effect.type,
+              params: params as Record<string, unknown>,
+              source,
+              speechSource: "legacy_SPEAK_skipped",
+            })
+            break
+          }
+          let text: string
+          let speechSource: EffectEntry["speechSource"]
+          if (preGeneratedSpeechRef.current !== null) {
+            text = preGeneratedSpeechRef.current
+            preGeneratedSpeechRef.current = null
+            speechSource = "llm"
+          } else {
+            text = renderSpeech(effect.key, effect.args)
+            speechSource = "rendered"
+          }
+          logEffect({
+            type: effect.type,
+            params: params as Record<string, unknown>,
+            source,
+            speechSource,
+          })
+          if (options.onSpeak) {
+            options.onSpeak(text)
+          } else {
+            interrupt()
+            repeat(text).catch(() => undefined)
+          }
+          speechFiredThisBatch = true
+          break
+        }
         case "SPEAK":
+          if (speechFiredThisBatch) {
+            // A SPEAK_INTENT already fired for this logical utterance. The
+            // paired legacy SPEAK is a no-op in Pass (a); Pass (b) will drop
+            // the reducer-side push entirely.
+            logEffect({
+              type: effect.type,
+              params: params as Record<string, unknown>,
+              source,
+              speechSource: "legacy_SPEAK_skipped",
+            })
+            break
+          }
+          logEffect({
+            type: effect.type,
+            params: params as Record<string, unknown>,
+            source,
+            speechSource: "legacy_SPEAK",
+          })
           if (options.onSpeak) {
             options.onSpeak(effect.text)
           } else if (preGeneratedSpeechRef.current !== null) {
@@ -557,6 +620,7 @@ export function useJourney(options: UseJourneyOptions) {
             interrupt()
             repeat(effect.text).catch(() => undefined)
           }
+          speechFiredThisBatch = true
           break
         case "UE5_COMMAND":
           onUE5Command(effect.command, effect.value)
@@ -1758,8 +1822,7 @@ export function useJourney(options: UseJourneyOptions) {
       // Single room selection — fuzzy match room name
       const matched = matchRoomByName(latestMessage, rooms)
       if (matched) {
-        eventBus.emit({
-          type: "ROOM_CARD_TAPPED",
+        onRoomCardTappedRef.current({
           roomId: matched.id,
           roomName: matched.name,
           occupancy: matched.occupancy,
@@ -2077,7 +2140,7 @@ export function useJourney(options: UseJourneyOptions) {
     // orchestrate calls (see Phase 3 on-mode blocker). We read the freshest
     // profile/derivedProfile via profileRef.current / derivedProfileRef.current
     // at call time inside the on-mode IIFE instead.
-  }, [userMessages, dispatch, trackQuestion, trackRequirement, processIntent, rooms, eventBus, options.enableLLMClassifier, options.enableLLMRoomPlanning, useUnifiedOrchestrator, useUnifiedOrchestratorMode, profileStageUsesOrchestrate, fireShadowOrchestrate, executeRoomPlanAction, interrupt, repeat])
+  }, [userMessages, dispatch, trackQuestion, trackRequirement, processIntent, rooms, options.enableLLMClassifier, options.enableLLMRoomPlanning, useUnifiedOrchestrator, useUnifiedOrchestratorMode, profileStageUsesOrchestrate, fireShadowOrchestrate, executeRoomPlanAction, interrupt, repeat])
 
   // --- Abort in-flight PROFILE_COLLECTION orchestrate on stage transition ---
   // When the journey leaves PROFILE_COLLECTION (e.g., FORCE_ADVANCE fired),
@@ -2151,57 +2214,82 @@ export function useJourney(options: UseJourneyOptions) {
     return () => clearTimeout(timer)
   }, [journeyStage, speakWithLLM, buildSpeechContext])
 
-  // --- EventBus subscriptions ---
+  // --- Direct handlers (Phase 8: replaced EventBus subscriptions) ---
+  // Consumers (home page, UE5 bridge) call these directly — no pub/sub hop.
 
-  useEventListener("HOTEL_SELECTED", (event) => {
+  const onHotelSelected = useCallback((payload: { slug: string }) => {
     dispatch({
       type: "HOTEL_PICKED",
-      slug: event.slug,
+      slug: payload.slug,
       hotelName: "",
       location: "",
       description: "",
     })
-  })
+  }, [dispatch])
 
-  useEventListener("ROOM_CARD_TAPPED", (event) => {
-    stopExplorationTimer()
-    trackRoomExplored(event.roomId)
-    currentRoomIdRef.current = event.roomId
+  const onRoomCardTapped = useCallback(
+    (payload: { roomId: string; roomName: string; occupancy: string }) => {
+      stopExplorationTimer()
+      trackRoomExplored(payload.roomId)
+      currentRoomIdRef.current = payload.roomId
 
-    dispatch({
-      type: "ROOM_CARD_TAPPED",
-      roomName: event.roomName,
-      occupancy: event.occupancy,
-      roomId: event.roomId,
-    })
-  })
+      dispatch({
+        type: "ROOM_CARD_TAPPED",
+        roomName: payload.roomName,
+        occupancy: payload.occupancy,
+        roomId: payload.roomId,
+      })
+    },
+    [dispatch, stopExplorationTimer, trackRoomExplored],
+  )
 
-  useEventListener("UNIT_SELECTED_UE5", (event) => {
-    dispatch({
-      type: "UNIT_SELECTED_UE5",
-      roomName: event.roomName,
-    })
-    options.onUnitSelected?.(event.roomName)
-  })
+  const onUnitSelectedUE5 = useCallback(
+    (payload: { roomName: string; description?: string; price?: string; level?: string }) => {
+      dispatch({
+        type: "UNIT_SELECTED_UE5",
+        roomName: payload.roomName,
+      })
+      options.onUnitSelected?.(payload.roomName)
+    },
+    [dispatch, options],
+  )
 
-  useEventListener("AMENITY_CARD_TAPPED", (event) => {
-    stopExplorationTimer()
-    trackAmenityExplored(event.name)
-    startAmenityTimer(event.name)
-    dispatch({
-      type: "AMENITY_CARD_TAPPED",
-      name: event.name,
-      scene: event.scene,
-      amenityId: event.amenityId,
-      visitedAmenities: getVisitedAmenityNames(),
-      allAmenities: amenityRefs,
-    })
-  })
+  const onAmenityCardTapped = useCallback(
+    (payload: { amenityId: string; name: string; scene: string }) => {
+      stopExplorationTimer()
+      trackAmenityExplored(payload.name)
+      startAmenityTimer(payload.name)
+      dispatch({
+        type: "AMENITY_CARD_TAPPED",
+        name: payload.name,
+        scene: payload.scene,
+        amenityId: payload.amenityId,
+        visitedAmenities: getVisitedAmenityNames(),
+        allAmenities: amenityRefs,
+      })
+    },
+    [dispatch, stopExplorationTimer, trackAmenityExplored, startAmenityTimer, getVisitedAmenityNames, amenityRefs],
+  )
 
-  useEventListener("NAVIGATE_BACK", () => {
+  const onNavigateBack = useCallback(() => {
     stopExplorationTimer()
     dispatch({ type: "USER_INTENT", intent: { type: "BACK" } })
+  }, [dispatch, stopExplorationTimer])
+
+  // Stable ref to onRoomCardTapped so the user-messages effect (which calls
+  // it from the fuzzy room-name match branch) doesn't need it in its deps.
+  const onRoomCardTappedRef = useRef(onRoomCardTapped)
+  useEffect(() => {
+    onRoomCardTappedRef.current = onRoomCardTapped
   })
 
-  return { dispatch, getInternalState }
+  return {
+    dispatch,
+    getInternalState,
+    onHotelSelected,
+    onRoomCardTapped,
+    onUnitSelectedUE5,
+    onAmenityCardTapped,
+    onNavigateBack,
+  }
 }

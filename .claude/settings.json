@@ -89,7 +89,9 @@
       "Bash(node scratch_regex_test.js)",
       "Bash(grep -E \"^[A-Za-z_\\\\\\\\.].*\\\\.ts\\\\\\(\")",
       "Bash(awk -F'\\(' '{print $1}')",
-      "Bash(grep -E \"^[A-Za-z_\\\\\\\\./].*\\\\.tsx?\\\\\\(\")"
+      "Bash(grep -E \"^[A-Za-z_\\\\\\\\./].*\\\\.tsx?\\\\\\(\")",
+      "Bash(grep -c 'effects\\\\.push\\({ type: \"SPEAK\",' lib/orchestrator/journey-machine.ts)",
+      "Bash(grep -c 'effects\\\\.push\\({ type: \"SPEAK\",')"
     ]
   }
 }

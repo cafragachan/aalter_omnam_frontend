@@ -24,7 +24,8 @@
       "WebFetch(domain:www.npmjs.com)",
       "Bash(find /c/Users/CesarFragachan/Documents/Repos/aalter_omnam_frontend/app/api -name *extract* -o -name *profile*)",
       "Bash(find /c/Users/CesarFragachan/Documents/Repos/aalter_omnam_frontend/node_modules/@heygen -type f -name *.d.ts)",
-      "Bash(grep -r \"HEYGEN_CONTEXT_ID\\\\|context_id\\\\|avatar_persona\" /c/Users/CesarFragachan/Documents/Repos/aalter_omnam_frontend --include=*.ts --include=*.tsx --include=*.md)"
+      "Bash(grep -r \"HEYGEN_CONTEXT_ID\\\\|context_id\\\\|avatar_persona\" /c/Users/CesarFragachan/Documents/Repos/aalter_omnam_frontend --include=*.ts --include=*.tsx --include=*.md)",
+      "Bash(grep -v \"^$\")"
     ],
     "additionalDirectories": [
       "C:\\Users\\CesarFragachan\\.claude\\plans"

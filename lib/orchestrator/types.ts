@@ -104,8 +104,61 @@ export type JourneyAction =
 // Effects produced by the reducer — executed by useJourney
 // ---------------------------------------------------------------------------
 
+// Phase 7 Pass (a): structured speech effect (additive; runs alongside legacy SPEAK).
+// The executor prefers SPEAK_INTENT: it consumes preGeneratedSpeechRef if set (LLM
+// source) or renders from the key via speech-renderer.ts (rendered source). The
+// paired legacy SPEAK is then skipped in the same batch. Pass (b) will drop SPEAK
+// from stage logic entirely.
+export type SpeechKey =
+  // Static keys (each maps directly to a DEFAULT_SPEECH entry)
+  | "downloadData"
+  | "loungeConfirm"
+  | "endConfirm"
+  | "endFarewell"
+  | "endCancel"
+  | "loungeWelcomeBack"
+  | "loungeCancel"
+  | "profileReadyWelcome"
+  | "loungeExploreAck"
+  | "loungeToHotelIntro"
+  | "hotelWelcome"
+  | "hotelIntroShort"
+  | "pullUpRooms"
+  | "amenitiesAskWhich"
+  | "showLocation"
+  | "bookPickRoom"
+  | "otherOptionsRooms"
+  | "hotelBackOverview"
+  | "unknownResponse"
+  | "openingBookingPage"
+  | "tapGreenUnitFirst"
+  | "steppingInside"
+  | "exteriorView"
+  | "backToOtherRooms"
+  | "backToHotelOverview"
+  | "amenityBackToHotel"
+  | "amenityFallbackPrompt"
+  | "amenityNextNoWorries"
+  | "amenityAskBack"
+  | "amenityBookNudge"
+  | "amenityPickRooms"
+  // Templated keys (args documented in journey-machine.ts SPEAK_INTENT push sites)
+  | "destinationPicked"        // args: { hotelName }
+  | "roomCardTapped"           // args: { roomName, occupancy }
+  | "unitPicked"               // args: { roomName }
+  | "amenitySuggestFallback"   // args: { suggestedNext }
+  | "amenityNavigate"          // args: { amenityName, narrative, teaser }
+  | "amenityListing"           // args: { allAmenities, visitedAmenities, travelPurpose?, recommendedAmenityName? }
+  | "reengage"                 // args: { state }
+  | "literal"                  // args: { text } — escape hatch for dynamic strings
+
+// Narrowing happens inside the renderer switch; keeping the boundary type loose
+// avoids forcing every push site in the reducer to carry a per-key generic.
+export type SpeechArgs = Record<string, unknown>
+
 export type JourneyEffect =
   | { type: "SPEAK"; text: string }
+  | { type: "SPEAK_INTENT"; key: SpeechKey; args?: SpeechArgs }
   | { type: "UE5_COMMAND"; command: string; value: unknown }
   | { type: "OPEN_PANEL"; panel: "rooms" | "amenities" | "location" }
   | { type: "CLOSE_PANELS" }

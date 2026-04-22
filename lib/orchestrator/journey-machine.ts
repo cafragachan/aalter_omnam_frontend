@@ -3,7 +3,6 @@
 // ---------------------------------------------------------------------------
 
 import type { JourneyState, JourneyAction, JourneyResult, JourneyEffect, AmenityRef } from "./types"
-import { getReengagePrompt } from "./reengage-prompts"
 
 // ---------------------------------------------------------------------------
 // DEFAULT_SPEECH — Phase 0 extraction of hardcoded SPEAK strings.
@@ -138,7 +137,7 @@ const PURPOSE_NARRATIVE: Record<string, string> = {
 }
 
 /** Build the speech text for listing amenities (first time, partial, or all visited) */
-function buildAmenityListingSpeech(
+export function buildAmenityListingSpeech(
   allAmenities: AmenityRef[],
   visitedAmenities: string[],
   travelPurpose?: string,
@@ -227,9 +226,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
     if (state.stage === "PROFILE_COLLECTION" || state.stage === "END_CONFIRMING" || state.stage === "END_EXPERIENCE" || state.stage === "LOUNGE_CONFIRMING") {
       return { nextState: state, effects: [] }
     }
-    // TODO(phase-7): extract — getReengagePrompt returns runtime-varying speech per stage
-    const prompt = getReengagePrompt(state)
-    effects.push({ type: "SPEAK", text: prompt })
+    effects.push({ type: "SPEAK_INTENT", key: "reengage", args: { state } })
     return { nextState: state, effects }
   }
 
@@ -261,7 +258,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
   // DOWNLOAD_DATA — admin command, works from any stage
   // -----------------------------------------------------------------------
   if (action.type === "USER_INTENT" && action.intent.type === "DOWNLOAD_DATA") {
-    effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.downloadData })
+    effects.push({ type: "SPEAK_INTENT", key: "downloadData" })
     effects.push({ type: "DOWNLOAD_DATA" })
     return { nextState: state, effects }
   }
@@ -277,7 +274,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
     ) {
       return { nextState: state, effects: [] }
     }
-    effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.loungeConfirm })
+    effects.push({ type: "SPEAK_INTENT", key: "loungeConfirm" })
     return { nextState: { stage: "LOUNGE_CONFIRMING", previousState: state }, effects }
   }
 
@@ -292,7 +289,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
     // treat it as a re-confirmation (equivalent to AFFIRMATIVE). Otherwise
     // repeated "bye", "I need to go", etc. would be silently swallowed.
     if (state.stage === "END_CONFIRMING") {
-      effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.endFarewell })
+      effects.push({ type: "SPEAK_INTENT", key: "endFarewell" })
       effects.push({ type: "STOP_LISTENING" })
       effects.push({ type: "CLOSE_PANELS" })
       effects.push({ type: "STOP_AVATAR" })
@@ -300,7 +297,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
       effects.push({ type: "SET_JOURNEY_STAGE", stage: "END_EXPERIENCE" })
       return { nextState: { stage: "END_EXPERIENCE" }, effects }
     }
-    effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.endConfirm })
+    effects.push({ type: "SPEAK_INTENT", key: "endConfirm" })
     return { nextState: { stage: "END_CONFIRMING", previousState: state }, effects }
   }
 
@@ -311,7 +308,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
     if (action.type === "USER_INTENT") {
       const { intent } = action
       if (intent.type === "AFFIRMATIVE") {
-        effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.endFarewell })
+        effects.push({ type: "SPEAK_INTENT", key: "endFarewell" })
         effects.push({ type: "STOP_LISTENING" })
         effects.push({ type: "CLOSE_PANELS" })
         effects.push({ type: "STOP_AVATAR" })
@@ -320,7 +317,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
         return { nextState: { stage: "END_EXPERIENCE" }, effects }
       }
       if (intent.type === "NEGATIVE") {
-        effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.endCancel })
+        effects.push({ type: "SPEAK_INTENT", key: "endCancel" })
         return { nextState: state.previousState, effects }
       }
     }
@@ -340,11 +337,11 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
         effects.push({ type: "UE5_COMMAND", command: "virtualLounge", value: "virtualLounge" })
         effects.push({ type: "FADE_TRANSITION" })
         effects.push({ type: "SET_JOURNEY_STAGE", stage: "VIRTUAL_LOUNGE" })
-        effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.loungeWelcomeBack })
+        effects.push({ type: "SPEAK_INTENT", key: "loungeWelcomeBack" })
         return { nextState: { stage: "VIRTUAL_LOUNGE", subState: "exploring" }, effects }
       }
       if (intent.type === "NEGATIVE") {
-        effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.loungeCancel })
+        effects.push({ type: "SPEAK_INTENT", key: "loungeCancel" })
         return { nextState: state.previousState, effects }
       }
     }
@@ -369,7 +366,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
         effects.push({ type: "SELECT_HOTEL", ...PILOT_HOTEL })
         effects.push({ type: "SET_JOURNEY_STAGE", stage: "VIRTUAL_LOUNGE" })
         effects.push({ type: "STOP_LISTENING" })
-        effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.profileReadyWelcome })
+        effects.push({ type: "SPEAK_INTENT", key: "profileReadyWelcome" })
         return { nextState: { stage: "VIRTUAL_LOUNGE", subState: "asking" }, effects }
       }
 
@@ -391,7 +388,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           effects.push({ type: "SELECT_HOTEL", ...PILOT_HOTEL })
           effects.push({ type: "SET_JOURNEY_STAGE", stage: "VIRTUAL_LOUNGE" })
           effects.push({ type: "STOP_LISTENING" })
-          effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.profileReadyWelcome })
+          effects.push({ type: "SPEAK_INTENT", key: "profileReadyWelcome" })
           return { nextState: { stage: "VIRTUAL_LOUNGE", subState: "asking" }, effects }
         }
 
@@ -415,7 +412,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
 
       effects.push({ type: "SET_JOURNEY_STAGE", stage: "VIRTUAL_LOUNGE" })
       effects.push({ type: "STOP_LISTENING" })
-      effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.destinationPicked(hotelName) })
+      effects.push({ type: "SPEAK_INTENT", key: "destinationPicked", args: { hotelName } })
 
       return {
         nextState: { stage: "VIRTUAL_LOUNGE", subState: "asking" },
@@ -434,7 +431,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
       if (state.subState === "asking") {
         // User said yes → free-roam the lounge
         if (intent.type === "AFFIRMATIVE") {
-          effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.loungeExploreAck })
+          effects.push({ type: "SPEAK_INTENT", key: "loungeExploreAck" })
           return { nextState: { stage: "VIRTUAL_LOUNGE", subState: "exploring" }, effects }
         }
 
@@ -442,7 +439,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
         effects.push({ type: "SET_JOURNEY_STAGE", stage: "HOTEL_EXPLORATION" })
         effects.push({ type: "UE5_COMMAND", command: "startTEST", value: "startTEST" })
         effects.push({ type: "FADE_TRANSITION" })
-        effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.loungeToHotelIntro })
+        effects.push({ type: "SPEAK_INTENT", key: "loungeToHotelIntro" })
         return { nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" }, effects }
       }
 
@@ -454,7 +451,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           effects.push({ type: "SET_JOURNEY_STAGE", stage: "HOTEL_EXPLORATION" })
           effects.push({ type: "UE5_COMMAND", command: "startTEST", value: "startTEST" })
           effects.push({ type: "FADE_TRANSITION" })
-          effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.hotelWelcome })
+          effects.push({ type: "SPEAK_INTENT", key: "hotelWelcome" })
           return { nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" }, effects }
         }
 
@@ -468,7 +465,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           effects.push({ type: "SET_JOURNEY_STAGE", stage: "HOTEL_EXPLORATION" })
           effects.push({ type: "UE5_COMMAND", command: "startTEST", value: "startTEST" })
           effects.push({ type: "FADE_TRANSITION" })
-          effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.hotelIntroShort })
+          effects.push({ type: "SPEAK_INTENT", key: "hotelIntroShort" })
           return { nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" }, effects }
         }
 
@@ -493,18 +490,18 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           const proposal = state.lastProposal ?? "rooms"
           if (proposal === "rooms" || proposal === "book") {
             // Intercepted in useJourney to check if distribution question is needed
-            effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.pullUpRooms })
+            effects.push({ type: "SPEAK_INTENT", key: "pullUpRooms" })
             effects.push({ type: "OPEN_PANEL", panel: "rooms" })
             return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
           }
           if (proposal === "amenities") {
             // useJourney dispatches LIST_AMENITIES before this can be reached,
             // but as a safety net, prompt for specifics
-            effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.amenitiesAskWhich })
+            effects.push({ type: "SPEAK_INTENT", key: "amenitiesAskWhich" })
             return { nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" }, effects }
           }
           if (proposal === "location") {
-            effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.showLocation })
+            effects.push({ type: "SPEAK_INTENT", key: "showLocation" })
             effects.push({ type: "OPEN_PANEL", panel: "location" })
             return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
           }
@@ -513,7 +510,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
 
         case "ROOMS":
           // Note: useJourney intercepts this to check if distribution question is needed first
-          effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.pullUpRooms })
+          effects.push({ type: "SPEAK_INTENT", key: "pullUpRooms" })
           effects.push({ type: "OPEN_PANEL", panel: "rooms" })
           return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
 
@@ -526,17 +523,17 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           return { nextState: state, effects: [] }
 
         case "LOCATION":
-          effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.showLocation })
+          effects.push({ type: "SPEAK_INTENT", key: "showLocation" })
           effects.push({ type: "OPEN_PANEL", panel: "location" })
           return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
 
         case "BOOK":
-          effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.bookPickRoom })
+          effects.push({ type: "SPEAK_INTENT", key: "bookPickRoom" })
           effects.push({ type: "OPEN_PANEL", panel: "rooms" })
           return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
 
         case "OTHER_OPTIONS":
-          effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.otherOptionsRooms })
+          effects.push({ type: "SPEAK_INTENT", key: "otherOptionsRooms" })
           effects.push({ type: "OPEN_PANEL", panel: "rooms" })
           return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
 
@@ -544,11 +541,11 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
         case "HOTEL_EXPLORE":
         case "TRAVEL_TO_HOTEL":
           effects.push({ type: "RESET_TO_DEFAULT" })
-          effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.hotelBackOverview })
+          effects.push({ type: "SPEAK_INTENT", key: "hotelBackOverview" })
           return { nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" }, effects }
 
         case "UNKNOWN":
-          effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.unknownResponse })
+          effects.push({ type: "SPEAK_INTENT", key: "unknownResponse" })
           return { nextState: state, effects }
 
         default:
@@ -560,13 +557,13 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
       const { roomName, occupancy, roomId } = action
       effects.push({ type: "CLOSE_PANELS" })
       effects.push({ type: "UE5_COMMAND", command: "selectedRoom", value: roomId })
-      effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.roomCardTapped(roomName, occupancy) })
+      effects.push({ type: "SPEAK_INTENT", key: "roomCardTapped", args: { roomName, occupancy } })
       return { nextState: { stage: "ROOM_SELECTED", awaiting: "view_choice", unitSelected: false }, effects }
     }
 
     if (action.type === "UNIT_SELECTED_UE5") {
       effects.push({ type: "CLOSE_PANELS" })
-      effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.unitPicked(action.roomName) })
+      effects.push({ type: "SPEAK_INTENT", key: "unitPicked", args: { roomName: action.roomName } })
       return { nextState: { stage: "ROOM_SELECTED", awaiting: "view_choice", unitSelected: true, lastProposal: "interior_or_exterior" }, effects }
     }
 
@@ -578,8 +575,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
       effects.push({ type: "FADE_TRANSITION" })
       const nextState = buildAmenityViewingState(amenity, action.visitedAmenities, action.allAmenities)
       const teaser = nextState.suggestedNext ? ` Next: the ${nextState.suggestedNext}?` : ""
-      // TODO(phase-7): extract — composes amenity name + narrative + teaser (3 runtime params)
-      effects.push({ type: "SPEAK", text: `Let me take you to the ${action.name} — ${narrative}${teaser}` })
+      effects.push({ type: "SPEAK_INTENT", key: "amenityNavigate", args: { amenityName: action.name, narrative, teaser } })
       return { nextState, effects }
     }
   }
@@ -596,16 +592,16 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           // Resolve bare "yes" using what the avatar last proposed (default: book)
           const proposal = state.lastProposal ?? "book"
           if (proposal === "book") {
-            effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.openingBookingPage })
+            effects.push({ type: "SPEAK_INTENT", key: "openingBookingPage" })
             effects.push({ type: "OPEN_BOOKING_URL" })
             return { nextState: { stage: "ROOM_SELECTED", awaiting: "view_choice", unitSelected: state.unitSelected }, effects }
           }
           if (proposal === "interior_or_exterior") {
             if (!state.unitSelected) {
-              effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.tapGreenUnitFirst })
+              effects.push({ type: "SPEAK_INTENT", key: "tapGreenUnitFirst" })
               return { nextState: state, effects }
             }
-            effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.steppingInside })
+            effects.push({ type: "SPEAK_INTENT", key: "steppingInside" })
             effects.push({ type: "UE5_COMMAND", command: "unitView", value: "interior" })
             effects.push({ type: "FADE_TRANSITION" })
             return { nextState: { ...state, lastProposal: "book" }, effects }
@@ -615,30 +611,30 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
 
         case "INTERIOR":
           if (!state.unitSelected) {
-            effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.tapGreenUnitFirst })
+            effects.push({ type: "SPEAK_INTENT", key: "tapGreenUnitFirst" })
             return { nextState: state, effects }
           }
-          effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.steppingInside })
+          effects.push({ type: "SPEAK_INTENT", key: "steppingInside" })
           effects.push({ type: "UE5_COMMAND", command: "unitView", value: "interior" })
           effects.push({ type: "FADE_TRANSITION" })
           return { nextState: { ...state, lastProposal: "book" }, effects }
 
         case "EXTERIOR":
           if (!state.unitSelected) {
-            effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.tapGreenUnitFirst })
+            effects.push({ type: "SPEAK_INTENT", key: "tapGreenUnitFirst" })
             return { nextState: state, effects }
           }
-          effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.exteriorView })
+          effects.push({ type: "SPEAK_INTENT", key: "exteriorView" })
           effects.push({ type: "UE5_COMMAND", command: "unitView", value: "exterior" })
           return { nextState: { ...state, lastProposal: "book" }, effects }
 
         case "BOOK":
-          effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.openingBookingPage })
+          effects.push({ type: "SPEAK_INTENT", key: "openingBookingPage" })
           effects.push({ type: "OPEN_BOOKING_URL" })
           return { nextState: { stage: "ROOM_SELECTED", awaiting: "view_choice", unitSelected: state.unitSelected }, effects }
 
         case "BACK":
-          effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.backToOtherRooms })
+          effects.push({ type: "SPEAK_INTENT", key: "backToOtherRooms" })
           effects.push({ type: "RESET_TO_DEFAULT" })
           effects.push({ type: "FADE_TRANSITION" })
           effects.push({ type: "OPEN_PANEL", panel: "rooms" })
@@ -646,14 +642,14 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
 
         case "HOTEL_EXPLORE":
         case "TRAVEL_TO_HOTEL":
-          effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.backToHotelOverview })
+          effects.push({ type: "SPEAK_INTENT", key: "backToHotelOverview" })
           effects.push({ type: "RESET_TO_DEFAULT" })
           effects.push({ type: "FADE_TRANSITION" })
           return { nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" }, effects }
 
         case "OTHER_OPTIONS":
         case "ROOMS":
-          effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.backToOtherRooms })
+          effects.push({ type: "SPEAK_INTENT", key: "backToOtherRooms" })
           effects.push({ type: "RESET_TO_DEFAULT" })
           effects.push({ type: "FADE_TRANSITION" })
           effects.push({ type: "OPEN_PANEL", panel: "rooms" })
@@ -671,14 +667,14 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           return { nextState: state, effects: [] }
 
         case "LOCATION":
-          effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.showLocation })
+          effects.push({ type: "SPEAK_INTENT", key: "showLocation" })
           effects.push({ type: "RESET_TO_DEFAULT" })
           effects.push({ type: "FADE_TRANSITION" })
           effects.push({ type: "OPEN_PANEL", panel: "location" })
           return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
 
         case "UNKNOWN":
-          effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.unknownResponse })
+          effects.push({ type: "SPEAK_INTENT", key: "unknownResponse" })
           return { nextState: state, effects }
 
         default:
@@ -687,7 +683,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
     }
 
     if (action.type === "UNIT_SELECTED_UE5") {
-      effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.unitPicked(action.roomName) })
+      effects.push({ type: "SPEAK_INTENT", key: "unitPicked", args: { roomName: action.roomName } })
       return { nextState: { stage: "ROOM_SELECTED", awaiting: "view_choice", unitSelected: true, lastProposal: "interior_or_exterior" }, effects }
     }
   }
@@ -705,7 +701,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
         case "TRAVEL_TO_HOTEL":
           effects.push({ type: "RESET_TO_DEFAULT" })
           effects.push({ type: "FADE_TRANSITION" })
-          effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.amenityBackToHotel })
+          effects.push({ type: "SPEAK_INTENT", key: "amenityBackToHotel" })
           return { nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" }, effects }
 
         case "AFFIRMATIVE":
@@ -713,28 +709,28 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           // and dispatches NAVIGATE_TO_AMENITY. If it reaches here, no suggestion active.
           if (state.suggestedNext) {
             // Safety: shouldn't normally reach here (useJourney intercepts), but handle gracefully
-            effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.amenitySuggestFallback(state.suggestedNext) })
+            effects.push({ type: "SPEAK_INTENT", key: "amenitySuggestFallback", args: { suggestedNext: state.suggestedNext } })
             return { nextState: state, effects }
           }
-          effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.amenityFallbackPrompt })
+          effects.push({ type: "SPEAK_INTENT", key: "amenityFallbackPrompt" })
           return { nextState: state, effects }
 
         case "NEGATIVE":
           if (state.suggestedNext) {
             // "No" to the suggested next amenity
-            effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.amenityNextNoWorries })
+            effects.push({ type: "SPEAK_INTENT", key: "amenityNextNoWorries" })
             return { nextState: { ...state, suggestedNext: undefined }, effects }
           }
-          effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.amenityAskBack })
+          effects.push({ type: "SPEAK_INTENT", key: "amenityAskBack" })
           return { nextState: state, effects }
 
         case "BOOK":
-          effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.amenityBookNudge })
+          effects.push({ type: "SPEAK_INTENT", key: "amenityBookNudge" })
           effects.push({ type: "OPEN_PANEL", panel: "rooms" })
           return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
 
         case "ROOMS":
-          effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.amenityPickRooms })
+          effects.push({ type: "SPEAK_INTENT", key: "amenityPickRooms" })
           effects.push({ type: "OPEN_PANEL", panel: "rooms" })
           return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
 
@@ -748,12 +744,12 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           return { nextState: state, effects: [] }
 
         case "LOCATION":
-          effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.showLocation })
+          effects.push({ type: "SPEAK_INTENT", key: "showLocation" })
           effects.push({ type: "OPEN_PANEL", panel: "location" })
           return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
 
         case "UNKNOWN":
-          effects.push({ type: "SPEAK", text: DEFAULT_SPEECH.unknownResponse })
+          effects.push({ type: "SPEAK_INTENT", key: "unknownResponse" })
           return { nextState: state, effects }
 
         default:
@@ -777,8 +773,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
     }
     effects.push({ type: "UE5_COMMAND", command: "communal", value: amenity.id })
     effects.push({ type: "FADE_TRANSITION" })
-    // TODO(phase-7): extract — composes amenity name + narrative + teaser (3 runtime params)
-    effects.push({ type: "SPEAK", text: `Let me take you to the ${amenity.name} — ${narrative}${teaser}` })
+    effects.push({ type: "SPEAK_INTENT", key: "amenityNavigate", args: { amenityName: amenity.name, narrative, teaser } })
     return { nextState, effects }
   }
 
@@ -788,8 +783,11 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
   if (action.type === "LIST_AMENITIES") {
     const { visitedAmenities, allAmenities, travelPurpose, recommendedAmenityName } = action
     const listing = buildAmenityListingSpeech(allAmenities, visitedAmenities, travelPurpose, recommendedAmenityName)
-    // TODO(phase-7): extract — buildAmenityListingSpeech composes speech from amenity lists
-    effects.push({ type: "SPEAK", text: listing.text })
+    effects.push({
+      type: "SPEAK_INTENT",
+      key: "amenityListing",
+      args: { allAmenities, visitedAmenities, travelPurpose, recommendedAmenityName },
+    })
 
     // If currently viewing an amenity, stay in AMENITY_VIEWING with updated suggestedNext
     if (state.stage === "AMENITY_VIEWING") {

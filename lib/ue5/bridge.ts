@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useUE5WebSocket, type UE5IncomingMessage, type UnitSelectionMessage } from "@/lib/useUE5WebSocket"
-import { useEventBus } from "@/lib/events"
 import type { SunState } from "@/components/SunToggle"
 
 // ---------------------------------------------------------------------------
@@ -11,7 +10,8 @@ import type { SunState } from "@/components/SunToggle"
 // Encapsulates:
 //   - Typed commands (navigateToRooms, selectRoom, etc.)
 //   - Fade overlay state and animation logic
-//   - Forwarding incoming UE5 events to the EventBus
+//   - Forwarding incoming UE5 unit selections to the caller via a direct
+//     callback (Phase 8: no EventBus hop).
 // ---------------------------------------------------------------------------
 
 export type UE5BridgeState = {
@@ -22,8 +22,28 @@ export type UE5BridgeState = {
   sunState: SunState
 }
 
-export function useUE5Bridge() {
-  const eventBus = useEventBus()
+export type UE5BridgeOptions = {
+  /**
+   * Phase 8: called when UE5 reports that the user selected a unit in the 3D
+   * scene. Previously this fired a `UNIT_SELECTED_UE5` event on the EventBus.
+   * `/home` now wires it directly to `useJourney().onUnitSelectedUE5`.
+   */
+  onUnitSelected?: (payload: {
+    roomName: string
+    description?: string
+    price?: string
+    level?: string
+  }) => void
+}
+
+export function useUE5Bridge(opts: UE5BridgeOptions = {}) {
+  // Stable ref to the latest `onUnitSelected` callback so `handleUnitSelected`
+  // (a useCallback) stays referentially stable even when callers pass a new
+  // function each render. WebSocket hook wiring stays quiet.
+  const onUnitSelectedRef = useRef(opts.onUnitSelected)
+  useEffect(() => {
+    onUnitSelectedRef.current = opts.onUnitSelected
+  })
 
   // --- Fade overlay state (extracted from old HomePage) ---
   const [showFadeOverlay, setShowFadeOverlay] = useState(false)
@@ -71,14 +91,13 @@ export function useUE5Bridge() {
 
   const handleUnitSelected = useCallback((unit: UnitSelectionMessage) => {
     setSelectedUnit(unit)
-    eventBus.emit({
-      type: "UNIT_SELECTED_UE5",
+    onUnitSelectedRef.current?.({
       roomName: unit.roomName,
       description: unit.description,
       price: unit.price,
       level: unit.level,
     })
-  }, [eventBus])
+  }, [])
 
   const { isConnected, sendRawMessage } = useUE5WebSocket({
     onMessage: handleUE5Message,
