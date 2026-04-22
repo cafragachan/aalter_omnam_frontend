@@ -144,6 +144,115 @@ export function getAmenitiesByHotelId(hotelId: string): Amenity[] {
   return amenities.filter((a) => a.hotelId === hotelId)
 }
 
+// ---------------------------------------------------------------------------
+// Hotel Catalog — server-side packing helper (Phase 2)
+// ---------------------------------------------------------------------------
+//
+// A `HotelCatalog` is a self-contained description of the rooms, amenities,
+// and tool-facing metadata for a single hotel. The `/api/start-sandbox-session`
+// endpoint ships this down with the session so the client (and, in Phase 3,
+// the orchestrate prompt) can read the authoritative list from one place
+// instead of re-querying `hotel-data.ts` at multiple call sites.
+//
+// Everything here is packed from the existing in-memory arrays above — no
+// new data. Fields are additive; unknown slugs return `null` so callers can
+// fall back to the legacy per-hotel lookups without special-casing errors.
+
+export interface HotelCatalog {
+  hotelSlug: string
+  hotelName: string
+  rooms: Array<{
+    id: string
+    name: string
+    /** Parsed from Room.occupancy ("2") → 2. Falls back to 2 on parse failure. */
+    occupancy: number
+    price: number
+    book_url?: string
+  }>
+  amenities: Array<{
+    id: string
+    name: string
+    /** UE5 scene identifier (matches Amenity.scene). */
+    scene: string
+    /** Optional speech aliases so the LLM can accept synonyms. */
+    aliases?: string[]
+  }>
+  tools: {
+    /** Canonical navigation intent names the orchestrate tool schema may reference. */
+    navigationIntents: string[]
+    /** Canonical amenity names the LLM is allowed to speak / pass as `amenityName`. */
+    amenityNames: string[]
+  }
+}
+
+// Aliases that stay stable across hotels — matches `AMENITY_ALIASES` in
+// `useJourney.ts`. Kept here too so the packed catalog carries the full
+// amenity-name surface for Phase 3's tool-schema generator.
+const AMENITY_NAME_ALIASES: Record<string, string[]> = {
+  lobby: ["lounge", "reception", "entrance"],
+}
+
+// The navigation intents Phase 3's orchestrate tool catalog will advertise.
+// Kept as a module constant so both the catalog packing helper and future
+// dynamic tool schemas read from a single source of truth.
+const NAVIGATION_INTENTS: string[] = [
+  "ROOMS",
+  "AMENITIES",
+  "LOCATION",
+  "INTERIOR",
+  "EXTERIOR",
+  "BACK",
+  "HOTEL_EXPLORE",
+]
+
+/**
+ * Pack the in-memory hotel/room/amenity data into a serializable catalog for
+ * the given slug. Returns `null` for unknown slugs so callers can fall back.
+ *
+ * This helper must NOT introduce any new data — it only projects what already
+ * exists in the `hotels` / `rooms` / `amenities` arrays into the shape the
+ * session response and Phase 3's orchestrate tools consume.
+ */
+export function getHotelCatalog(slug: string): HotelCatalog | null {
+  const hotel = getHotelBySlug(slug)
+  if (!hotel) return null
+
+  const hotelRooms = getRoomsByHotelId(hotel.id)
+  const hotelAmenities = getAmenitiesByHotelId(hotel.id)
+
+  const packedRooms = hotelRooms.map((r) => {
+    const parsedOccupancy = parseInt(r.occupancy, 10)
+    return {
+      id: r.id,
+      name: r.name,
+      occupancy: Number.isFinite(parsedOccupancy) && parsedOccupancy > 0 ? parsedOccupancy : 2,
+      price: r.price,
+      ...(r.book_url ? { book_url: r.book_url } : {}),
+    }
+  })
+
+  const packedAmenities = hotelAmenities.map((a) => {
+    const aliases = AMENITY_NAME_ALIASES[a.scene.toLowerCase()]
+    return {
+      id: a.id,
+      name: a.name,
+      scene: a.scene,
+      ...(aliases && aliases.length > 0 ? { aliases } : {}),
+    }
+  })
+
+  return {
+    hotelSlug: hotel.slug,
+    hotelName: hotel.name,
+    rooms: packedRooms,
+    amenities: packedAmenities,
+    tools: {
+      navigationIntents: [...NAVIGATION_INTENTS],
+      amenityNames: packedAmenities.map((a) => a.name),
+    },
+  }
+}
+
 export function getRecommendedAmenity(
   amenities: Amenity[],
   travelPurpose: string | undefined,

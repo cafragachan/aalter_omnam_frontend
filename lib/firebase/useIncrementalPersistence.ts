@@ -1,7 +1,8 @@
 "use client"
 
 import { useCallback, useEffect, useRef, useState } from "react"
-import { auth } from "@/lib/firebase"
+import { ref as dbRef, set, remove } from "firebase/database"
+import { auth, database } from "@/lib/firebase"
 import { useUserProfileContext } from "@/lib/context"
 import { useGuestIntelligence } from "@/lib/guest-intelligence"
 import { useUserProfile as useHeyGenUserProfile } from "@/lib/liveavatar"
@@ -253,6 +254,62 @@ export function useIncrementalPersistence(hooks?: IncrementalPersistenceHooks) {
   }, [sessionId, guestIntelligence.data.bookingOutcome, writeSnapshotToStorage])
 
   // =========================================================================
+  // 6.5 Per-message debounced write to `omnam/users/{uid}/activeSession`.
+  //     Phase 5: keeps the transcript alive across a browser refresh. Writes
+  //     a singleton "active" node per user (there is at most one resumable
+  //     session at a time — hydration overwrites / replaces it). The existing
+  //     end-of-session snapshot flow at step 7 is unchanged.
+  // =========================================================================
+
+  const messagesDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    if (!database || !sessionInitializedRef.current) return
+    const uid = getUid()
+    if (!uid) return
+    if (messages.length === 0) return
+
+    if (messagesDebounceRef.current) clearTimeout(messagesDebounceRef.current)
+    messagesDebounceRef.current = setTimeout(() => {
+      if (!database) return
+      const serialized = messages.map((m) => ({
+        sender: m.sender,
+        message: m.message,
+        timestamp: m.timestamp,
+      }))
+      set(dbRef(database, `omnam/users/${uid}/activeSession`), {
+        sessionId,
+        stage: journeyStage,
+        updatedAt: new Date().toISOString(),
+        startedAt: sessionStartedAtRef.current,
+        messages: serialized,
+      }).catch((err) =>
+        console.error("[incremental-persist] Failed to write activeSession messages:", err),
+      )
+    }, 1800)
+
+    return () => {
+      if (messagesDebounceRef.current) clearTimeout(messagesDebounceRef.current)
+    }
+  }, [messages, journeyStage, sessionId])
+
+  // =========================================================================
+  // 6.6 Clear the active session pointer when the journey reaches a terminal
+  //     stage. A refresh after END_EXPERIENCE should start fresh, not resume
+  //     into a farewell state.
+  // =========================================================================
+
+  useEffect(() => {
+    if (!database || !sessionInitializedRef.current) return
+    if (journeyStage !== "END_EXPERIENCE") return
+    const uid = getUid()
+    if (!uid) return
+    remove(dbRef(database, `omnam/users/${uid}/activeSession`)).catch((err) =>
+      console.error("[incremental-persist] Failed to clear activeSession on terminal stage:", err),
+    )
+  }, [journeyStage])
+
+  // =========================================================================
   // 7. End-of-session snapshot (final flush with AI analysis)
   // =========================================================================
 
@@ -319,6 +376,12 @@ export function useIncrementalPersistence(hooks?: IncrementalPersistenceHooks) {
       const snapshot = buildSnapshot(uid, giSnapshot)
       await uploadSessionSnapshot(uid, sessionId, snapshot)
 
+      // Phase 5: session is complete — clear the active-session pointer so a
+      // refresh after disconnect starts fresh rather than resuming a dead chat.
+      if (database) {
+        await remove(dbRef(database, `omnam/users/${uid}/activeSession`)).catch(() => {})
+      }
+
       console.log("[incremental-persist] End-of-session snapshot written:", sessionId)
     } catch (err) {
       console.error("[incremental-persist] Failed end-of-session snapshot:", err)
@@ -346,6 +409,27 @@ export function useIncrementalPersistence(hooks?: IncrementalPersistenceHooks) {
         mergePreferencesIncremental(uid, profile, gi).catch(() => {})
       }
 
+      // Phase 5: flush pending messages debounce to the active-session node
+      // so the latest turns survive the tab closing.
+      if (messagesDebounceRef.current) {
+        clearTimeout(messagesDebounceRef.current)
+        messagesDebounceRef.current = null
+        if (database && messages.length > 0) {
+          const serialized = messages.map((m) => ({
+            sender: m.sender,
+            message: m.message,
+            timestamp: m.timestamp,
+          }))
+          set(dbRef(database, `omnam/users/${uid}/activeSession`), {
+            sessionId,
+            stage: journeyStage,
+            updatedAt: new Date().toISOString(),
+            startedAt: sessionStartedAtRef.current,
+            messages: serialized,
+          }).catch(() => {})
+        }
+      }
+
       // Update endedAt (small write, most likely to succeed)
       updateSessionPointerFields(uid, sessionId, {
         endedAt: new Date().toISOString(),
@@ -357,7 +441,7 @@ export function useIncrementalPersistence(hooks?: IncrementalPersistenceHooks) {
 
     document.addEventListener("visibilitychange", handleVisibilityChange)
     return () => document.removeEventListener("visibilitychange", handleVisibilityChange)
-  }, [sessionId, profile, guestIntelligence, writeSnapshotToStorage])
+  }, [sessionId, profile, guestIntelligence, writeSnapshotToStorage, messages, journeyStage])
 
   return { sessionId, writeEndOfSessionSnapshot }
 }

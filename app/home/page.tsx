@@ -22,12 +22,14 @@ import { useJourney } from "@/lib/orchestrator"
 import { useUE5Bridge } from "@/lib/ue5/bridge"
 import { useVagonSession } from "@/lib/ue5/useVagonSession"
 import { hotels, getHotelBySlug, getRoomsByHotelId, getAmenitiesByHotelId, getRecommendedRoomId, getRecommendedRoomPlan } from "@/lib/hotel-data"
-import type { Room } from "@/lib/hotel-data"
+import type { Room, Amenity, HotelCatalog } from "@/lib/hotel-data"
 import { useUE5WebSocket } from "@/lib/useUE5WebSocket"
 import { GlassPanel } from "@/components/glass-panel"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { useIncrementalPersistence } from "@/lib/firebase/useIncrementalPersistence"
+import { useActiveSessionHydration } from "@/lib/firebase/useActiveSessionHydration"
+import { initDebug } from "@/lib/debug"
 import { SessionState, VoiceChatState } from "@heygen/liveavatar-web-sdk"
 
 // ---------------------------------------------------------------------------
@@ -642,6 +644,48 @@ function MicToggle() {
 }
 
 // ---------------------------------------------------------------------------
+// HydratedLiveAvatarContext — Phase 5 wrapper.
+//
+// Calls `useActiveSessionHydration` and blocks rendering of the provider
+// until the hydration attempt has finished, then seeds
+// `LiveAvatarContextProvider` with the prior transcript (or an empty list
+// when no resumable session is available). Keeping the hook inside this
+// wrapper ensures it only runs for authenticated users who reached the
+// point of starting a HeyGen session.
+// ---------------------------------------------------------------------------
+
+function HydratedLiveAvatarContext({
+  sessionToken,
+  children,
+}: {
+  sessionToken: string
+  children: React.ReactNode
+}) {
+  // Hydration disabled by default — user prefers fresh sessions. Per-message
+  // writes in useIncrementalPersistence still run so the transcript is
+  // available server-side for future debugging/analytics, but the client
+  // won't read them back on mount unless NEXT_PUBLIC_HYDRATE_ACTIVE_SESSION
+  // is explicitly set to "true".
+  const hydrationEnabled = process.env.NEXT_PUBLIC_HYDRATE_ACTIVE_SESSION === "true"
+  const { isHydrationReady, initialMessages } = useActiveSessionHydration(hydrationEnabled)
+
+  // Gate the provider on hydration completion so `initialMessages` is read
+  // once by the provider's lazy initializer with a stable value.
+  if (!isHydrationReady) {
+    return null
+  }
+
+  return (
+    <LiveAvatarContextProvider
+      sessionAccessToken={sessionToken}
+      initialMessages={initialMessages}
+    >
+      {children}
+    </LiveAvatarContextProvider>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // HomePage — single page: UE5 iframe loads immediately, login overlays on top
 // ---------------------------------------------------------------------------
 
@@ -652,6 +696,10 @@ export default function HomePage() {
   const [ue5Ready, setUe5Ready] = useState(false)
   const [ue5Hidden, setUe5Hidden] = useState(false)
   const [sessionToken, setSessionToken] = useState<string | null>(null)
+  // Phase 2: server ships the active hotel's catalog alongside the session
+  // token. Null when the server omits/rejects the field — consumer falls
+  // back to the legacy `getAmenitiesByHotelId` / `getRoomsByHotelId` lookups.
+  const [catalog, setCatalog] = useState<HotelCatalog | null>(null)
   const sessionUserIdRef = useRef<string | null>(null)
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const [error, setError] = useState<string | null>(null)
@@ -735,6 +783,9 @@ export default function HomePage() {
         }
         const data = await res.json()
         setSessionToken(data.session_token)
+        // Phase 2: server-packed catalog is additive — null/undefined means
+        // the client falls back to `hotel-data.ts` lookups.
+        setCatalog((data.catalog as HotelCatalog | null | undefined) ?? null)
       } catch (err) {
         setError((err as Error).message)
       }
@@ -800,9 +851,9 @@ export default function HomePage() {
             </div>
           )} */}
           {sessionToken && (
-            <LiveAvatarContextProvider sessionAccessToken={sessionToken}>
-              <HomePageContent onHideUE5Stream={() => setUe5Hidden(true)} />
-            </LiveAvatarContextProvider>
+            <HydratedLiveAvatarContext sessionToken={sessionToken}>
+              <HomePageContent onHideUE5Stream={() => setUe5Hidden(true)} catalog={catalog} />
+            </HydratedLiveAvatarContext>
           )}
         </>
       )}
@@ -814,7 +865,19 @@ export default function HomePage() {
 // HomePageContent — thin layout shell (all hooks available)
 // ---------------------------------------------------------------------------
 
-function HomePageContent({ onHideUE5Stream }: { onHideUE5Stream: () => void }) {
+function HomePageContent({
+  onHideUE5Stream,
+  catalog,
+}: {
+  onHideUE5Stream: () => void
+  /**
+   * Phase 2: server-packed hotel catalog. When non-null, its `rooms` and
+   * `amenities` are used in place of the synchronous `getRoomsByHotelId` /
+   * `getAmenitiesByHotelId` lookups. Null falls back to client-side lookups
+   * so `/home-v2` and env-flagged fallback paths keep working.
+   */
+  catalog: HotelCatalog | null
+}) {
   const { selectHotel, selectedHotel } = useApp()
   const { profile, journeyStage, setJourneyStage, updateProfile } = useUserProfileContext()
   const emit = useEmit()
@@ -870,15 +933,51 @@ function HomePageContent({ onHideUE5Stream }: { onHideUE5Stream: () => void }) {
     [selectedHotel],
   )
 
-  const rooms = useMemo(
-    () => (selectedHotelData ? getRoomsByHotelId(selectedHotelData.id) : []),
-    [selectedHotelData],
-  )
+  // Phase 2: when the server-packed catalog matches the currently-selected
+  // hotel, use it as the authoritative room/amenity list. Fields the catalog
+  // doesn't carry (image, hotelId) are hydrated from the client-side lookups
+  // so downstream panels keep the exact `Room` / `Amenity` shapes they expect.
+  // When catalog is null OR the slug mismatches, fall back entirely to the
+  // legacy client-side helpers — this preserves `/home-v2` behavior and
+  // permits a rollback by dropping the server field.
+  const catalogMatchesSelected =
+    catalog !== null && selectedHotelData !== undefined && catalog.hotelSlug === selectedHotelData.slug
 
-  const amenities = useMemo(
-    () => (selectedHotelData ? getAmenitiesByHotelId(selectedHotelData.id) : []),
-    [selectedHotelData],
-  )
+  const rooms = useMemo<Room[]>(() => {
+    if (!selectedHotelData) return []
+    const fallback = getRoomsByHotelId(selectedHotelData.id)
+    if (!catalogMatchesSelected || !catalog) return fallback
+    const byId = new Map(fallback.map((r) => [r.id, r]))
+    return catalog.rooms.map((cr): Room => {
+      const legacy = byId.get(cr.id)
+      return {
+        id: cr.id,
+        name: cr.name,
+        occupancy: String(cr.occupancy),
+        price: cr.price,
+        hotelId: legacy?.hotelId ?? selectedHotelData.id,
+        image: legacy?.image ?? "",
+        book_url: cr.book_url ?? legacy?.book_url ?? "",
+      }
+    })
+  }, [selectedHotelData, catalog, catalogMatchesSelected])
+
+  const amenities = useMemo<Amenity[]>(() => {
+    if (!selectedHotelData) return []
+    const fallback = getAmenitiesByHotelId(selectedHotelData.id)
+    if (!catalogMatchesSelected || !catalog) return fallback
+    const byId = new Map(fallback.map((a) => [a.id, a]))
+    return catalog.amenities.map((ca): Amenity => {
+      const legacy = byId.get(ca.id)
+      return {
+        id: ca.id,
+        name: ca.name,
+        scene: ca.scene,
+        hotelId: legacy?.hotelId ?? selectedHotelData.id,
+        image: legacy?.image ?? "",
+      }
+    })
+  }, [selectedHotelData, catalog, catalogMatchesSelected])
 
   const recommendedRoomId = useMemo(
     () => getRecommendedRoomId(rooms, profile.familySize, profile.budgetRange),
@@ -945,7 +1044,7 @@ function HomePageContent({ onHideUE5Stream }: { onHideUE5Stream: () => void }) {
   }, [sessionRef])
 
   // --- Journey orchestrator (runs as a hook, not a component) ---
-  const { dispatch: journeyDispatch } = useJourney({
+  const { dispatch: journeyDispatch, getInternalState } = useJourney({
     onOpenPanel: handleOpenPanel,
     onClosePanels: handleClosePanels,
     onUE5Command: ue5.sendCommand,
@@ -957,8 +1056,36 @@ function HomePageContent({ onHideUE5Stream }: { onHideUE5Stream: () => void }) {
     onHideUE5Stream,
     amenities,
     rooms,
-    enableLLMOrchestrate: true,
+    // Phase 2: forward the server-packed catalog. useJourney stores it for
+    // Phase 3 but does not use it yet — the existing amenities/rooms props
+    // remain the operative channel until Phase 3 plumbs catalog into orchestrate.
+    catalog,
+    // Phase 3: tri-state rollout flag ("off" | "shadow" | "on").
+    //   - "off"    = legacy regex short-circuit, no parallel orchestrate call.
+    //   - "shadow" = dispatch on regex as today, but also call orchestrate in
+    //                parallel for every non-PROFILE_COLLECTION turn and log a
+    //                [SHADOW] comparison. No user-visible behavior change.
+    //   - "on"     = orchestrate drives dispatch; regex becomes a `regexHint`.
+    // Default "shadow" for Phase 3 rollout. Flip to "on" via
+    // NEXT_PUBLIC_UNIFIED_ORCHESTRATOR after shadow-mode validation passes.
+    useUnifiedOrchestrator:
+      (process.env.NEXT_PUBLIC_UNIFIED_ORCHESTRATOR as "off" | "shadow" | "on" | undefined) ?? "shadow",
+    // Phase 2.5: default ON. Set NEXT_PUBLIC_PROFILE_FAST_PATH=false to disable.
+    useProfileFastPath: process.env.NEXT_PUBLIC_PROFILE_FAST_PATH !== "false",
   })
+
+  // --- Debug surface (dev only): wire `window.__omnamDebug` ---
+  // Read profile + app + journey into a single snapshot so [TURN]/[EFFECT]
+  // ring buffers can be cross-referenced with live state during manual
+  // validation. No-op in production.
+  const omnamApp = useApp()
+  useEffect(() => {
+    initDebug(() => ({
+      profile: { profile, journeyStage },
+      app: { selectedHotel: omnamApp.selectedHotel, bookings: omnamApp.bookings, isLoading: omnamApp.isLoading },
+      journey: getInternalState(),
+    }))
+  }, [profile, journeyStage, omnamApp.selectedHotel, omnamApp.bookings, omnamApp.isLoading, getInternalState])
 
   // --- End-of-session snapshot on HeyGen disconnect ---
   useEffect(() => {

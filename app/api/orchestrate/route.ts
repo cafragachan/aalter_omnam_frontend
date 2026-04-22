@@ -77,8 +77,8 @@ const ProfileUpdatesSchema = z.object({
   endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   partySize: z.number().int().positive().optional(),
   guestComposition: z.object({
-    adults: z.number().int().nonnegative(),
-    children: z.number().int().nonnegative(),
+    adults: z.number().int().nonnegative().optional(),
+    children: z.number().int().nonnegative().optional(),
     childrenAges: z.array(z.number().int().nonnegative()).optional(),
   }).optional(),
   travelPurpose: z.string().optional(),
@@ -139,13 +139,177 @@ interface RequestBody {
   preferences?: PersistedPreferences | null
   loyalty?: PersistedLoyalty | null
   conversationHistory?: { role: "user" | "avatar"; text: string }[]
+  /**
+   * Phase 3: the client's regex-classifier guess for this turn. When present
+   * AND the stage is NOT PROFILE_COLLECTION AND the hint is not "UNKNOWN",
+   * the system prompt surfaces it as a tiebreaker hint for the LLM. Unused
+   * in PROFILE_COLLECTION (that stage uses the profile_turn tool, not
+   * navigation intents).
+   */
+  regexHint?: string
+}
+
+// ---------------------------------------------------------------------------
+// Server-side profile reconstruction from transcript (Phase 4)
+//
+// The client-sent body fields (partySize, guestComposition, travelPurpose,
+// roomAllocation, dates) can be stale — the client's React state often lags
+// behind the transcript because extraction is debounced / racy / spread
+// across three stores. For every orchestrate call we reconcile a merged view
+// the LLM can reason against so it can ignore a stale `body.partySize: 1`
+// when the transcript clearly says "8 guests".
+//
+// This merged view is:
+//   • logged as `reconstructedProfile` for observability
+//   • rendered into the system prompt (at all stages when history is present)
+//   • advisory to the LLM — the transcript always wins on disagreement
+//
+// The heavy lifting (transcript-aware structured extraction) is done by the
+// LLM itself inside profile_turn (PROFILE_COLLECTION) or inline reasoning
+// (other stages). This helper only assembles the client-sent fields into a
+// canonical shape and adds a "transcriptHas" hint listing which fields the
+// transcript appears to contain so the LLM knows what to re-extract. Server-
+// side we don't do AI extraction here — that stays in profile_turn. For
+// non-PROFILE_COLLECTION stages this is a "light reconciliation": we trust
+// the body fields as a prior, but the prompt tells the LLM to correct them
+// from transcript if they disagree.
+// ---------------------------------------------------------------------------
+
+type ReconstructedProfile = {
+  startDate?: string
+  endDate?: string
+  partySize?: number
+  guestComposition?: { adults: number; children: number; childrenAges?: number[] }
+  travelPurpose?: string
+  roomAllocation?: number[]
+  guestFirstName?: string
+  interests?: string[]
+  budgetRange?: string
+  /**
+   * Simple keyword flags derived from transcript user turns. These are NOT
+   * authoritative — the LLM always owns extraction. They exist so the prompt
+   * can highlight "the transcript mentions X while body.X is unset/different;
+   * trust the transcript" rather than silently letting a stale body win.
+   */
+  transcriptHints: {
+    mentionsParty: boolean
+    mentionsDates: boolean
+    mentionsChildren: boolean
+    mentionsPurpose: boolean
+    mentionsRooms: boolean
+  }
+}
+
+function reconstructProfileFromTranscript(
+  history: { role: "user" | "avatar"; text: string }[] | undefined,
+  clientBody: RequestBody,
+): ReconstructedProfile {
+  // Derive an "effective" partySize from guestComposition when the body's
+  // partySize lags (matches the logic already in contextBlock / profile block).
+  const compTotal = clientBody.guestComposition
+    ? (clientBody.guestComposition.adults ?? 0) + (clientBody.guestComposition.children ?? 0)
+    : 0
+  const effectivePartySize = compTotal > 0 ? compTotal : clientBody.partySize
+
+  // Scan user turns for simple keyword flags. These are signals for the LLM,
+  // not decisions. The LLM owns canonical extraction; this just helps the
+  // prompt say "hey, the transcript talks about kids but clientBody has
+  // children=0 — re-check the transcript".
+  const userTurns = (history ?? [])
+    .filter((m) => m.role === "user")
+    .map((m) => m.text.toLowerCase())
+    .join(" | ")
+
+  const mentionsParty =
+    /\b(guests?|people|adults?|kids?|children|us|party|of\s+(?:two|three|four|five|six|seven|eight|nine|ten|\d+))\b/.test(
+      userTurns,
+    )
+  const mentionsDates =
+    /\b(january|february|march|april|may|june|july|august|september|october|november|december|\d{1,2}(?:st|nd|rd|th)?|next\s+(?:week|month)|weekend|dates?|arriving|arrival|checkin|check-in)\b/.test(
+      userTurns,
+    )
+  const mentionsChildren =
+    /\b(kids?|child|children|son|daughter|toddlers?|babies|baby|teens?|teenagers?|ages?\s+\d|no\s+kids)\b/.test(
+      userTurns,
+    )
+  const mentionsPurpose =
+    /\b(honeymoon|anniversary|business|leisure|vacation|holiday|celebration|birthday|wedding|family|romantic|retreat|getaway|work|conference)\b/.test(
+      userTurns,
+    )
+  const mentionsRooms =
+    /\b(rooms?|suites?|together|separate|share|split|one\s+room|two\s+rooms|three\s+rooms|connecting)\b/.test(
+      userTurns,
+    )
+
+  return {
+    startDate: clientBody.startDate,
+    endDate: clientBody.endDate,
+    partySize: effectivePartySize,
+    guestComposition: clientBody.guestComposition,
+    travelPurpose: clientBody.travelPurpose,
+    roomAllocation: clientBody.roomAllocation,
+    guestFirstName: clientBody.guestFirstName,
+    interests: clientBody.interests,
+    budgetRange: clientBody.budgetRange,
+    transcriptHints: {
+      mentionsParty,
+      mentionsDates,
+      mentionsChildren,
+      mentionsPurpose,
+      mentionsRooms,
+    },
+  }
+}
+
+function renderReconstructedProfile(r: ReconstructedProfile): string {
+  const lines: string[] = []
+  if (r.startDate && r.endDate) {
+    lines.push(`- Dates: ${r.startDate} to ${r.endDate}`)
+  } else if (r.startDate) {
+    lines.push(`- Start date: ${r.startDate} (end date missing)`)
+  } else if (r.endDate) {
+    lines.push(`- End date: ${r.endDate} (start date missing)`)
+  }
+  if (r.partySize) {
+    lines.push(`- Party size: ${r.partySize} guest${r.partySize === 1 ? "" : "s"}`)
+  }
+  if (r.guestComposition) {
+    const agesSuffix = r.guestComposition.childrenAges?.length
+      ? ` (ages ${r.guestComposition.childrenAges.join(", ")})`
+      : ""
+    lines.push(
+      `- Guest composition: ${r.guestComposition.adults} adults, ${r.guestComposition.children} children${agesSuffix}`,
+    )
+  }
+  if (r.travelPurpose) lines.push(`- Travel purpose: ${r.travelPurpose}`)
+  if (r.roomAllocation?.length) {
+    lines.push(
+      `- Room distribution: ${r.roomAllocation.join(" + ")} (${r.roomAllocation.length} room${r.roomAllocation.length === 1 ? "" : "s"})`,
+    )
+  }
+  if (r.guestFirstName) lines.push(`- Guest name: ${r.guestFirstName}`)
+  if (r.interests?.length) lines.push(`- Interests: ${r.interests.join(", ")}`)
+  if (r.budgetRange) lines.push(`- Budget range: ${r.budgetRange}`)
+
+  const hints: string[] = []
+  if (r.transcriptHints.mentionsParty) hints.push("party size")
+  if (r.transcriptHints.mentionsDates) hints.push("dates")
+  if (r.transcriptHints.mentionsChildren) hints.push("children")
+  if (r.transcriptHints.mentionsPurpose) hints.push("travel purpose")
+  if (r.transcriptHints.mentionsRooms) hints.push("room distribution")
+
+  const body = lines.length > 0 ? lines.join("\n") : "- (nothing reported by client yet)"
+  const hintLine = hints.length > 0
+    ? `\n- Transcript mentions: ${hints.join(", ")} — verify these against the block above; re-extract from the transcript if anything disagrees.`
+    : ""
+  return body + hintLine
 }
 
 // ---------------------------------------------------------------------------
 // System prompt builder
 // ---------------------------------------------------------------------------
 
-function buildSystemPrompt(body: RequestBody): string {
+function buildSystemPrompt(body: RequestBody, reconstructed: ReconstructedProfile): string {
   const isProfileCollection = body.journeyContext.stage === "PROFILE_COLLECTION"
   const hasRooms = body.rooms && body.rooms.length > 0
 
@@ -160,7 +324,13 @@ function buildSystemPrompt(body: RequestBody): string {
 
   // --- Guest context block ---
   let contextBlock = ""
-  if (body.partySize) contextBlock += `\n- Party size: ${body.partySize} guests`
+  // Derive party size from composition when the body's partySize lags behind
+  // transcript-extracted composition (happens mid-session before client sync).
+  const ctxCompTotal = body.guestComposition
+    ? (body.guestComposition.adults ?? 0) + (body.guestComposition.children ?? 0)
+    : 0
+  const ctxPartySize = ctxCompTotal > 0 ? ctxCompTotal : body.partySize
+  if (ctxPartySize) contextBlock += `\n- Party size: ${ctxPartySize} guests`
   if (body.guestComposition) {
     const agesSuffix = body.guestComposition.childrenAges?.length
       ? ` (ages ${body.guestComposition.childrenAges.join(", ")})`
@@ -186,8 +356,14 @@ function buildSystemPrompt(body: RequestBody): string {
     } else if (body.endDate) {
       collectedLines.push(`- End date: ${body.endDate} (start date missing)`)
     }
-    if (body.partySize) {
-      collectedLines.push(`- Party size: ${body.partySize} guest${body.partySize === 1 ? "" : "s"}`)
+    // Prefer the sum of adults + children when guestComposition is richer than
+    // a stale body.partySize (client state lags behind transcript extraction).
+    const compTotal = body.guestComposition
+      ? (body.guestComposition.adults ?? 0) + (body.guestComposition.children ?? 0)
+      : 0
+    const effectivePartySize = compTotal > 0 ? compTotal : body.partySize
+    if (effectivePartySize) {
+      collectedLines.push(`- Party size: ${effectivePartySize} guest${effectivePartySize === 1 ? "" : "s"}`)
     }
     if (body.guestComposition) {
       const agesSuffix = body.guestComposition.childrenAges?.length
@@ -339,6 +515,61 @@ Guest said "8 guests" and "4 are children":
 ${collectedSummary}`
   }
 
+  // Phase 3: surface the client-side regex-classifier hint for non-PROFILE_COLLECTION
+  // stages. The LLM is free to override but should prefer the hint on clear matches.
+  // PROFILE_COLLECTION uses the profile_turn tool which has no navigation enum, so
+  // the hint is meaningless there — skip it.
+  let regexHintBlock = ""
+  if (!isProfileCollection && body.regexHint && body.regexHint !== "UNKNOWN") {
+    regexHintBlock = `\n\nRegex classifier hint (use as a tiebreaker; override only if the conversation makes it clear the hint is wrong): ${body.regexHint}`
+  }
+
+  // Phase 4: universal transcript-aware reconstruction block.
+  //
+  // For PROFILE_COLLECTION, the `profileCollectionBlock` above already embeds
+  // the transcript and the profile state inside its persona/rules pack, so we
+  // skip this block there to avoid duplication.
+  //
+  // For ALL OTHER stages (DESTINATION_SELECT, VIRTUAL_LOUNGE, HOTEL_EXPLORATION,
+  // ROOM_SELECTED, ROOM_BOOKING, ...), this is the first time the transcript is
+  // made available to the LLM. Without it, the server was trusting whatever
+  // client state happened to land in `body.partySize / guestComposition / ...`
+  // — which is routinely stale mid-session. With the transcript + reconstructed
+  // profile view, the LLM can override stale body fields when the conversation
+  // clearly disagrees (e.g., guest said "we're 6 not 8" mid-exploration).
+  //
+  // Known gap flagged for Phase 9: the `navigate_and_speak` / `adjust_room_plan`
+  // / `no_action_speak` tools do NOT accept profileUpdates. So if the LLM
+  // detects a party-size correction in the transcript here, it cannot persist
+  // it server-side this turn — it can only use the corrected value to shape
+  // its reply. Actual profile writes still come through profile_turn (which
+  // only fires in PROFILE_COLLECTION) or client-side extract-profile spam
+  // (which Phase 9 will delete, replacing with a universal profileUpdates
+  // slot on the envelope).
+  let transcriptReconstructionBlock = ""
+  if (!isProfileCollection && body.conversationHistory?.length) {
+    const lines = body.conversationHistory.map((m) => {
+      const speaker = m.role === "avatar" ? "Avatar" : "Guest"
+      return `${speaker}: ${m.text}`
+    })
+    const transcript = lines.join("\n")
+    const reconstructedSummary = renderReconstructedProfile(reconstructed)
+    transcriptReconstructionBlock = `
+
+## Transcript so far (source of truth)
+${transcript}
+
+## Reconstructed profile (merged from client state — may be stale)
+
+${reconstructedSummary}
+
+### Transcript-over-body rule
+
+The transcript above is ground truth. The "Reconstructed profile" block is assembled from the client's local state which is frequently stale (React context lags debounced extraction). When the transcript and the reconstructed profile disagree — e.g., the guest said "we're 8 people" but Party size reads "1", or the guest corrected themselves mid-journey ("actually we're 6 not 8") — TRUST THE TRANSCRIPT. Let your speech and any navigation intent reflect the transcript-derived truth, not the stale field.
+
+This is advisory only; do not emit hallucinated navigation to "fix" profile data — the current tools (navigate_and_speak / adjust_room_plan / no_action_speak) don't persist profile updates. Just make sure your speech references the correct numbers and your intent classification doesn't act on a stale prior.`
+  }
+
   return `You are Ava, an AI concierge for a luxury hotel metaverse experience. Given a user message and journey context, you must do TWO things in a single call: (1) classify what the user wants, and (2) generate a natural spoken response.
 
 Call exactly one of the provided tools.
@@ -410,7 +641,7 @@ Every tool call MUST include a "speech" field — a natural spoken response for 
 ## Tool Selection
 
 - Use **navigate_and_speak** for navigation intents (ROOMS, BACK, AMENITY_BY_NAME, AFFIRMATIVE, NEGATIVE, TRAVEL_TO_HOTEL, etc.) and other non-room-plan intents.${hasRooms ? "\n- Use **adjust_room_plan** for room plan requests (budget changes, room composition, distribution, preferences)." : ""}
-- Use **no_action_speak** when the message doesn't map to any navigation or room plan action — just generate a helpful spoken response.${roomBlock}${guestBlock}${profileCollectionBlock}`
+- Use **no_action_speak** when the message doesn't map to any navigation or room plan action — just generate a helpful spoken response.${regexHintBlock}${roomBlock}${guestBlock}${transcriptReconstructionBlock}${profileCollectionBlock}`
 }
 
 // ---------------------------------------------------------------------------
@@ -564,20 +795,33 @@ function validateProfileTurn(
 
   // --- Check 2: if decision is "ready", every required field must be set ---
   if (result.decision === "ready") {
-    // Derive partySize from guestComposition if needed — the LLM often sets
-    // one without the other and we want validation to accept either shape.
-    const partySize =
-      updates.partySize ??
-      (updates.guestComposition
-        ? updates.guestComposition.adults + updates.guestComposition.children
-        : undefined) ??
-      body.partySize
+    // Deep-merge guestComposition so a partial update like
+    // { childrenAges: [2, 4] } doesn't wipe adults/children from the body.
+    // Same bug class we already fixed client-side in lib/context.tsx —
+    // the shallow `??` kept reappearing elsewhere because nested objects
+    // need explicit merging.
+    const mergedGuestComposition = updates.guestComposition
+      ? ({
+          ...(body.guestComposition ?? {}),
+          ...updates.guestComposition,
+        } as MergedProfileState["guestComposition"])
+      : body.guestComposition
+
+    // Derive partySize from the MERGED composition (not raw updates), so
+    // adults/children inherited from body still contribute to the total.
+    const derivedFromComp =
+      mergedGuestComposition &&
+      typeof mergedGuestComposition.adults === "number" &&
+      typeof mergedGuestComposition.children === "number"
+        ? mergedGuestComposition.adults + mergedGuestComposition.children
+        : undefined
+    const partySize = updates.partySize ?? derivedFromComp ?? body.partySize
 
     const merged: MergedProfileState = {
       startDate: updates.startDate ?? body.startDate,
       endDate: updates.endDate ?? body.endDate,
       partySize,
-      guestComposition: updates.guestComposition ?? body.guestComposition,
+      guestComposition: mergedGuestComposition,
       travelPurpose: updates.travelPurpose ?? body.travelPurpose,
       roomAllocation: updates.roomAllocation ?? body.roomAllocation,
     }
@@ -639,16 +883,16 @@ const PROFILE_TURN_TOOL: OpenAITool = {
             partySize: { type: "number", description: "Total guest count" },
             guestComposition: {
               type: "object",
+              description: "Partial updates allowed. Send only the fields you're changing this turn (e.g., just childrenAges when ages come in after adults/children were already captured). Server merges with prior state.",
               properties: {
                 adults: { type: "number" },
                 children: { type: "number" },
                 childrenAges: {
                   type: "array",
                   items: { type: "number" },
-                  description: "One age per child; length must match children",
+                  description: "One age per child; length must match children count in merged state",
                 },
               },
-              required: ["adults", "children"],
             },
             travelPurpose: { type: "string" },
             roomAllocation: {
@@ -800,6 +1044,158 @@ function buildTools(
 }
 
 // ---------------------------------------------------------------------------
+// TurnDecision builder (Phase 1 envelope)
+//
+// Normalizes whichever tool fired into a single shape the client can
+// shadow-compare against its legacy dispatch path. Kept server-side so the
+// wire format is owned by the route and clients don't have to re-derive it.
+// ---------------------------------------------------------------------------
+
+type TurnDecisionProposalKind =
+  | "rooms"
+  | "amenity"
+  | "location"
+  | "interior"
+  | "exterior"
+  | "hotel"
+  | "other"
+
+type TurnDecisionActionWire =
+  | { type: "USER_INTENT"; intent: string; amenityName?: string; params?: Record<string, unknown> }
+  | { type: "ROOM_PLAN_ACTION"; action: string; updates: Record<string, unknown> }
+  | {
+      type: "PROFILE_TURN_RESULT"
+      decision: "ask_next" | "clarify" | "ready"
+      awaiting?: string
+      profileUpdates?: Record<string, unknown>
+    }
+  | { type: "NO_ACTION" }
+  | null
+
+type TurnDecisionWire = {
+  action: TurnDecisionActionWire
+  speech: string
+  reasoning?: string
+  proposal?: { kind: TurnDecisionProposalKind; targetId?: string; label?: string }
+}
+
+function proposalForIntent(
+  intent: string,
+  amenityName?: string,
+): { kind: TurnDecisionProposalKind; targetId?: string; label?: string } | undefined {
+  switch (intent) {
+    case "ROOMS":
+      return { kind: "rooms" }
+    case "AMENITIES":
+      return { kind: "amenity" } // generic amenity listing
+    case "AMENITY_BY_NAME":
+      return amenityName
+        ? { kind: "amenity", targetId: amenityName, label: amenityName }
+        : { kind: "amenity" }
+    case "LOCATION":
+      return { kind: "location" }
+    case "INTERIOR":
+      return { kind: "interior" }
+    case "EXTERIOR":
+      return { kind: "exterior" }
+    case "HOTEL_EXPLORE":
+      return { kind: "hotel" }
+    default:
+      return undefined
+  }
+}
+
+function buildTurnDecision(args: {
+  functionName: string
+  result: Record<string, unknown>
+  speech: string
+  validatorOverride: "ages_mismatch" | "ready_premature" | null
+}): TurnDecisionWire {
+  const { functionName, result, speech, validatorOverride } = args
+  const reasoning = typeof result.reasoning === "string" ? result.reasoning : undefined
+  const reasoningAnnotated = validatorOverride
+    ? `${reasoning ? `${reasoning} | ` : ""}validator_override=${validatorOverride}`
+    : reasoning
+
+  if (functionName === "navigate_and_speak") {
+    const intent = typeof result.intent === "string" ? result.intent : "UNKNOWN"
+    const amenityName =
+      typeof result.amenityName === "string" ? result.amenityName : undefined
+    const params: Record<string, unknown> | undefined =
+      amenityName ? { amenityName } : undefined
+    const proposal = proposalForIntent(intent, amenityName)
+    const action: TurnDecisionActionWire = {
+      type: "USER_INTENT",
+      intent,
+      ...(amenityName ? { amenityName } : {}),
+      ...(params ? { params } : {}),
+    }
+    return {
+      action,
+      speech,
+      ...(reasoningAnnotated ? { reasoning: reasoningAnnotated } : {}),
+      ...(proposal ? { proposal } : {}),
+    }
+  }
+
+  if (functionName === "adjust_room_plan") {
+    const action = typeof result.action === "string" ? result.action : "no_room_change"
+    // Capture every flat param the tool schema allows — the client can pick
+    // whichever it cares about. Undefined fields are omitted so the envelope
+    // stays compact.
+    const rawUpdates: Record<string, unknown> = {
+      target_per_night: result.target_per_night,
+      rooms: result.rooms,
+      max_rooms: result.max_rooms,
+      allocation: result.allocation,
+      budget_range: result.budget_range,
+      distribution_preference: result.distribution_preference,
+      room_type_preference: result.room_type_preference,
+    }
+    const updates: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(rawUpdates)) {
+      if (v !== undefined) updates[k] = v
+    }
+    return {
+      action: { type: "ROOM_PLAN_ACTION", action, updates },
+      speech,
+      ...(reasoningAnnotated ? { reasoning: reasoningAnnotated } : {}),
+    }
+  }
+
+  if (functionName === "profile_turn") {
+    const decisionVal = result.decision
+    const decision: "ask_next" | "clarify" | "ready" =
+      decisionVal === "ask_next" || decisionVal === "clarify" || decisionVal === "ready"
+        ? decisionVal
+        : "ask_next"
+    const profileUpdates =
+      result.profileUpdates && typeof result.profileUpdates === "object"
+        ? (result.profileUpdates as Record<string, unknown>)
+        : undefined
+    return {
+      action: {
+        type: "PROFILE_TURN_RESULT",
+        decision,
+        ...(profileUpdates && Object.keys(profileUpdates).length > 0
+          ? { profileUpdates }
+          : {}),
+      },
+      speech,
+      ...(reasoningAnnotated ? { reasoning: reasoningAnnotated } : {}),
+    }
+  }
+
+  // no_action_speak, or anything else (validator override / fallback) —
+  // represent as NO_ACTION with reasoning annotated so the client can see why.
+  return {
+    action: { type: "NO_ACTION" },
+    speech,
+    ...(reasoningAnnotated ? { reasoning: reasoningAnnotated } : {}),
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Route handler
 // ---------------------------------------------------------------------------
 
@@ -813,6 +1209,7 @@ export async function POST(request: Request) {
     )
   }
 
+  const requestStart = Date.now()
   try {
     const body = (await request.json()) as RequestBody
 
@@ -832,7 +1229,14 @@ export async function POST(request: Request) {
 
     const hasRooms = !!(body.rooms && body.rooms.length > 0)
     const isProfileCollection = body.journeyContext.stage === "PROFILE_COLLECTION"
-    const systemPrompt = buildSystemPrompt(body)
+    // Phase 4: reconstruct profile from client body + transcript before
+    // building the prompt. Logged at the bottom of the handler so we can
+    // diagnose when transcript disagrees with client body.
+    const reconstructedProfile = reconstructProfileFromTranscript(
+      body.conversationHistory,
+      body,
+    )
+    const systemPrompt = buildSystemPrompt(body, reconstructedProfile)
     // PROFILE_COLLECTION uses a single profile_turn tool that owns extraction,
     // decision, and speech — no navigate/room-plan tools are offered here.
     // Other stages keep the legacy tools.
@@ -852,7 +1256,11 @@ export async function POST(request: Request) {
     if (jc.suggestedNext) journeyBlock += `\n- Suggested next amenity: ${jc.suggestedNext}`
 
     const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 7000)
+    // 15s: gpt-4o with a growing conversation transcript (up to 80 messages)
+    // and a reconstructed-profile block occasionally exceeds 7s. 503s there
+    // manifest as silent avatar hangs on the client, so prefer slow-but-land
+    // over fail-fast.
+    const timeout = setTimeout(() => controller.abort(), 15000)
 
     try {
       const response = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -862,10 +1270,10 @@ export async function POST(request: Request) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          // PROFILE_COLLECTION needs the stronger model — the prompt is
-          // intricate and mini chronically re-asks captured fields, skips
-          // obvious extractions, and ignores negative rules. Other stages
-          // keep mini (cheaper, adequate for navigation intents).
+          // PROFILE_COLLECTION is multi-constraint extraction (dates, party,
+          // ages, purpose, allocation) with hard rules the validator enforces.
+          // gpt-4o-mini routinely returns empty profileUpdates + decision:
+          // "ready", looping the same ask. gpt-4o handles it reliably.
           model: isProfileCollection ? "gpt-4o" : "gpt-4o-mini",
           messages: [
             { role: "system", content: systemPrompt },
@@ -978,10 +1386,31 @@ export async function POST(request: Request) {
         responseBody.speech = cleanSpeech(result.speech)
       }
 
+      // --- Phase 1: TurnDecision envelope -------------------------------
+      // Normalize whichever tool fired into a single shape the client can
+      // shadow-compare against its legacy dispatch path. Purely additive;
+      // legacy fields above remain untouched.
+      const outSpeechForDecision =
+        typeof responseBody.speech === "string" ? responseBody.speech : ""
+      const finalSpeechText = outSpeechForDecision
+
+      const decision = buildTurnDecision({
+        functionName,
+        result,
+        speech: finalSpeechText,
+        validatorOverride,
+      })
+      // NOTE: legacy profile_turn responses already use `decision` for the
+      // enum string ("ask_next" | "clarify" | "ready"). We emit the Phase 1
+      // envelope under a separate key to avoid clobbering that field.
+      responseBody.decision_envelope = decision
+
       console.log("[ORCHESTRATE]", JSON.stringify({
         stage: body.journeyContext.stage,
         awaiting: body.profileAwaiting,
         tool: functionName,
+        toolCalled: functionName,
+        latencyMs: Date.now() - requestStart,
         reasoning: result.reasoning,
         decision: result.decision,
         profileUpdates: result.profileUpdates,
@@ -989,6 +1418,12 @@ export async function POST(request: Request) {
         rawSpeech: result.speech,
         stripped: shouldStripPreamble,
         outSpeech: responseBody.speech,
+        decisionAction: (decision as { action?: { type?: string } | null })?.action?.type ?? null,
+        // Phase 4: the reconciled profile view the prompt reasoned against.
+        // Omit raw transcript from the log to avoid noise — only the merged
+        // struct. Diagnoses cases where client body is stale vs. transcript.
+        reconstructedProfile,
+        historyLen: body.conversationHistory?.length ?? 0,
       }))
 
       return new Response(JSON.stringify(responseBody), {

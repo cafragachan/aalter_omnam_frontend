@@ -31,9 +31,17 @@ const DEFAULT_API_URL = "https://api.liveavatar.com"
 export function LiveAvatarContextProvider({
   children,
   sessionAccessToken,
+  initialMessages,
 }: {
   children: ReactNode
   sessionAccessToken: string
+  /**
+   * Phase 5 — Conversation persistence. When provided, seeds the in-memory
+   * `messages` state with prior turns hydrated from Firebase before HeyGen
+   * starts streaming. The array is read once on mount; subsequent changes
+   * are ignored so live transcriptions are never clobbered.
+   */
+  initialMessages?: LiveAvatarSessionMessage[]
 }) {
   const sessionRef = useRef<LiveAvatarSession | null>(null)
 
@@ -58,7 +66,9 @@ export function LiveAvatarContextProvider({
   )
   const [isUserTalking, setIsUserTalking] = useState(false)
   const [isAvatarTalking, setIsAvatarTalking] = useState(false)
-  const [messages, setMessages] = useState<LiveAvatarSessionMessage[]>([])
+  const [messages, setMessages] = useState<LiveAvatarSessionMessage[]>(
+    () => (initialMessages && initialMessages.length > 0 ? [...initialMessages] : []),
+  )
 
   useEffect(() => {
     const session = sessionRef.current

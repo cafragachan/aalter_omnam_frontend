@@ -71,14 +71,36 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
   const [journeyStage, setJourneyStage] = useState<JourneyStage>("PROFILE_COLLECTION")
 
   const updateProfile = useCallback((updates: Partial<UserProfile>) => {
-    setProfile((prev) => ({
-      ...prev,
-      ...updates,
-      interests: mergeUnique(prev.interests, updates.interests),
-      dietaryRestrictions: mergeUnique(prev.dietaryRestrictions ?? [], updates.dietaryRestrictions),
-      accessibilityNeeds: mergeUnique(prev.accessibilityNeeds ?? [], updates.accessibilityNeeds),
-      amenityPriorities: mergeUnique(prev.amenityPriorities ?? [], updates.amenityPriorities),
-    }))
+    setProfile((prev) => {
+      // guestComposition must deep-merge — a partial update like
+      // { childrenAges: [10, 15] } otherwise wipes adults/children from prior
+      // turns. Same applies if a future turn sends just { adults: 3 }.
+      const mergedGuestComposition = updates.guestComposition
+        ? { ...(prev.guestComposition ?? {}), ...updates.guestComposition }
+        : prev.guestComposition
+      // Drop familySize from incoming updates if it's NaN (caller computed it
+      // from an incomplete guestComposition). We'll recompute below when we
+      // have the full merged composition.
+      const { familySize: incomingFamilySize, ...restUpdates } = updates
+      const safeFamilySize =
+        typeof incomingFamilySize === "number" && Number.isFinite(incomingFamilySize)
+          ? incomingFamilySize
+          : mergedGuestComposition &&
+              typeof mergedGuestComposition.adults === "number" &&
+              typeof mergedGuestComposition.children === "number"
+            ? mergedGuestComposition.adults + mergedGuestComposition.children
+            : prev.familySize
+      return {
+        ...prev,
+        ...restUpdates,
+        guestComposition: mergedGuestComposition as GuestComposition | undefined,
+        familySize: safeFamilySize,
+        interests: mergeUnique(prev.interests, updates.interests),
+        dietaryRestrictions: mergeUnique(prev.dietaryRestrictions ?? [], updates.dietaryRestrictions),
+        accessibilityNeeds: mergeUnique(prev.accessibilityNeeds ?? [], updates.accessibilityNeeds),
+        amenityPriorities: mergeUnique(prev.amenityPriorities ?? [], updates.amenityPriorities),
+      }
+    })
   }, [])
 
   const resetProfile = useCallback(() => setProfile(createEmptyProfile()), [])

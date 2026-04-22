@@ -1,5 +1,13 @@
+import { getHotelCatalog } from "@/lib/hotel-data"
+
 const DEFAULT_API_URL = "https://api.liveavatar.com"
 const REQUIRED_ENV = ["HEYGEN_API_KEY", "HEYGEN_AVATAR_ID", "HEYGEN_VOICE_ID"]
+
+// The pilot/active hotel — matches the `PILOT_HOTEL` constant inside
+// journey-machine.ts. Kept as a module-level string here (rather than a new
+// export from journey-machine) so the session bootstrap endpoint doesn't pull
+// the reducer module into its import graph.
+const PILOT_HOTEL_SLUG = "edition-lake-como"
 
 type SessionResponse = {
   data: {
@@ -88,10 +96,18 @@ export async function POST() {
       })
     }
 
+    // Phase 2: ship the hotel catalog for the active (pilot) property alongside
+    // the session token. Additive — clients that don't read `catalog` keep
+    // working. When the slug is unknown, emit `null` so the consumer can fall
+    // back to the client-side `getAmenitiesByHotelId`/`getRoomsByHotelId`
+    // helpers without special-casing missing fields.
+    const catalog = getHotelCatalog(PILOT_HOTEL_SLUG)
+
     return new Response(
       JSON.stringify({
         session_token: sessionToken,
         session_id: sessionId,
+        catalog,
       }),
       { status: 200, headers: { "Content-Type": "application/json" } },
     )

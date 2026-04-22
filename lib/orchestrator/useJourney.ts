@@ -11,7 +11,7 @@ import type { LiveAvatarSessionMessage } from "@/lib/liveavatar/types"
 import type { AvatarDerivedProfile } from "@/lib/liveavatar/useUserProfile"
 import { useEventBus, useEventListener } from "@/lib/events"
 import { useGuestIntelligence } from "@/lib/guest-intelligence"
-import { classifyIntent, classifyAvatarProposal } from "./intents"
+import { classifyIntent, classifyAvatarProposal, type UserIntent } from "./intents"
 import { classifyIntentLLM } from "./classifyIntentLLM"
 import { classifyRoomPlanLLM } from "./classifyRoomPlanLLM"
 import type { RoomPlanAction, RoomPlanContext } from "./classifyRoomPlanLLM"
@@ -19,8 +19,10 @@ import { generateSpeechLLM } from "./generateSpeechLLM"
 import { orchestrateLLM } from "./orchestrateLLM"
 import type { SpeechContext } from "./generateSpeechLLM"
 import { journeyReducer, INITIAL_JOURNEY_STATE, buildAmenityNarrative, profileCollectionAwaiting } from "./journey-machine"
+import { evaluateFastPath, CLIENT_CANNED_SPEECH, type ProfileAwaiting } from "./profileFastPath"
 import { useIdleDetection } from "./idle-detection"
 import type { JourneyState, JourneyAction, JourneyEffect, AmenityRef } from "./types"
+import { logTurn, logEffect, type EffectEntry } from "@/lib/debug"
 import {
   getRecommendedAmenity,
   getRecommendedRoomPlan,
@@ -30,6 +32,7 @@ import {
   parseExplicitRoomRequests,
   matchRoomByName,
   type Amenity,
+  type HotelCatalog,
   type Room,
   type RoomPlan,
 } from "@/lib/hotel-data"
@@ -68,6 +71,59 @@ const AMENITY_ALIASES: Record<string, string> = {
 
 function isRoomPlanningMessage(message: string): boolean {
   return ROOM_PLANNING_RE.test(message)
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1 shadow-compare helper.
+//
+// Compares a legacy-dispatched action against the server's TurnDecision
+// envelope action. Loose type-level match only: USER_INTENT vs USER_INTENT
+// with the same `intent` string, ROOM_PLAN_ACTION with the same `action`
+// string, PROFILE_TURN_RESULT with the same `decision`, NO_ACTION.
+// No behavior change — just logs so Phase 3 can measure parity.
+// ---------------------------------------------------------------------------
+type LegacyDispatched =
+  | { type: "USER_INTENT"; intent: string }
+  | { type: "ROOM_PLAN_ACTION"; action: string }
+  | { type: "PROFILE_TURN_RESULT"; decision: string }
+  | { type: "FORCE_ADVANCE" }
+  | { type: "NO_ACTION" }
+  | { type: "SPEAK_ONLY" }
+
+function decisionsMatch(
+  legacy: LegacyDispatched,
+  envelope: import("./types").TurnDecisionAction,
+): boolean {
+  if (envelope === null) return legacy.type === "NO_ACTION" || legacy.type === "SPEAK_ONLY"
+  if (envelope.type === "USER_INTENT" && legacy.type === "USER_INTENT") {
+    // envelope.intent is the wire string (e.g., "TRAVEL_TO_HOTEL") — compare
+    // directly to the legacy intent tag.
+    return envelope.intent === legacy.intent
+  }
+  if (envelope.type === "ROOM_PLAN_ACTION" && legacy.type === "ROOM_PLAN_ACTION") {
+    return envelope.action === legacy.action
+  }
+  if (envelope.type === "PROFILE_TURN_RESULT" && legacy.type === "PROFILE_TURN_RESULT") {
+    return envelope.decision === legacy.decision
+  }
+  if (envelope.type === "NO_ACTION") {
+    return legacy.type === "NO_ACTION" || legacy.type === "SPEAK_ONLY"
+  }
+  return false
+}
+
+function logDecisionCompare(
+  legacyAction: LegacyDispatched,
+  envelope: import("./types").TurnDecision | undefined,
+): void {
+  if (!envelope) return
+  // eslint-disable-next-line no-console
+  console.log("[DECISION-COMPARE]", {
+    legacyAction,
+    envelopeAction: envelope.action,
+    match: decisionsMatch(legacyAction, envelope.action),
+    speech: envelope.speech,
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -117,6 +173,14 @@ type UseJourneyOptions = {
   /** Rooms for the currently selected hotel (needed for booking URL resolution) */
   rooms: Room[]
   /**
+   * Phase 2: server-packed hotel catalog shipped with the session token.
+   * Accepted but not yet used — Phase 3 plumbs this into the orchestrate
+   * call so the tool schema (navigation intents + amenity names) can be
+   * generated dynamically from a single authoritative source. The existing
+   * `amenities` / `rooms` options remain the operative channel today.
+   */
+  catalog?: HotelCatalog | null
+  /**
    * When true, ambiguous intents (UNKNOWN, AFFIRMATIVE, NEGATIVE, AMENITY_BY_NAME)
    * are re-classified via the LLM API route before dispatching. High-confidence
    * regex results bypass the LLM entirely for zero-latency response.
@@ -142,8 +206,36 @@ type UseJourneyOptions = {
    * /api/orchestrate call that returns intent + room plan action + speech
    * in one round-trip. Supersedes the three individual LLM flags when set.
    * Default: false. Only `/home` passes true.
+   *
+   * @deprecated Phase 0 rename — prefer `useUnifiedOrchestrator`. Both
+   * accepted for now; new name wins when both are set.
    */
   enableLLMOrchestrate?: boolean
+  /**
+   * Phase 3 tri-state rollout flag.
+   *   - "off"    — current regex-short-circuit behavior, no parallel orchestrate
+   *                call on high-confidence intents. No [SHADOW] logging.
+   *   - "shadow" — regex still dispatches as today, but every non-PROFILE_COLLECTION
+   *                turn ALSO fires orchestrate in parallel. The response is compared
+   *                with the regex-dispatched action via decisionsMatch() and logged
+   *                under [SHADOW]. No user-visible behavior change.
+   *   - "on"     — regex becomes a hint; decision_envelope.action drives dispatch.
+   *                Envelope speech is the authoritative avatar line for the turn.
+   *
+   * Backward compat: accepts a legacy boolean too. `true` → "on", `false` → "off".
+   * Phase 2.5's PROFILE_COLLECTION fast-path is always live regardless of this
+   * flag; this tri-state governs the non-PROFILE_COLLECTION stages only.
+   */
+  useUnifiedOrchestrator?: "off" | "shadow" | "on" | boolean
+  /**
+   * Phase 2.5: when true, PROFILE_COLLECTION turns that advance the
+   * regex-derived awaiting field to a fast-path-eligible value speak the
+   * matching canned question immediately (via interrupt()+repeat()), while
+   * the LLM call still runs in the background to validate extraction.
+   * Default: true. Set to false (or NEXT_PUBLIC_PROFILE_FAST_PATH=false) for
+   * instant rollback to the pure LLM path.
+   */
+  useProfileFastPath?: boolean
   /**
    * Stage 5 (LiveKit path): when provided, SPEAK effects are routed
    * through this callback instead of interrupt()+repeat() on the avatar
@@ -180,6 +272,49 @@ export function useJourney(options: UseJourneyOptions) {
     rooms,
   } = options
 
+  // Phase 2: accept the server-packed catalog. Stored in a ref so Phase 3
+  // can pull the freshest value at orchestrate-call time without triggering
+  // re-renders or changing any of this hook's existing control flow.
+  const catalogRef = useRef<HotelCatalog | null>(options.catalog ?? null)
+  useEffect(() => {
+    catalogRef.current = options.catalog ?? null
+  }, [options.catalog])
+
+  // Phase 3 tri-state normalization.
+  //
+  // Priority order:
+  //   1. Explicit tri-state string via options.useUnifiedOrchestrator
+  //   2. Legacy boolean via options.useUnifiedOrchestrator (true → "on", false → "off")
+  //   3. Deprecated alias options.enableLLMOrchestrate (boolean → "on" / "off")
+  //   4. Default "off" for full backward-compat with callers that pass nothing.
+  //
+  // Consumers downstream can read either the tri-state (for the shadow-mode
+  // branch) or the derived boolean `isUnifiedOn` (for the existing truthy
+  // checks sprinkled through the file — fast-path gating, intent routing,
+  // etc.). Keeping both avoids churn on dozens of unrelated code paths.
+  const unifiedRaw = options.useUnifiedOrchestrator ?? options.enableLLMOrchestrate
+  const useUnifiedOrchestratorMode: "off" | "shadow" | "on" =
+    typeof unifiedRaw === "string"
+      ? unifiedRaw
+      : unifiedRaw === true
+        ? "on"
+        : "off"
+  // Boolean view used by legacy branches: only "on" is treated as "unified on".
+  // "shadow" leaves those non-PROFILE_COLLECTION legacy paths active (they
+  // dispatch on regex) so the user-visible behavior is identical to "off" —
+  // the only difference is the parallel orchestrate call and [SHADOW] logging
+  // added below.
+  const useUnifiedOrchestrator = useUnifiedOrchestratorMode === "on"
+  // PROFILE_COLLECTION, per plan, is already unified through orchestrate in
+  // both "shadow" and "on" — the tri-state flag governs only the
+  // non-PROFILE_COLLECTION stages. This flag gates the fast-path and the
+  // debounced orchestrate call inside the PROFILE_COLLECTION branch so that
+  // flipping the outer tri-state doesn't accidentally disable profile
+  // collection behavior that was already validated.
+  const profileStageUsesOrchestrate = useUnifiedOrchestratorMode !== "off"
+  // Phase 2.5: default ON. Caller passes false to disable.
+  const useProfileFastPath = options.useProfileFastPath ?? true
+
   // Resolve avatar-backend hooks. Default: legacy HeyGen hooks. /home-v2
   // passes the `@/lib/livekit` equivalents via options.avatarHooks. The
   // resolved functions are stable across renders because options.avatarHooks
@@ -199,12 +334,16 @@ export function useJourney(options: UseJourneyOptions) {
 
   // --- State machine state (kept in ref to avoid re-render cascades) ---
   const stateRef = useRef<JourneyState>(INITIAL_JOURNEY_STATE)
-  const lastMessageCountRef = useRef(0)
+  // Phase 5: initialized lazily on the first effect tick so hydrated
+  // messages (seeded via `LiveAvatarContextProvider.initialMessages`) do
+  // not trigger phantom orchestrate dispatches on mount. `null` means
+  // "first run — capture the current baseline and skip dispatch".
+  const lastMessageCountRef = useRef<number | null>(null)
   const lastProfileKeyRef = useRef("")
   const destinationAnnouncedRef = useRef(false)
   const profileDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const currentRoomIdRef = useRef<string | null>(null)
-  const lastAvatarMessageCountRef = useRef(0)
+  const lastAvatarMessageCountRef = useRef<number | null>(null)
 
   // --- Pre-generated speech ref (Phase 4: orchestrate fills this before processIntent) ---
   const preGeneratedSpeechRef = useRef<string | null>(null)
@@ -212,6 +351,34 @@ export function useJourney(options: UseJourneyOptions) {
   // --- PROFILE_COLLECTION debounce + cancellation refs ---
   const profileMsgDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const profileOrchestrateCancelRef = useRef<(() => void) | null>(null)
+  // Real fetch-level cancellation: aborting this controller terminates the
+  // in-flight /api/orchestrate request so a stale response cannot speak over
+  // a fast-path canned question or a newer turn's orchestrate result.
+  const profileOrchestrateAbortRef = useRef<AbortController | null>(null)
+
+  const abortStaleProfileOrchestrate = useCallback(
+    (reason: "fast-path" | "new-turn" | "stage-change" | "unmount") => {
+      const controller = profileOrchestrateAbortRef.current
+      if (controller && !controller.signal.aborted) {
+        // eslint-disable-next-line no-console
+        console.log("[ORCHESTRATE-ABORT]", { reason })
+        controller.abort()
+      }
+      profileOrchestrateAbortRef.current = null
+    },
+    [],
+  )
+
+  // --- Phase 2.5 fast-path state ---
+  // Tracks the previous `profileCollectionAwaiting(...)` value so each user
+  // turn can tell whether regex extraction made progress this turn.
+  // Initial "dates_and_guests" matches INITIAL_JOURNEY_STATE.awaiting.
+  const prevAwaitingRef = useRef<ProfileAwaiting>("dates_and_guests")
+  // Flag set when fast-path fired this turn. The orchestrate response handler
+  // reads this, applies profileUpdates silently, and suppresses its speech.
+  const fastPathFiredThisTurnRef = useRef(false)
+  // Diagnostic: total user turns observed (feeds the fast-path turnCount check).
+  const profileTurnCountRef = useRef(0)
 
   // --- Live refs for profile / derivedProfile so the PROFILE_COLLECTION
   // setTimeout callback reads the FRESHEST values at fire time rather than
@@ -316,8 +483,18 @@ export function useJourney(options: UseJourneyOptions) {
   }, [profile, derivedProfile, guestIntelligence, journeyStage, userMessages])
 
   // --- Effect executor ---
-  const executeEffects = useCallback((effects: JourneyEffect[]) => {
+  //
+  // `source` explains where the effect list originated so the [EFFECT] log
+  // can be traced back to the reducer, an orchestrate response, or an event
+  // handler. Defaults to "reducer" (the dispatch path).
+  const executeEffects = useCallback((
+    effects: JourneyEffect[],
+    source: EffectEntry["source"] = "reducer",
+  ) => {
     for (const effect of effects) {
+      // Log every effect before running it. Strip only the discriminant.
+      const { type: _effectType, ...params } = effect as { type: string } & Record<string, unknown>
+      logEffect({ type: effect.type, params: params as Record<string, unknown>, source })
       switch (effect.type) {
         case "SPEAK":
           if (options.onSpeak) {
@@ -327,7 +504,7 @@ export function useJourney(options: UseJourneyOptions) {
             preGeneratedSpeechRef.current = null
             interrupt()
             repeat(preGenerated).catch(() => undefined)
-          } else if (options.enableLLMSpeech || options.enableLLMOrchestrate) {
+          } else if (options.enableLLMSpeech || useUnifiedOrchestrator) {
             void speakWithLLM(effect.text, buildSpeechContext())
           } else {
             interrupt()
@@ -395,7 +572,7 @@ export function useJourney(options: UseJourneyOptions) {
     const result = journeyReducer(stateRef.current, action)
     stateRef.current = result.nextState
     if (result.effects.length > 0) {
-      executeEffects(result.effects)
+      executeEffects(result.effects, "reducer")
     }
   }, [executeEffects])
 
@@ -493,10 +670,10 @@ export function useJourney(options: UseJourneyOptions) {
 
     if (newPlan) {
       speakResolved(speechText, buildSpeechContext("PLAN_ADJUSTMENT"))
-      executeEffects([{ type: "UPDATE_ROOM_PLAN", plan: newPlan }])
+      executeEffects([{ type: "UPDATE_ROOM_PLAN", plan: newPlan }], "orchestrate")
       // Ensure the rooms panel is open
       if (stateRef.current.stage === "HOTEL_EXPLORATION" && stateRef.current.subState !== "panel_open") {
-        executeEffects([{ type: "OPEN_PANEL", panel: "rooms" }])
+        executeEffects([{ type: "OPEN_PANEL", panel: "rooms" }], "orchestrate")
         stateRef.current = { stage: "HOTEL_EXPLORATION", subState: "panel_open" }
       }
     }
@@ -529,11 +706,11 @@ export function useJourney(options: UseJourneyOptions) {
     }
 
     speakResolved(speechText, buildSpeechContext("EXPLICIT_COMPOSITION"))
-    executeEffects([{ type: "UPDATE_ROOM_PLAN", plan }])
+    executeEffects([{ type: "UPDATE_ROOM_PLAN", plan }], "orchestrate")
 
     // Ensure the rooms panel is open
     if (stateRef.current.stage === "HOTEL_EXPLORATION" && stateRef.current.subState !== "panel_open") {
-      executeEffects([{ type: "OPEN_PANEL", panel: "rooms" }])
+      executeEffects([{ type: "OPEN_PANEL", panel: "rooms" }], "orchestrate")
       stateRef.current = { stage: "HOTEL_EXPLORATION", subState: "panel_open" }
     }
   }, [profile, derivedProfile, rooms, speakResolved, buildSpeechContext, executeEffects])
@@ -564,9 +741,9 @@ export function useJourney(options: UseJourneyOptions) {
             `Here's what I can do close to ${budgetStr} per night: ${summary} at $${newPlan.totalPricePerNight.toLocaleString()} per night. How does that sound?`,
             buildSpeechContext("ADJUST_BUDGET"),
           )
-          executeEffects([{ type: "UPDATE_ROOM_PLAN", plan: newPlan }])
+          executeEffects([{ type: "UPDATE_ROOM_PLAN", plan: newPlan }], "orchestrate")
           if (stateRef.current.stage === "HOTEL_EXPLORATION" && stateRef.current.subState !== "panel_open") {
-            executeEffects([{ type: "OPEN_PANEL", panel: "rooms" }])
+            executeEffects([{ type: "OPEN_PANEL", panel: "rooms" }], "orchestrate")
             stateRef.current = { stage: "HOTEL_EXPLORATION", subState: "panel_open" }
           }
           return true
@@ -596,9 +773,9 @@ export function useJourney(options: UseJourneyOptions) {
               `Great news — I can fit your group into ${roomCount} room${roomCount > 1 ? "s" : ""}: ${summary} at $${newPlan.totalPricePerNight.toLocaleString()} per night.`,
               buildSpeechContext("COMPACT_PLAN"),
             )
-            executeEffects([{ type: "UPDATE_ROOM_PLAN", plan: newPlan }])
+            executeEffects([{ type: "UPDATE_ROOM_PLAN", plan: newPlan }], "orchestrate")
             if (stateRef.current.stage === "HOTEL_EXPLORATION" && stateRef.current.subState !== "panel_open") {
-              executeEffects([{ type: "OPEN_PANEL", panel: "rooms" }])
+              executeEffects([{ type: "OPEN_PANEL", panel: "rooms" }], "orchestrate")
               stateRef.current = { stage: "HOTEL_EXPLORATION", subState: "panel_open" }
             }
             return true
@@ -607,9 +784,9 @@ export function useJourney(options: UseJourneyOptions) {
               `I wasn't able to fit everyone into just ${action.params.max_rooms} room${action.params.max_rooms > 1 ? "s" : ""} — the minimum is ${roomCount}. Here's the most compact option I have. What do you think?`,
               buildSpeechContext("COMPACT_PLAN"),
             )
-            executeEffects([{ type: "UPDATE_ROOM_PLAN", plan: newPlan }])
+            executeEffects([{ type: "UPDATE_ROOM_PLAN", plan: newPlan }], "orchestrate")
             if (stateRef.current.stage === "HOTEL_EXPLORATION" && stateRef.current.subState !== "panel_open") {
-              executeEffects([{ type: "OPEN_PANEL", panel: "rooms" }])
+              executeEffects([{ type: "OPEN_PANEL", panel: "rooms" }], "orchestrate")
               stateRef.current = { stage: "HOTEL_EXPLORATION", subState: "panel_open" }
             }
             return true
@@ -642,9 +819,9 @@ export function useJourney(options: UseJourneyOptions) {
           `Based on ${prefLabel}, here's what I'd recommend: ${summary} at $${newPlan.totalPricePerNight.toLocaleString()} per night. How does that look?`,
           buildSpeechContext("RECOMPUTE_PREFERENCES"),
         )
-        executeEffects([{ type: "UPDATE_ROOM_PLAN", plan: newPlan }])
+        executeEffects([{ type: "UPDATE_ROOM_PLAN", plan: newPlan }], "orchestrate")
         if (stateRef.current.stage === "HOTEL_EXPLORATION" && stateRef.current.subState !== "panel_open") {
-          executeEffects([{ type: "OPEN_PANEL", panel: "rooms" }])
+          executeEffects([{ type: "OPEN_PANEL", panel: "rooms" }], "orchestrate")
           stateRef.current = { stage: "HOTEL_EXPLORATION", subState: "panel_open" }
         }
         return true
@@ -654,6 +831,75 @@ export function useJourney(options: UseJourneyOptions) {
 
     return false
   }, [profile, derivedProfile, rooms, speakResolved, buildSpeechContext, executeEffects, handlePlanAdjustment, handleExplicitComposition, updateProfile])
+
+  // Phase 3 shadow-mode helper ------------------------------------------------
+  //
+  // Fires a parallel orchestrate call for a non-PROFILE_COLLECTION turn WHOSE
+  // DISPATCH ALREADY HAPPENED on the regex path. The response is only used to
+  // compare with what we dispatched and emit a [SHADOW] log — no speech, no
+  // state changes. This is the telemetry that Phase 3 rollout relies on to
+  // validate that flipping to "on" won't regress behavior.
+  //
+  // The match field is derived from the existing decisionsMatch() helper
+  // (Phase 1) so shadow and [DECISION-COMPARE] agree on what counts as a match.
+  const fireShadowOrchestrate = useCallback(
+    (
+      latestMessage: string,
+      currentState: JourneyState,
+      stage: JourneyState["stage"],
+      regexIntent: ReturnType<typeof classifyIntent>,
+      legacy: LegacyDispatched,
+    ) => {
+      const isRoomContext = currentState.stage === "HOTEL_EXPLORATION" || currentState.stage === "ROOM_SELECTED"
+      // Phase 4: always send the conversation transcript so the server can
+      // reconstruct profile from ground truth. Same 80-message cap used by
+      // the PROFILE_COLLECTION branch. Without this, shadow-mode orchestrate
+      // calls see stale client state and mis-classify when the transcript
+      // has newer info than context.
+      const conversationHistory = allMessages
+        .slice(-80)
+        .map((m) => ({
+          role: m.sender === MessageSender.AVATAR ? ("avatar" as const) : ("user" as const),
+          text: m.message,
+        }))
+      ;(async () => {
+        const result = await orchestrateLLM({
+          message: latestMessage,
+          state: currentState,
+          guestFirstName: profile.firstName,
+          travelPurpose: profile.travelPurpose ?? derivedProfile.travelPurpose,
+          interests: profile.interests,
+          rooms: isRoomContext
+            ? rooms.map((r) => ({ id: r.id, name: r.name, occupancy: parseInt(r.occupancy, 10) || 2, price: r.price }))
+            : undefined,
+          partySize: (profile.familySize ?? derivedProfile.partySize) ?? undefined,
+          budgetRange: profile.budgetRange ?? undefined,
+          guestComposition: profile.guestComposition ?? derivedProfile.guestComposition ?? undefined,
+          regexHint: regexIntent.type,
+          conversationHistory,
+        })
+        if (!result) return
+        const envelope = result.decision_envelope
+        const dispatchedDesc =
+          legacy.type === "USER_INTENT"
+            ? `USER_INTENT:${legacy.intent}`
+            : legacy.type === "ROOM_PLAN_ACTION"
+              ? `ROOM_PLAN_ACTION:${legacy.action}`
+              : legacy.type
+        // eslint-disable-next-line no-console
+        console.log("[SHADOW]", {
+          stage,
+          message: latestMessage.slice(0, 80),
+          regexIntent: regexIntent.type,
+          dispatched: dispatchedDesc,
+          envelopeAction: envelope?.action?.type ?? (envelope === undefined ? "MISSING" : "NULL"),
+          match: envelope ? decisionsMatch(legacy, envelope.action) : false,
+          envelopeSpeech: envelope?.speech,
+        })
+      })()
+    },
+    [profile, derivedProfile, rooms, allMessages],
+  )
 
   /** Dispatch LIST_AMENITIES action with pre-computed hotel data */
   const dispatchListAmenities = useCallback(() => {
@@ -715,15 +961,19 @@ export function useJourney(options: UseJourneyOptions) {
 
     // Debounce during PROFILE_COLLECTION so compound answers from
     // HeyGen's VAD splitting settle before evaluating profile completeness.
-    // Cancel any in-flight orchestrate before dispatching so a stale
-    // follow-up question can't land on top of the reducer's SPEAK.
+    //
+    // Historical note: this block USED to also call
+    // `profileOrchestrateCancelRef.current()` before dispatching, from back
+    // when the reducer authored the next-question speech and a late-arriving
+    // orchestrate answer could talk over it. That's no longer true — orchestrate
+    // IS the speech authority during PROFILE_COLLECTION. Cancelling it here
+    // silently muted any orchestrate call that ran longer than 2.5s (common
+    // with gpt-4o), producing 20-40s avatar silences. The stage-transition
+    // guard in the orchestrate response handler (~line 1114) is the correct
+    // protection against stale responses; no cancel needed here.
     if (stateRef.current.stage === "PROFILE_COLLECTION") {
       if (profileDebounceRef.current) clearTimeout(profileDebounceRef.current)
       profileDebounceRef.current = setTimeout(() => {
-        if (profileOrchestrateCancelRef.current) {
-          profileOrchestrateCancelRef.current()
-          profileOrchestrateCancelRef.current = null
-        }
         doDispatch()
       }, 2500)
       return () => {
@@ -826,7 +1076,7 @@ export function useJourney(options: UseJourneyOptions) {
       intent.type === "UNKNOWN" || intent.type === "ROOMS"
     )
 
-    if (isRoomPlanIntent && !options.enableLLMOrchestrate && options.enableLLMRoomPlanning && isRoomPlanningMessage(latestMessage)) {
+    if (isRoomPlanIntent && !useUnifiedOrchestrator && options.enableLLMRoomPlanning && isRoomPlanningMessage(latestMessage)) {
       const partySize = profile.familySize ?? derivedProfile.partySize
       const roomContext: RoomPlanContext = {
         rooms: rooms.map((r) => ({ id: r.id, name: r.name, occupancy: parseInt(r.occupancy, 10) || 2, price: r.price })),
@@ -858,6 +1108,13 @@ export function useJourney(options: UseJourneyOptions) {
 
   // --- React to new user messages (intent classification + question tracking) ---
   useEffect(() => {
+    // Phase 5: on first run, baseline the ref to the hydrated message count
+    // (if any). A refreshed session starts with N > 0 pre-existing messages;
+    // we must NOT treat them as "new" turns and re-dispatch intents.
+    if (lastMessageCountRef.current === null) {
+      lastMessageCountRef.current = userMessages.length
+      return
+    }
     if (userMessages.length <= lastMessageCountRef.current) return
     lastMessageCountRef.current = userMessages.length
 
@@ -893,6 +1150,16 @@ export function useJourney(options: UseJourneyOptions) {
     // --- Global intents — check before stage-specific routing ---
     const earlyIntent = classifyIntent(latestMessage)
     if (earlyIntent.type === "END_EXPERIENCE" || earlyIntent.type === "RETURN_TO_LOUNGE") {
+      logTurn({
+        stage: stateRef.current.stage,
+        latestMessage: latestMessage.slice(-80),
+        regexIntent: earlyIntent.type,
+        llmIntent: null,
+        action: { type: "USER_INTENT", intent: earlyIntent.type },
+        speech: null,
+        latencyMs: 0,
+        pathway: "regex-shortcircuit",
+      })
       dispatch({ type: "USER_INTENT", intent: earlyIntent })
       return
     }
@@ -901,6 +1168,16 @@ export function useJourney(options: UseJourneyOptions) {
     if (stateRef.current.stage === "END_CONFIRMING") {
       const confirmIntent = classifyIntent(latestMessage)
       if (confirmIntent.type === "AFFIRMATIVE" || confirmIntent.type === "NEGATIVE") {
+        logTurn({
+          stage: "END_CONFIRMING",
+          latestMessage: latestMessage.slice(-80),
+          regexIntent: confirmIntent.type,
+          llmIntent: null,
+          action: { type: "USER_INTENT", intent: confirmIntent.type },
+          speech: null,
+          latencyMs: 0,
+          pathway: "regex-shortcircuit",
+        })
         dispatch({ type: "USER_INTENT", intent: confirmIntent })
       }
       return
@@ -910,6 +1187,16 @@ export function useJourney(options: UseJourneyOptions) {
     if (stateRef.current.stage === "LOUNGE_CONFIRMING") {
       const confirmIntent = classifyIntent(latestMessage)
       if (confirmIntent.type === "AFFIRMATIVE" || confirmIntent.type === "NEGATIVE") {
+        logTurn({
+          stage: "LOUNGE_CONFIRMING",
+          latestMessage: latestMessage.slice(-80),
+          regexIntent: confirmIntent.type,
+          llmIntent: null,
+          action: { type: "USER_INTENT", intent: confirmIntent.type },
+          speech: null,
+          latencyMs: 0,
+          pathway: "regex-shortcircuit",
+        })
         dispatch({ type: "USER_INTENT", intent: confirmIntent })
       }
       return
@@ -923,6 +1210,100 @@ export function useJourney(options: UseJourneyOptions) {
     // preGeneratedSpeechRef substitution so the reducer's hardcoded SPEAK
     // becomes the contextual transition speech.
     if (stage === "PROFILE_COLLECTION") {
+      // --- Phase 2.5: fast-path ---------------------------------------------
+      // Before scheduling the 700ms debounce, check whether the regex extractor
+      // already advanced the awaiting state this turn. If it did, speak the
+      // canned next-question IMMEDIATELY (interrupt + repeat). The LLM call
+      // still runs in the background to refine extraction and log disagreements.
+      //
+      // Snapshots used:
+      //   • prevAwaiting — the `awaiting` value BEFORE the current user
+      //     utterance merged into derivedProfile. Kept in prevAwaitingRef,
+      //     which is updated at the end of the fast-path evaluation (or at
+      //     the end of the debounced callback) to the computed freshAwaiting.
+      //   • freshAwaiting — re-derived here from the live refs so the regex's
+      //     synchronous extraction of the just-arrived user message is visible.
+      profileTurnCountRef.current += 1
+      const fastPathTurnCount = profileTurnCountRef.current
+      fastPathFiredThisTurnRef.current = false
+
+      if (useProfileFastPath && profileStageUsesOrchestrate) {
+        const liveProfileNow = profileRef.current
+        const liveDerivedNow = derivedProfileRef.current
+        const fastMergedProfile = {
+          partySize: liveProfileNow.familySize ?? liveDerivedNow.partySize,
+          startDate: liveDerivedNow.startDate ?? liveProfileNow.startDate,
+          endDate: liveDerivedNow.endDate ?? liveProfileNow.endDate,
+          travelPurpose: liveProfileNow.travelPurpose ?? liveDerivedNow.travelPurpose,
+          interests: liveDerivedNow.interests,
+          guestComposition: liveProfileNow.guestComposition ?? liveDerivedNow.guestComposition,
+          roomAllocation: liveProfileNow.roomAllocation ?? liveDerivedNow.roomAllocation,
+        }
+        const fastFreshAwaiting = profileCollectionAwaiting(fastMergedProfile)
+        const fastPathDecisionStart = Date.now()
+        const fastPathDecision = evaluateFastPath({
+          prevAwaiting: prevAwaitingRef.current,
+          freshAwaiting: fastFreshAwaiting,
+          latestMessage,
+          turnCount: fastPathTurnCount,
+        })
+
+        if (fastPathDecision.eligible) {
+          // Invariant: fastPathDecision.cannedSpeech === CLIENT_CANNED_SPEECH[freshAwaiting].
+          // Reading CLIENT_CANNED_SPEECH here both documents the contract and keeps
+          // the import load-bearing so accidental removal breaks the build.
+          const expectedCanned = CLIENT_CANNED_SPEECH[fastPathDecision.nextAwaiting]
+          if (expectedCanned !== fastPathDecision.cannedSpeech) {
+            // eslint-disable-next-line no-console
+            console.warn("[FAST_PATH_INVARIANT]", { expectedCanned, actual: fastPathDecision.cannedSpeech })
+          }
+
+          // Kill any orchestrate call still in flight from a prior turn. Its
+          // response would otherwise land ~6s later and speak over the canned
+          // question we're about to utter.
+          abortStaleProfileOrchestrate("fast-path")
+
+          // Speak the canned question immediately.
+          interrupt()
+          repeat(fastPathDecision.cannedSpeech).catch(() => undefined)
+
+          // Apply whatever the regex already captured. updateProfile is a
+          // Partial merge — idempotent with the later LLM writes.
+          const regexUpdates: Partial<import("@/lib/context").UserProfile> = {}
+          if (liveDerivedNow.startDate) regexUpdates.startDate = liveDerivedNow.startDate
+          if (liveDerivedNow.endDate) regexUpdates.endDate = liveDerivedNow.endDate
+          if (liveDerivedNow.partySize != null && !liveProfileNow.familySize) {
+            regexUpdates.familySize = liveDerivedNow.partySize
+          }
+          if (liveDerivedNow.guestComposition && !liveProfileNow.guestComposition) {
+            regexUpdates.guestComposition = liveDerivedNow.guestComposition
+          }
+          if (liveDerivedNow.travelPurpose && !liveProfileNow.travelPurpose) {
+            regexUpdates.travelPurpose = liveDerivedNow.travelPurpose
+          }
+          if (liveDerivedNow.roomAllocation && !liveProfileNow.roomAllocation) {
+            regexUpdates.roomAllocation = liveDerivedNow.roomAllocation
+          }
+          if (Object.keys(regexUpdates).length > 0) updateProfile(regexUpdates)
+
+          fastPathFiredThisTurnRef.current = true
+          prevAwaitingRef.current = fastFreshAwaiting
+
+          logTurn({
+            stage: "PROFILE_COLLECTION",
+            latestMessage: latestMessage.slice(-80),
+            regexIntent: null,
+            llmIntent: null,
+            action: { type: "PROFILE_TURN_RESULT", decision: "ask_next", awaiting: fastFreshAwaiting },
+            speech: fastPathDecision.cannedSpeech,
+            latencyMs: Date.now() - fastPathDecisionStart,
+            pathway: "fast-path",
+          })
+          // Intentionally fall through — still schedule the background
+          // orchestrate so profileUpdates from the LLM land idempotently.
+        }
+      }
+
       if (profileMsgDebounceRef.current) clearTimeout(profileMsgDebounceRef.current)
       profileMsgDebounceRef.current = setTimeout(() => {
         // Read the FRESHEST profile/derivedProfile via refs, not closure — the
@@ -945,8 +1326,17 @@ export function useJourney(options: UseJourneyOptions) {
           roomAllocation: liveProfile.roomAllocation ?? liveDerivedProfile.roomAllocation,
         }
         const freshAwaiting = profileCollectionAwaiting(mergedProfile)
+        // Snapshot whether the fast-path already spoke this turn (see above).
+        // Kept in a local because the ref is per-turn and will be reset by the
+        // next user utterance before this callback's await resolves.
+        const fastPathAlreadySpoke = fastPathFiredThisTurnRef.current
 
-        if (!options.enableLLMOrchestrate) return
+        if (!profileStageUsesOrchestrate) {
+          // Flag off entirely — update ref so next turn sees the current
+          // awaiting and move on without calling orchestrate.
+          prevAwaitingRef.current = freshAwaiting
+          return
+        }
 
         // Full transcript — the LLM is the only writer in PROFILE_COLLECTION
         // and the earlier slice(-10) caused it to forget fields the guest gave
@@ -965,6 +1355,14 @@ export function useJourney(options: UseJourneyOptions) {
           profileOrchestrateCancelRef.current = null
         }
 
+        // Real fetch-level cancellation. Abort whatever call is in flight from
+        // a prior turn (fast-path's abort already handled the
+        // `fastPathAlreadySpoke` case, but a non-fast-path turn that arrives
+        // while an earlier orchestrate is still pending must also cancel it).
+        abortStaleProfileOrchestrate("new-turn")
+        const controller = new AbortController()
+        profileOrchestrateAbortRef.current = controller
+
         console.log("[CLIENT→ORCHESTRATE]", JSON.stringify({
           liveProfile_familySize: liveProfile.familySize,
           liveProfile_guestComp: liveProfile.guestComposition,
@@ -980,6 +1378,9 @@ export function useJourney(options: UseJourneyOptions) {
           mergedEndDate: mergedProfile.endDate?.toISOString?.() ?? null,
           freshAwaiting,
         }))
+        const profileOrchestrateStart = Date.now()
+        const profileTurnMessageSlice = latestMessage.slice(-80)
+        const profileRegexIntent = classifyIntent(latestMessage)
         ;(async () => {
           const result = await orchestrateLLM({
             message: latestMessage,
@@ -997,24 +1398,53 @@ export function useJourney(options: UseJourneyOptions) {
             preferences: returningUserData?.preferences ?? null,
             loyalty: returningUserData?.loyalty ?? null,
             conversationHistory,
+            signal: controller.signal,
           })
+          const profileLatencyMs = Date.now() - profileOrchestrateStart
           // Do NOT cancel here — profile state writes are idempotent and must
           // always land. Cancellation only applies to speech/dispatch below.
           profileOrchestrateCancelRef.current = null
+
+          // If THIS call's controller was aborted (fast-path fired, a newer
+          // turn superseded us, stage changed, or we're unmounting) — short
+          // circuit entirely. No speech, no dispatch, no degraded-mode
+          // fallback, no logTurn. Profile updates from the user's utterance
+          // still landed via the regex extractor in useUserProfile.ts (which
+          // ProfileSync writes to UserProfileContext independently of this
+          // orchestrate roundtrip).
+          if (controller.signal.aborted) return
+
+          // Clear the ref only if it still points at our controller (a newer
+          // turn may have already replaced it).
+          if (profileOrchestrateAbortRef.current === controller) {
+            profileOrchestrateAbortRef.current = null
+          }
 
           // Guard: stage may have advanced while LLM was in-flight
           if (stateRef.current.stage !== "PROFILE_COLLECTION") return
 
           if (!result) {
+            logTurn({
+              stage: "PROFILE_COLLECTION",
+              latestMessage: profileTurnMessageSlice,
+              regexIntent: profileRegexIntent.type,
+              llmIntent: null,
+              action: { type: "PROFILE_DEGRADED", awaiting: freshAwaiting },
+              speech: null,
+              latencyMs: profileLatencyMs,
+              pathway: "fallback",
+            })
             // Degraded mode: LLM unavailable. Preserve advancement using regex + freshAwaiting.
             // No preGeneratedSpeechRef write — the reducer's hardcoded "Wonderful!..." is the
             // accepted degraded-mode speech.
+            prevAwaitingRef.current = freshAwaiting
             if (cancelled) return
             const fallbackIntent = classifyIntent(latestMessage)
             if (
-              freshAwaiting === "ready" ||
-              fallbackIntent.type === "TRAVEL_TO_HOTEL" ||
-              fallbackIntent.type === "AFFIRMATIVE"
+              !fastPathAlreadySpoke &&
+              (freshAwaiting === "ready" ||
+                fallbackIntent.type === "TRAVEL_TO_HOTEL" ||
+                fallbackIntent.type === "AFFIRMATIVE")
             ) {
               dispatch({ type: "FORCE_ADVANCE" })
             }
@@ -1022,6 +1452,27 @@ export function useJourney(options: UseJourneyOptions) {
           }
 
           if (result.tool === "profile_turn") {
+            logTurn({
+              stage: "PROFILE_COLLECTION",
+              latestMessage: profileTurnMessageSlice,
+              regexIntent: profileRegexIntent.type,
+              llmIntent: "PROFILE_TURN",
+              action: { type: "PROFILE_TURN", decision: result.decision },
+              speech: result.speech,
+              latencyMs: profileLatencyMs,
+              pathway: "orchestrate",
+            })
+            // Phase 2.5: if fast-path already spoke this turn and the LLM now
+            // returns "clarify", log a disagreement for later review. v1 is
+            // log-only — we do NOT correct the avatar.
+            if (fastPathAlreadySpoke && result.decision === "clarify") {
+              // eslint-disable-next-line no-console
+              console.log("[FAST_PATH_DISAGREE]", {
+                fastPathAwaiting: freshAwaiting,
+                llmDecision: result.decision,
+                llmSpeech: result.speech,
+              })
+            }
             // Apply LLM-extracted fields to the profile. The LLM is the source
             // of truth during PROFILE_COLLECTION. Apply happens UNCONDITIONALLY
             // — even if a newer user turn started an overlapping orchestrate
@@ -1052,6 +1503,20 @@ export function useJourney(options: UseJourneyOptions) {
             }))
             if (Object.keys(updates).length > 0) updateProfile(updates)
 
+            // Phase 2.5: fast-path already spoke, so suppress LLM speech.
+            // profileUpdates were applied just above (idempotent). If the LLM
+            // still thinks we should advance (decision === "ready") while the
+            // fast-path just asked another question, trust the fast-path: we
+            // already promised the user we wanted another detail.
+            if (fastPathAlreadySpoke) {
+              prevAwaitingRef.current = freshAwaiting
+              logDecisionCompare(
+                { type: "PROFILE_TURN_RESULT", decision: result.decision },
+                result.decision_envelope,
+              )
+              return
+            }
+
             // Speech IS cancellable — if a newer turn is in flight, don't
             // step on it with stale dialogue.
             if (cancelled) return
@@ -1060,12 +1525,22 @@ export function useJourney(options: UseJourneyOptions) {
               // Warm handoff — substitute the reducer's hardcoded advance speech.
               preGeneratedSpeechRef.current = result.speech
               dispatch({ type: "FORCE_ADVANCE" })
+              prevAwaitingRef.current = freshAwaiting
+              logDecisionCompare(
+                { type: "PROFILE_TURN_RESULT", decision: result.decision },
+                result.decision_envelope,
+              )
               return
             }
 
             // ask_next or clarify — speak directly, stay in PROFILE_COLLECTION.
             interrupt()
             repeat(result.speech).catch(() => undefined)
+            prevAwaitingRef.current = freshAwaiting
+            logDecisionCompare(
+              { type: "PROFILE_TURN_RESULT", decision: result.decision },
+              result.decision_envelope,
+            )
             return
           }
 
@@ -1076,27 +1551,89 @@ export function useJourney(options: UseJourneyOptions) {
             result.tool === "navigate_and_speak" &&
             (result.intent.type === "TRAVEL_TO_HOTEL" || result.intent.type === "AFFIRMATIVE")
           ) {
+            logTurn({
+              stage: "PROFILE_COLLECTION",
+              latestMessage: profileTurnMessageSlice,
+              regexIntent: profileRegexIntent.type,
+              llmIntent: result.intent.type,
+              action: { type: "FORCE_ADVANCE" },
+              speech: result.speech,
+              latencyMs: profileLatencyMs,
+              pathway: "orchestrate",
+            })
+            prevAwaitingRef.current = freshAwaiting
+            // Phase 2.5: if fast-path already asked another question, do not
+            // advance — the user still owes us an answer.
+            if (fastPathAlreadySpoke) {
+              logDecisionCompare(
+                { type: "USER_INTENT", intent: result.intent.type },
+                result.decision_envelope,
+              )
+              return
+            }
             if (cancelled) return
             preGeneratedSpeechRef.current = result.speech
             dispatch({ type: "FORCE_ADVANCE" })
+            logDecisionCompare(
+              { type: "USER_INTENT", intent: result.intent.type },
+              result.decision_envelope,
+            )
             return
           }
 
           if (result.tool === "adjust_room_plan" && result.action.action === "set_distribution") {
+            logTurn({
+              stage: "PROFILE_COLLECTION",
+              latestMessage: profileTurnMessageSlice,
+              regexIntent: profileRegexIntent.type,
+              llmIntent: "ROOM_PLAN",
+              action: { type: "ROOM_PLAN_ACTION", action: result.action.action },
+              speech: result.speech,
+              latencyMs: profileLatencyMs,
+              pathway: "orchestrate",
+            })
             const allocation = result.action.params?.allocation
             if (Array.isArray(allocation) && allocation.length > 0 && allocation.every((n) => typeof n === "number" && n > 0)) {
               // Unconditional write — state is idempotent.
               updateProfile({ roomAllocation: allocation })
             }
+            prevAwaitingRef.current = freshAwaiting
+            if (fastPathAlreadySpoke) {
+              logDecisionCompare(
+                { type: "ROOM_PLAN_ACTION", action: result.action.action },
+                result.decision_envelope,
+              )
+              return
+            }
             if (cancelled) return
             interrupt()
             repeat(result.speech).catch(() => undefined)
+            logDecisionCompare(
+              { type: "ROOM_PLAN_ACTION", action: result.action.action },
+              result.decision_envelope,
+            )
             return
           }
 
+          logTurn({
+            stage: "PROFILE_COLLECTION",
+            latestMessage: profileTurnMessageSlice,
+            regexIntent: profileRegexIntent.type,
+            llmIntent: result.tool,
+            action: null,
+            speech: result.speech,
+            latencyMs: profileLatencyMs,
+            pathway: "orchestrate",
+          })
+          prevAwaitingRef.current = freshAwaiting
+          if (fastPathAlreadySpoke) {
+            logDecisionCompare({ type: "SPEAK_ONLY" }, result.decision_envelope)
+            return
+          }
           if (cancelled) return
           interrupt()
           repeat(result.speech).catch(() => undefined)
+          logDecisionCompare({ type: "SPEAK_ONLY" }, result.decision_envelope)
         })()
       }, 700)
       return
@@ -1104,10 +1641,36 @@ export function useJourney(options: UseJourneyOptions) {
 
     if (stage === "DESTINATION_SELECT") return
 
-    // In the virtual lounge, skip budget/amenity interception — just dispatch intent directly
-    if (stage === "VIRTUAL_LOUNGE") {
+    // In the virtual lounge, skip budget/amenity interception — just dispatch intent directly.
+    //
+    // Phase 3:
+    //   - "off"    — regex classifies and dispatches as before.
+    //   - "shadow" — dispatch on regex (same as today) AND fire orchestrate in parallel,
+    //                comparing via [SHADOW] log. No behavior change.
+    //   - "on"     — let the main consolidated branch below handle this stage through
+    //                orchestrate; fall through.
+    if (stage === "VIRTUAL_LOUNGE" && useUnifiedOrchestratorMode !== "on") {
       const intent = classifyIntent(latestMessage)
+      logTurn({
+        stage,
+        latestMessage: latestMessage.slice(-80),
+        regexIntent: intent.type,
+        llmIntent: null,
+        action: { type: "USER_INTENT", intent: intent.type },
+        speech: null,
+        latencyMs: 0,
+        pathway: "regex-shortcircuit",
+      })
       dispatch({ type: "USER_INTENT", intent })
+      if (useUnifiedOrchestratorMode === "shadow") {
+        fireShadowOrchestrate(
+          latestMessage,
+          stateRef.current,
+          stage,
+          intent,
+          { type: "USER_INTENT", intent: intent.type },
+        )
+      }
       return
     }
 
@@ -1123,7 +1686,7 @@ export function useJourney(options: UseJourneyOptions) {
     ) {
       // Multi-room composition detected — skip room selection AND intent classification,
       // go directly to the room plan LLM which handles set_room_composition.
-      if (MULTI_ROOM_RE.test(latestMessage) && !options.enableLLMOrchestrate && options.enableLLMRoomPlanning) {
+      if (MULTI_ROOM_RE.test(latestMessage) && !useUnifiedOrchestrator && options.enableLLMRoomPlanning) {
         const partySize = profile.familySize ?? derivedProfile.partySize
         const roomContext: RoomPlanContext = {
           rooms: rooms.map((r) => ({ id: r.id, name: r.name, occupancy: parseInt(r.occupancy, 10) || 2, price: r.price })),
@@ -1159,65 +1722,246 @@ export function useJourney(options: UseJourneyOptions) {
     }
 
     const regexIntent = classifyIntent(latestMessage)
+    const turnMessageSlice = latestMessage.slice(-80)
 
-    // --- Phase 4: consolidated orchestrate branch ---
-    if (options.enableLLMOrchestrate) {
-      // High-confidence regex — skip LLM, speech handled by SPEAK effect fallback
-      if (HIGH_CONFIDENCE_INTENTS.has(regexIntent.type)) {
-        processIntent(regexIntent, latestMessage, currentState, stage)
-        return
-      }
+    // --- Phase 3: shadow mode ---
+    //
+    // Dispatch on regex as before, then fire orchestrate in parallel so we can
+    // log [SHADOW] comparisons. No user-visible behavior change — this is pure
+    // telemetry to validate that flipping the flag to "on" won't regress.
+    if (useUnifiedOrchestratorMode === "shadow") {
+      logTurn({
+        stage,
+        latestMessage: turnMessageSlice,
+        regexIntent: regexIntent.type,
+        llmIntent: null,
+        action: { type: "USER_INTENT", intent: regexIntent.type },
+        speech: null,
+        latencyMs: 0,
+        pathway: "regex-shortcircuit",
+      })
+      processIntent(regexIntent, latestMessage, currentState, stage)
+      fireShadowOrchestrate(
+        latestMessage,
+        currentState,
+        stage,
+        regexIntent,
+        { type: "USER_INTENT", intent: regexIntent.type },
+      )
+      return
+    }
 
+    // --- Phase 3: consolidated orchestrate branch ("on" mode) ---
+    //
+    // The HIGH_CONFIDENCE_INTENTS short-circuit that used to live here is
+    // intentionally removed. In "on" mode, EVERY turn goes through orchestrate
+    // and dispatch comes from decision_envelope.action (with regex as fallback
+    // when the envelope is missing/malformed). The regex result is forwarded
+    // as `regexHint` in the request body.
+    if (useUnifiedOrchestratorMode === "on") {
       const isRoomContext = currentState.stage === "HOTEL_EXPLORATION" || currentState.stage === "ROOM_SELECTED"
 
+      // Phase 4: always send transcript for non-PROFILE_COLLECTION turns.
+      // Same 80-message cap as the PROFILE_COLLECTION branch. Without this
+      // the server saw only stale client state — partySize/guestComposition/
+      // travelPurpose frequently lag behind what the guest actually said
+      // because extraction is debounced across multiple stores.
+      const conversationHistory = allMessages
+        .slice(-80)
+        .map((m) => ({
+          role: m.sender === MessageSender.AVATAR ? ("avatar" as const) : ("user" as const),
+          text: m.message,
+        }))
+
       let cancelled = false
+      const orchestrateStart = Date.now()
       ;(async () => {
+        // Snapshot the freshest profile/derivedProfile at call time so we don't
+        // capture stale closure values. Using refs also lets us drop profile &
+        // derivedProfile from this effect's deps array (they churn constantly
+        // during a session and were silently cancelling in-flight orchestrate
+        // calls via the `cancelled` cleanup below).
+        const liveProfile = profileRef.current
+        const liveDerived = derivedProfileRef.current
         const result = await orchestrateLLM({
           message: latestMessage,
           state: currentState,
-          guestFirstName: profile.firstName,
-          travelPurpose: profile.travelPurpose ?? derivedProfile.travelPurpose,
-          interests: profile.interests,
+          guestFirstName: liveProfile.firstName,
+          travelPurpose: liveProfile.travelPurpose ?? liveDerived.travelPurpose,
+          interests: liveProfile.interests,
           rooms: isRoomContext ? rooms.map((r) => ({ id: r.id, name: r.name, occupancy: parseInt(r.occupancy, 10) || 2, price: r.price })) : undefined,
-          partySize: (profile.familySize ?? derivedProfile.partySize) ?? undefined,
-          budgetRange: profile.budgetRange ?? undefined,
-          guestComposition: profile.guestComposition ?? derivedProfile.guestComposition ?? undefined,
+          partySize: (liveProfile.familySize ?? liveDerived.partySize) ?? undefined,
+          budgetRange: liveProfile.budgetRange ?? undefined,
+          guestComposition: liveProfile.guestComposition ?? liveDerived.guestComposition ?? undefined,
+          regexHint: regexIntent.type,
+          conversationHistory,
         })
+        const latencyMs = Date.now() - orchestrateStart
         if (cancelled) return
 
         if (!result) {
           // Orchestrate failed — fall back to regex + hardcoded speech
+          logTurn({
+            stage,
+            latestMessage: turnMessageSlice,
+            regexIntent: regexIntent.type,
+            llmIntent: null,
+            action: { type: "USER_INTENT", intent: regexIntent.type },
+            speech: null,
+            latencyMs,
+            pathway: "fallback",
+          })
           processIntent(regexIntent, latestMessage, currentState, stage)
           return
         }
 
+        // --- Phase 3 "on" mode: route via decision_envelope.action when
+        // the envelope carries a USER_INTENT. ROOM_PLAN_ACTION and
+        // PROFILE_TURN_RESULT envelopes fall through to the tool-based
+        // dispatch below — those have dedicated handlers that do more than
+        // just hand an intent to the reducer.
+        const envelope = result.decision_envelope
+        const envelopeAction = envelope?.action
+        if (envelopeAction && envelopeAction.type === "USER_INTENT") {
+          // envelopeAction.intent is a STRING (the intent tag) on the wire —
+          // see lib/orchestrator/types.ts. processIntent + the reducer both
+          // want a full UserIntent union object. Rebuild it here.
+          //
+          // AMENITY_BY_NAME carries an amenityName that the server ships in
+          // two places: the envelope's top-level `amenityName` (also mirrored
+          // into params.amenityName) AND the legacy tool field on `result`.
+          // Prefer the envelope, fall back to result for safety.
+          const intentTag = envelopeAction.intent
+          const amenityName =
+            (typeof envelopeAction.amenityName === "string" && envelopeAction.amenityName) ||
+            (envelopeAction.params && typeof envelopeAction.params.amenityName === "string"
+              ? (envelopeAction.params.amenityName as string)
+              : undefined) ||
+            (result.tool === "navigate_and_speak" && result.intent.type === "AMENITY_BY_NAME"
+              ? result.intent.amenityName
+              : undefined)
+
+          const fullIntentObject: UserIntent =
+            intentTag === "AMENITY_BY_NAME" && amenityName
+              ? { type: "AMENITY_BY_NAME", amenityName }
+              : ({ type: intentTag } as UserIntent)
+
+          // eslint-disable-next-line no-console
+          console.log("[ENVELOPE-DISPATCH]", {
+            intent: fullIntentObject,
+            speech: envelope.speech,
+          })
+
+          logTurn({
+            stage,
+            latestMessage: turnMessageSlice,
+            regexIntent: regexIntent.type,
+            llmIntent: intentTag,
+            action: { type: "USER_INTENT", intent: intentTag },
+            speech: envelope.speech,
+            latencyMs,
+            pathway: "orchestrate",
+          })
+          preGeneratedSpeechRef.current = envelope.speech
+          processIntent(fullIntentObject, latestMessage, currentState, stage)
+          logDecisionCompare(
+            { type: "USER_INTENT", intent: intentTag },
+            envelope,
+          )
+          return
+        }
+
         if (result.tool === "no_action_speak") {
+          logTurn({
+            stage,
+            latestMessage: turnMessageSlice,
+            regexIntent: regexIntent.type,
+            llmIntent: "NO_ACTION",
+            action: null,
+            speech: result.speech,
+            latencyMs,
+            pathway: "orchestrate",
+          })
           interrupt()
           repeat(result.speech).catch(() => undefined)
+          logDecisionCompare({ type: "NO_ACTION" }, result.decision_envelope)
           return
         }
 
         if (result.tool === "adjust_room_plan") {
+          logTurn({
+            stage,
+            latestMessage: turnMessageSlice,
+            regexIntent: regexIntent.type,
+            llmIntent: "ROOM_PLAN",
+            action: { type: "ROOM_PLAN_ACTION", action: result.action.action },
+            speech: result.speech,
+            latencyMs,
+            pathway: "orchestrate",
+          })
           preGeneratedSpeechRef.current = result.speech
           const handled = executeRoomPlanAction(result.action, latestMessage)
           if (!handled) {
             preGeneratedSpeechRef.current = null
             processIntent(regexIntent, latestMessage, currentState, stage)
           }
+          logDecisionCompare(
+            { type: "ROOM_PLAN_ACTION", action: result.action.action },
+            result.decision_envelope,
+          )
           return
         }
 
         if (result.tool === "profile_turn") {
           // profile_turn is only expected during PROFILE_COLLECTION; if the
           // model picks it outside that stage, just speak it and bail.
+          logTurn({
+            stage,
+            latestMessage: turnMessageSlice,
+            regexIntent: regexIntent.type,
+            llmIntent: "PROFILE_TURN",
+            action: { type: "PROFILE_TURN", decision: result.decision },
+            speech: result.speech,
+            latencyMs,
+            pathway: "orchestrate",
+          })
           interrupt()
           repeat(result.speech).catch(() => undefined)
+          logDecisionCompare(
+            { type: "PROFILE_TURN_RESULT", decision: result.decision },
+            result.decision_envelope,
+          )
           return
         }
 
-        // navigate_and_speak
+        // Fallthrough: navigate_and_speak without a usable envelope. Phase 3
+        // "on" mode prefers the envelope path above — reaching here means the
+        // server responded with the legacy tool shape but the envelope was
+        // missing or malformed. Log [ENVELOPE-FALLBACK] and dispatch on the
+        // tool's intent (legacy behavior).
+        // eslint-disable-next-line no-console
+        console.log("[ENVELOPE-FALLBACK]", {
+          reason: envelope ? "non-USER_INTENT envelope action" : "envelope missing",
+          tool: result.tool,
+          intent: result.intent.type,
+          regexHint: regexIntent.type,
+        })
+        logTurn({
+          stage,
+          latestMessage: turnMessageSlice,
+          regexIntent: regexIntent.type,
+          llmIntent: result.intent.type,
+          action: { type: "USER_INTENT", intent: result.intent.type },
+          speech: result.speech,
+          latencyMs,
+          pathway: "orchestrate",
+        })
         preGeneratedSpeechRef.current = result.speech
         processIntent(result.intent, latestMessage, currentState, stage)
+        logDecisionCompare(
+          { type: "USER_INTENT", intent: result.intent.type },
+          result.decision_envelope,
+        )
       })()
       return () => { cancelled = true }
     }
@@ -1229,16 +1973,39 @@ export function useJourney(options: UseJourneyOptions) {
       && !HIGH_CONFIDENCE_INTENTS.has(regexIntent.type)
 
     if (!needsLLM) {
+      logTurn({
+        stage,
+        latestMessage: turnMessageSlice,
+        regexIntent: regexIntent.type,
+        llmIntent: null,
+        action: { type: "USER_INTENT", intent: regexIntent.type },
+        speech: null,
+        latencyMs: 0,
+        pathway: "regex-shortcircuit",
+      })
       processIntent(regexIntent, latestMessage, currentState, stage)
       return
     }
 
     // Async LLM classification with cancellation guard
     let cancelled = false
+    const llmClassifyStart = Date.now()
     ;(async () => {
       const llmIntent = await classifyIntentLLM(latestMessage, currentState)
+      const latencyMs = Date.now() - llmClassifyStart
       if (cancelled) return
-      processIntent(llmIntent ?? regexIntent, latestMessage, currentState, stage)
+      const finalIntent = llmIntent ?? regexIntent
+      logTurn({
+        stage,
+        latestMessage: turnMessageSlice,
+        regexIntent: regexIntent.type,
+        llmIntent: llmIntent?.type ?? null,
+        action: { type: "USER_INTENT", intent: finalIntent.type },
+        speech: null,
+        latencyMs,
+        pathway: llmIntent ? "orchestrate" : "fallback",
+      })
+      processIntent(finalIntent, latestMessage, currentState, stage)
     })()
     return () => { cancelled = true }
 
@@ -1253,11 +2020,54 @@ export function useJourney(options: UseJourneyOptions) {
         profileMsgDebounceRef.current = null
       }
     }
-  }, [userMessages, dispatch, trackQuestion, trackRequirement, processIntent, rooms, eventBus, options.enableLLMClassifier, options.enableLLMRoomPlanning, options.enableLLMOrchestrate, profile, derivedProfile, executeRoomPlanAction, interrupt, repeat])
+    // Note: `profile` and `derivedProfile` are intentionally NOT in this deps
+    // array. They churn constantly during a session (ProfileSync updates,
+    // regex extractor updates per transcription, /api/extract-profile spam) —
+    // every churn re-runs this effect and fires the `cancelled = true`
+    // cleanup on the previous run, which silently killed legitimate in-flight
+    // orchestrate calls (see Phase 3 on-mode blocker). We read the freshest
+    // profile/derivedProfile via profileRef.current / derivedProfileRef.current
+    // at call time inside the on-mode IIFE instead.
+  }, [userMessages, dispatch, trackQuestion, trackRequirement, processIntent, rooms, eventBus, options.enableLLMClassifier, options.enableLLMRoomPlanning, useUnifiedOrchestrator, useUnifiedOrchestratorMode, profileStageUsesOrchestrate, fireShadowOrchestrate, executeRoomPlanAction, interrupt, repeat])
+
+  // --- Abort in-flight PROFILE_COLLECTION orchestrate on stage transition ---
+  // When the journey leaves PROFILE_COLLECTION (e.g., FORCE_ADVANCE fired),
+  // any still-pending profile orchestrate response should not land — the
+  // stage guard inside the IIFE already blocks dispatch, but the abort makes
+  // the cancellation explicit at the network layer and frees the ref. This
+  // effect is deliberately separated from the user-messages effect so its
+  // dep list is minimal: aborting on every profile/userMessages re-render
+  // would kill legitimate in-flight calls.
+  useEffect(() => {
+    if (journeyStage !== "PROFILE_COLLECTION") {
+      abortStaleProfileOrchestrate("stage-change")
+    }
+  }, [journeyStage, abortStaleProfileOrchestrate])
+
+  // --- Abort in-flight PROFILE_COLLECTION orchestrate on unmount ---
+  // Empty dep list so this cleanup only fires on component unmount, not on
+  // every re-render. Prevents orphan fetches when the page closes.
+  useEffect(() => {
+    return () => {
+      const controller = profileOrchestrateAbortRef.current
+      if (controller && !controller.signal.aborted) {
+        // eslint-disable-next-line no-console
+        console.log("[ORCHESTRATE-ABORT]", { reason: "unmount" })
+        controller.abort()
+      }
+      profileOrchestrateAbortRef.current = null
+    }
+  }, [])
 
   // --- React to new avatar messages (proposal classification + profile nudges) ---
   useEffect(() => {
     const avatarMessages = allMessages.filter((m) => m.sender === MessageSender.AVATAR)
+    // Phase 5: baseline on first run so hydrated avatar turns don't
+    // re-trigger proposal classification after refresh.
+    if (lastAvatarMessageCountRef.current === null) {
+      lastAvatarMessageCountRef.current = avatarMessages.length
+      return
+    }
     if (avatarMessages.length <= lastAvatarMessageCountRef.current) return
     lastAvatarMessageCountRef.current = avatarMessages.length
 
