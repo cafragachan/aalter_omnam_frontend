@@ -42,6 +42,7 @@ const ProfileSchema = z
     startDate: z.string().optional(),
     endDate: z.string().optional(),
     budgetRange: z.string().optional(),
+    roomAllocation: z.array(z.number().int().positive()).optional(),
   })
   .partial()
 
@@ -166,6 +167,11 @@ function renderProfile(profile: RequestBody["profile"]): string {
     lines.push(`- End date: ${profile.endDate}`)
   }
   if (profile.budgetRange) lines.push(`- Budget: ${profile.budgetRange}`)
+  if (profile.roomAllocation?.length) {
+    lines.push(
+      `- Initial roomAllocation (from profile collection): ${profile.roomAllocation.join(" + ")} (${profile.roomAllocation.length} room${profile.roomAllocation.length === 1 ? "" : "s"})`,
+    )
+  }
   return lines.length ? lines.join("\n") : "- (no profile details yet)"
 }
 
@@ -229,6 +235,8 @@ Call exactly one tool: \`propose_room_plan\`.
 5. Preserve room names and dollar amounts VERBATIM in speech. If a room is "Standard Mountain View" at $199, speak those exact strings.
 6. Warm luxury concierge tone — not robotic, not gushing. 1–3 sentences max; it will be spoken aloud by an avatar.
 7. Reference the guest's concrete constraint in speech ("since you mentioned a lake view", "keeping the kids in the connecting loft"). No generic templates.
+8. **Treat \`profile.roomAllocation\` as an INITIAL guest preference from the first conversation — not a hard current constraint.** The guest voiced it during profile collection; since then they may have changed their mind in the transcript. If the guest has since asked for 2 rooms when \`roomAllocation\` says 4, follow the transcript. The transcript is always newer and wins on disagreement. Mid-conversation corrections like "actually let's just do two rooms", "everyone together", or "we don't need that many" override the initial allocation.
+9. **Budget wins over view when the guest said so.** If the transcript shows the guest flagging cost — "cheaper", "budget", "expensive", "bundle", "less", "under $X", "that's too much", or similar — prefer the lowest-price rooms that meet capacity over premium view or suite variants. Do NOT keep recommending penthouses or loft suites after the guest has asked to bring the price down. Re-pick rooms with price as the primary sort, occupancy as the tiebreaker. Mention the savings in speech.
 
 ## Hotel
 ${hotelName}

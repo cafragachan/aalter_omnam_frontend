@@ -22,7 +22,7 @@ import { useJourney } from "@/lib/orchestrator"
 import { useRoomPlanner } from "@/lib/orchestrator/useRoomPlanner"
 import { useUE5Bridge } from "@/lib/ue5/bridge"
 import { useVagonSession } from "@/lib/ue5/useVagonSession"
-import { hotels, getHotelBySlug, getRoomsByHotelId, getAmenitiesByHotelId, getRecommendedRoomId, getRecommendedRoomPlan } from "@/lib/hotel-data"
+import { hotels, getHotelBySlug, getRoomsByHotelId, getAmenitiesByHotelId, getRecommendedRoomId } from "@/lib/hotel-data"
 import type { Room, Amenity, HotelCatalog } from "@/lib/hotel-data"
 import { useUE5WebSocket } from "@/lib/useUE5WebSocket"
 import { GlassPanel } from "@/components/glass-panel"
@@ -996,28 +996,12 @@ function HomePageContent({
     [rooms, profile.familySize, profile.budgetRange],
   )
 
-  const computedPlan = useMemo(
-    () => getRecommendedRoomPlan(
-      rooms,
-      profile.familySize,
-      profile.guestComposition,
-      profile.travelPurpose,
-      profile.budgetRange,
-      profile.distributionPreference,
-      profile.roomAllocation,
-    ),
-    [rooms, profile.familySize, profile.guestComposition, profile.travelPurpose, profile.budgetRange, profile.distributionPreference, profile.roomAllocation],
-  )
-
-  // Mutable plan override — set by dynamic adjustments (budget, compact, explicit composition)
-  // Falls back to computedPlan when null. Reset when the rooms panel closes.
-  const [planOverride, setPlanOverride] = useState<import("@/lib/hotel-data").RoomPlan | null>(null)
-
-  // Phase 1 Room Planner: the LLM-driven plan lives in the OmnamStore. When
-  // non-null, it supersedes both the dynamic override and the heuristic
-  // computedPlan. Resolved to a full `RoomPlan` by looking up each entry in
-  // the hotel's room catalog. When the store's plan is null (no planner call
-  // has landed yet, e.g., first paint), we fall back to the legacy plan chain.
+  // Phase 2 Room Planner: the LLM-driven plan from `/api/room-planner` is the
+  // sole source of truth for the RoomsPanel. Client-side heuristic plan
+  // composition was deleted; while the planner's response hasn't landed yet
+  // (first paint before Trigger 1), `recommendedPlan` is null and the panel
+  // renders nothing. Phase 1's intermediate `planOverride` / `computedPlan`
+  // fallbacks are gone along with the heuristics that populated them.
   const currentRoomPlan = useOmnamStore().state.currentRoomPlan
   const plannerPlan = useMemo<import("@/lib/hotel-data").RoomPlan | null>(() => {
     if (!currentRoomPlan || currentRoomPlan.rooms.length === 0) return null
@@ -1043,7 +1027,7 @@ function HomePageContent({
     }
   }, [currentRoomPlan, rooms])
 
-  const recommendedPlan = plannerPlan ?? planOverride ?? computedPlan
+  const recommendedPlan = plannerPlan
 
   // --- Panel open/close callbacks (passed to useJourney) ---
   const handleOpenPanel = useCallback((panel: "rooms" | "amenities" | "location") => {
@@ -1075,11 +1059,6 @@ function HomePageContent({
     }
     selectHotel(slug)
   }, [selectHotel, updateProfile])
-
-  // --- Room plan update callback (dynamic adjustments from voice) ---
-  const handleUpdateRoomPlan = useCallback((plan: import("@/lib/hotel-data").RoomPlan) => {
-    setPlanOverride(plan)
-  }, [])
 
   // --- End experience callbacks ---
   const handleStopAvatar = useCallback(() => {
@@ -1119,7 +1098,6 @@ function HomePageContent({
     onResetToDefault: handleResetToDefault,
     onFadeTransition: ue5.fadeTransition,
     onSelectHotel: handleAutoSelectHotel,
-    onUpdateRoomPlan: handleUpdateRoomPlan,
     onStopAvatar: handleStopAvatar,
     onHideUE5Stream,
     amenities,
@@ -1233,7 +1211,6 @@ function HomePageContent({
   // --- Panel close handlers ---
   const closeRoomsPanel = useCallback(() => {
     setShowRoomsPanel(false)
-    setPlanOverride(null) // reset dynamic plan override when panel closes
     ue5.resetToDefault()
   }, [ue5])
 

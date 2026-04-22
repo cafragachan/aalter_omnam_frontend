@@ -11,7 +11,6 @@ import { MessageSender } from "@/lib/liveavatar/types"
 import { useGuestIntelligence } from "@/lib/guest-intelligence"
 import { classifyIntent, type UserIntent } from "./intents"
 import { orchestrateLLM } from "./orchestrateLLM"
-import type { RoomPlanAction } from "./orchestrateLLM"
 import { buildAmenityNarrative, profileCollectionAwaiting } from "./journey-machine"
 import { evaluateFastPath, CLIENT_CANNED_SPEECH, type ProfileAwaiting } from "./profileFastPath"
 import { useIdleDetection } from "./idle-detection"
@@ -20,16 +19,10 @@ import { renderSpeech } from "./speech-renderer"
 import { logTurn, logEffect, type EffectEntry } from "@/lib/debug"
 import {
   getRecommendedAmenity,
-  getRecommendedRoomPlan,
-  getBudgetRoomPlan,
-  getCompactRoomPlan,
-  buildExplicitRoomPlan,
-  parseExplicitRoomRequests,
   matchRoomByName,
   type Amenity,
   type HotelCatalog,
   type Room,
-  type RoomPlan,
 } from "@/lib/hotel-data"
 
 // Aliases for amenity keywords the user might say that aren't literal amenity
@@ -143,8 +136,6 @@ type UseJourneyOptions = {
   onFadeTransition: () => void
   onSelectHotel: (slug: string) => void
   onUnitSelected?: (roomName: string) => void
-  /** Callback to update the displayed room plan (dynamic adjustments) */
-  onUpdateRoomPlan?: (plan: RoomPlan) => void
   /** Callback to stop the HeyGen avatar session */
   onStopAvatar: () => void
   /** Callback to hide the UE5 stream iframe */
@@ -341,22 +332,6 @@ export function useJourney(options: UseJourneyOptions) {
     isExtractionPendingRef.current = isExtractionPending
   })
 
-  // --- Speech helper ---
-  // Phase 9 (Batch 3): parallel LLM-speech path deleted. Orchestrate is the
-  // sole speech authority — when it pre-generates a line for the current
-  // turn it writes to preGeneratedSpeechRef. This helper consumes that ref
-  // (once) if set, otherwise speaks the fallback text directly.
-  const speakResolved = useCallback((fallbackText: string) => {
-    interrupt()
-    if (preGeneratedSpeechRef.current !== null) {
-      const preGenerated = preGeneratedSpeechRef.current
-      preGeneratedSpeechRef.current = null
-      repeat(preGenerated).catch(() => undefined)
-      return
-    }
-    repeat(fallbackText).catch(() => undefined)
-  }, [interrupt, repeat])
-
   // --- Admin: download all collected user data as JSON ---
   const downloadUserData = useCallback(async () => {
     const giSnapshot = guestIntelligence.getDataSnapshot()
@@ -410,7 +385,7 @@ export function useJourney(options: UseJourneyOptions) {
   // with the source tool so mid-conversation corrections are traceable.
   const applyOrchestrateProfileUpdates = useCallback((
     pu: Record<string, unknown> | null | undefined,
-    source: "profile_turn" | "navigate_and_speak" | "adjust_room_plan" | "no_action_speak" | "envelope",
+    source: "profile_turn" | "navigate_and_speak" | "no_action_speak" | "envelope",
   ) => {
     if (!pu || typeof pu !== "object" || Object.keys(pu).length === 0) return
     const updates: Partial<import("@/lib/context").UserProfile> = {}
@@ -450,28 +425,39 @@ export function useJourney(options: UseJourneyOptions) {
     }
   }, [updateProfile])
 
-  // --- Phase 1 Room Planner: shared gate for Trigger 2 ---
+  // --- Phase 2 Room Planner: sole room brain when the rooms panel is open ---
   //
-  // Invoked from every orchestrate-response / dispatch branch after the
-  // intent has been routed. Kicks `/api/room-planner` only when:
-  //   1) A request function was provided via options.requestRoomPlanRef,
-  //   2) The rooms panel is currently visible (options.isRoomsPanelVisibleRef),
-  //   3) The intent is a room-edit intent (ROOMS, ROOM_TOGETHER, ROOM_SEPARATE,
-  //      ROOM_AUTO, ROOM_PLAN_CHEAPER, ROOM_PLAN_COMPACT) OR the orchestrate
-  //      response fired `adjust_room_plan` (carried here as "ROOM_PLAN_ACTION").
+  // When the rooms panel is visible, the planner fires for EVERY user utterance
+  // EXCEPT two classes of intent:
+  //   • ROOM_EXIT_INTENT_TAGS — the user is leaving the rooms context entirely
+  //     (end experience, return to lounge, switch to amenities/hotel overview,
+  //     download data, travel elsewhere). The orchestrator/reducer handles
+  //     these; the planner would only produce noise.
+  //   • ROOM_INTERNAL_NAV_TAGS — the user is navigating inside the rooms UI
+  //     (tap a card's interior/exterior, go back, book). These are room-card-
+  //     detail gestures, not plan edits, and remain on the reducer path.
   //
-  // The existing `adjust_room_plan` handler + the `ROOM_CARD_TAPPED` handler
-  // remain untouched — the planner runs additively and its later-landing
-  // SET_ROOM_PLAN dispatch wins when both paths update the UI.
-  const ROOM_EDIT_INTENT_TAGS = useRef(
+  // All other intents (including UNKNOWN, ROOMS, ROOM_TOGETHER/SEPARATE,
+  // ROOM_PLAN_CHEAPER/COMPACT, AMENITY_BY_NAME when panel is open, etc.) flow
+  // to the planner. The planner reads the transcript and re-derives the plan
+  // from conversation ground truth, so we no longer need an allow-list of
+  // specific room-edit intents.
+  const ROOM_EXIT_INTENT_TAGS = useRef(
     new Set<string>([
-      "ROOMS",
-      "ROOM_TOGETHER",
-      "ROOM_SEPARATE",
-      "ROOM_AUTO",
-      "ROOM_PLAN_CHEAPER",
-      "ROOM_PLAN_COMPACT",
-      "ROOM_PLAN_ACTION",
+      "END_EXPERIENCE",
+      "RETURN_TO_LOUNGE",
+      "AMENITIES",
+      "HOTEL_EXPLORE",
+      "DOWNLOAD_DATA",
+      "TRAVEL_TO_HOTEL",
+    ]),
+  )
+  const ROOM_INTERNAL_NAV_TAGS = useRef(
+    new Set<string>([
+      "INTERIOR",
+      "EXTERIOR",
+      "BACK",
+      "BOOK",
     ]),
   )
   const requestRoomPlanRef = options.requestRoomPlanRef
@@ -480,7 +466,8 @@ export function useJourney(options: UseJourneyOptions) {
     (intentTag: string, latestMessage: string) => {
       if (!requestRoomPlanRef?.current) return
       if (!isRoomsPanelVisibleRef?.current) return
-      if (!ROOM_EDIT_INTENT_TAGS.current.has(intentTag)) return
+      if (ROOM_EXIT_INTENT_TAGS.current.has(intentTag)) return
+      if (ROOM_INTERNAL_NAV_TAGS.current.has(intentTag)) return
       void requestRoomPlanRef.current("user_message", latestMessage)
     },
     [requestRoomPlanRef, isRoomsPanelVisibleRef],
@@ -551,12 +538,6 @@ export function useJourney(options: UseJourneyOptions) {
           break
         case "STOP_LISTENING":
           stopListening()
-          break
-        case "SET_ROOM_ALLOCATION":
-          updateProfile({ roomAllocation: effect.allocation })
-          break
-        case "UPDATE_ROOM_PLAN":
-          options.onUpdateRoomPlan?.(effect.plan)
           break
         case "OPEN_BOOKING_URL": {
           const roomId = currentRoomIdRef.current
@@ -638,208 +619,6 @@ export function useJourney(options: UseJourneyOptions) {
       allAmenities: amenityRefs,
     })
   }, [amenities, amenityRefs, trackAmenityExplored, startAmenityTimer, getVisitedAmenityNames, interrupt, repeat, dispatch])
-
-  /** Handle dynamic room plan adjustments (budget, compact, distribution change) */
-  const handlePlanAdjustment = useCallback((
-    mode: "budget" | "compact" | "distribution",
-    _message: string,
-    allocationOverride?: number[],
-  ) => {
-    const partySize = profile.familySize ?? derivedProfile.partySize
-    if (!partySize || rooms.length === 0) return
-
-    let newPlan: RoomPlan | null = null
-    let speechText = ""
-
-    if (mode === "budget") {
-      newPlan = getBudgetRoomPlan(rooms, partySize, profile.roomAllocation)
-      if (newPlan) {
-        const summary = newPlan.entries
-          .map((e) => `${e.quantity > 1 ? `${e.quantity} ` : ""}${e.roomName}${e.quantity > 1 ? " rooms" : ""}`)
-          .join(" and ")
-        speechText = `Here's a more budget-friendly option: ${summary} at $${newPlan.totalPricePerNight.toLocaleString()} per night. How does that look?`
-      }
-    } else if (mode === "compact") {
-      newPlan = getCompactRoomPlan(rooms, partySize)
-      if (newPlan) {
-        const roomCount = newPlan.entries.reduce((sum, e) => sum + e.quantity, 0)
-        const summary = newPlan.entries
-          .map((e) => `${e.quantity > 1 ? `${e.quantity} ` : ""}${e.roomName}${e.quantity > 1 ? " rooms" : ""}`)
-          .join(" and ")
-        speechText = `I've packed your group into ${roomCount} room${roomCount > 1 ? "s" : ""}: ${summary} at $${newPlan.totalPricePerNight.toLocaleString()} per night. What do you think?`
-      }
-    } else if (mode === "distribution") {
-      const allocation = allocationOverride ?? profile.roomAllocation
-      newPlan = getRecommendedRoomPlan(
-        rooms, partySize, profile.guestComposition, profile.travelPurpose, profile.budgetRange, undefined, allocation,
-      )
-      if (newPlan) {
-        const roomCount = newPlan.entries.reduce((sum, e) => sum + e.quantity, 0)
-        const summary = newPlan.entries
-          .map((e) => `${e.quantity > 1 ? `${e.quantity} ` : ""}${e.roomName}${e.quantity > 1 ? " rooms" : ""}`)
-          .join(" and ")
-        speechText = `Here's the updated layout: ${summary} — ${roomCount} room${roomCount > 1 ? "s" : ""} at $${newPlan.totalPricePerNight.toLocaleString()} per night.`
-      }
-    }
-
-    if (newPlan) {
-      speakResolved(speechText)
-      executeEffects([{ type: "UPDATE_ROOM_PLAN", plan: newPlan }], "orchestrate")
-      // Ensure the rooms panel is open
-      if (stateRef.current.stage === "HOTEL_EXPLORATION" && stateRef.current.subState !== "panel_open") {
-        executeEffects([{ type: "OPEN_PANEL", panel: "rooms" }], "orchestrate")
-        stateRef.current = { stage: "HOTEL_EXPLORATION", subState: "panel_open" }
-      }
-    }
-  }, [profile, derivedProfile, rooms, speakResolved, executeEffects])
-
-  /** Handle explicit room composition from user (e.g., "4 standard rooms and 2 loft suites") */
-  const handleExplicitComposition = useCallback((
-    requests: { roomId: string; quantity: number }[],
-  ) => {
-    const partySize = profile.familySize ?? derivedProfile.partySize
-    const { plan, warning } = buildExplicitRoomPlan(requests, rooms, partySize)
-
-    if (plan.entries.length === 0) {
-      speakResolved(
-        "I couldn't quite match those room types. Could you describe the combination you'd like?",
-      )
-      return
-    }
-
-    const summary = plan.entries
-      .map((e) => `${e.quantity} ${e.roomName}${e.quantity > 1 ? " rooms" : ""}`)
-      .join(" and ")
-
-    let speechText = `Got it — ${summary} at $${plan.totalPricePerNight.toLocaleString()} per night total.`
-    if (warning) {
-      speechText += ` Just a heads up: ${warning}`
-    } else {
-      speechText += " How does that look?"
-    }
-
-    speakResolved(speechText)
-    executeEffects([{ type: "UPDATE_ROOM_PLAN", plan }], "orchestrate")
-
-    // Ensure the rooms panel is open
-    if (stateRef.current.stage === "HOTEL_EXPLORATION" && stateRef.current.subState !== "panel_open") {
-      executeEffects([{ type: "OPEN_PANEL", panel: "rooms" }], "orchestrate")
-      stateRef.current = { stage: "HOTEL_EXPLORATION", subState: "panel_open" }
-    }
-  }, [profile, derivedProfile, rooms, speakResolved, executeEffects])
-
-  /**
-   * Execute a structured RoomPlanAction from the LLM room-plan classifier.
-   * Returns true if the action was handled, false if the caller should fall
-   * back to the existing heuristic path (e.g. no_room_change).
-   */
-  const executeRoomPlanAction = useCallback((action: RoomPlanAction, _message: string): boolean => {
-    if (action.action === "no_room_change") return false
-
-    const partySize = profile.familySize ?? derivedProfile.partySize
-    if (!partySize || rooms.length === 0) return false
-
-    if (action.action === "adjust_budget") {
-      if (action.params.target_per_night) {
-        // LLM extracted a specific budget target — use getRecommendedRoomPlan with budget string
-        const budgetStr = `$${action.params.target_per_night}`
-        const newPlan = getRecommendedRoomPlan(
-          rooms, partySize, profile.guestComposition, profile.travelPurpose, budgetStr, undefined, profile.roomAllocation,
-        )
-        if (newPlan) {
-          const summary = newPlan.entries
-            .map((e) => `${e.quantity > 1 ? `${e.quantity} ` : ""}${e.roomName}${e.quantity > 1 ? " rooms" : ""}`)
-            .join(" and ")
-          speakResolved(
-            `Here's what I can do close to ${budgetStr} per night: ${summary} at $${newPlan.totalPricePerNight.toLocaleString()} per night. How does that sound?`,
-          )
-          executeEffects([{ type: "UPDATE_ROOM_PLAN", plan: newPlan }], "orchestrate")
-          if (stateRef.current.stage === "HOTEL_EXPLORATION" && stateRef.current.subState !== "panel_open") {
-            executeEffects([{ type: "OPEN_PANEL", panel: "rooms" }], "orchestrate")
-            stateRef.current = { stage: "HOTEL_EXPLORATION", subState: "panel_open" }
-          }
-          return true
-        }
-      }
-      // No target or plan failed — fall back to budget mode
-      handlePlanAdjustment("budget", _message)
-      return true
-    }
-
-    if (action.action === "set_room_composition") {
-      handleExplicitComposition(action.params.rooms.map((r) => ({ roomId: r.room_id, quantity: r.quantity })))
-      return true
-    }
-
-    if (action.action === "compact_plan") {
-      if (action.params.max_rooms) {
-        // LLM extracted a specific constraint — use getCompactRoomPlan and validate
-        const newPlan = getCompactRoomPlan(rooms, partySize)
-        if (newPlan) {
-          const roomCount = newPlan.entries.reduce((sum, e) => sum + e.quantity, 0)
-          if (roomCount <= action.params.max_rooms) {
-            const summary = newPlan.entries
-              .map((e) => `${e.quantity > 1 ? `${e.quantity} ` : ""}${e.roomName}${e.quantity > 1 ? " rooms" : ""}`)
-              .join(" and ")
-            speakResolved(
-              `Great news — I can fit your group into ${roomCount} room${roomCount > 1 ? "s" : ""}: ${summary} at $${newPlan.totalPricePerNight.toLocaleString()} per night.`,
-            )
-            executeEffects([{ type: "UPDATE_ROOM_PLAN", plan: newPlan }], "orchestrate")
-            if (stateRef.current.stage === "HOTEL_EXPLORATION" && stateRef.current.subState !== "panel_open") {
-              executeEffects([{ type: "OPEN_PANEL", panel: "rooms" }], "orchestrate")
-              stateRef.current = { stage: "HOTEL_EXPLORATION", subState: "panel_open" }
-            }
-            return true
-          } else {
-            speakResolved(
-              `I wasn't able to fit everyone into just ${action.params.max_rooms} room${action.params.max_rooms > 1 ? "s" : ""} — the minimum is ${roomCount}. Here's the most compact option I have. What do you think?`,
-            )
-            executeEffects([{ type: "UPDATE_ROOM_PLAN", plan: newPlan }], "orchestrate")
-            if (stateRef.current.stage === "HOTEL_EXPLORATION" && stateRef.current.subState !== "panel_open") {
-              executeEffects([{ type: "OPEN_PANEL", panel: "rooms" }], "orchestrate")
-              stateRef.current = { stage: "HOTEL_EXPLORATION", subState: "panel_open" }
-            }
-            return true
-          }
-        }
-      }
-      // No constraint or plan failed — fall back to compact mode
-      handlePlanAdjustment("compact", _message)
-      return true
-    }
-
-    if (action.action === "set_distribution") {
-      updateProfile({ roomAllocation: action.params.allocation })
-      handlePlanAdjustment("distribution", _message, action.params.allocation)
-      return true
-    }
-
-    if (action.action === "recompute_with_preferences") {
-      const budgetStr = action.params.budget_range ?? profile.budgetRange
-      const distPref = action.params.distribution_preference as import("@/lib/hotel-data").DistributionPreference | undefined
-      const newPlan = getRecommendedRoomPlan(
-        rooms, partySize, profile.guestComposition, profile.travelPurpose, budgetStr, distPref, profile.roomAllocation,
-      )
-      if (newPlan) {
-        const summary = newPlan.entries
-          .map((e) => `${e.quantity > 1 ? `${e.quantity} ` : ""}${e.roomName}${e.quantity > 1 ? " rooms" : ""}`)
-          .join(" and ")
-        const prefLabel = action.params.room_type_preference ?? "your preferences"
-        speakResolved(
-          `Based on ${prefLabel}, here's what I'd recommend: ${summary} at $${newPlan.totalPricePerNight.toLocaleString()} per night. How does that look?`,
-        )
-        executeEffects([{ type: "UPDATE_ROOM_PLAN", plan: newPlan }], "orchestrate")
-        if (stateRef.current.stage === "HOTEL_EXPLORATION" && stateRef.current.subState !== "panel_open") {
-          executeEffects([{ type: "OPEN_PANEL", panel: "rooms" }], "orchestrate")
-          stateRef.current = { stage: "HOTEL_EXPLORATION", subState: "panel_open" }
-        }
-        return true
-      }
-      return false
-    }
-
-    return false
-  }, [profile, derivedProfile, rooms, speakResolved, executeEffects, handlePlanAdjustment, handleExplicitComposition, updateProfile])
 
   // Phase 3 shadow-mode helper ------------------------------------------------
   //
@@ -1030,6 +809,12 @@ export function useJourney(options: UseJourneyOptions) {
     }
 
     if (intent.type === "AMENITY_BY_NAME") {
+      // Phase 2: when the rooms panel is open, "standard mountain view" and
+      // similar room-ish phrases were previously mis-classified as
+      // AMENITY_BY_NAME and would hijack navigation to the lobby. When the
+      // planner is the sole room brain, swallow the intent and let the planner
+      // interpret the utterance literally as a room request.
+      if (isRoomsPanelVisibleRef?.current) return
       navigateToAmenityByName(intent.amenityName)
       return
     }
@@ -1046,49 +831,12 @@ export function useJourney(options: UseJourneyOptions) {
       }
     }
 
-    // --- Intercept room plan adjustment intents ---
-    const isRoomContext = currentState.stage === "HOTEL_EXPLORATION" || currentState.stage === "ROOM_SELECTED"
-
-    // Existing heuristic room-plan logic, extracted so both the sync (flag off)
-    // and async (LLM fallback) paths share the same code without duplication.
-    const roomPlanFallback = () => {
-      if (isRoomContext && intent.type === "ROOM_PLAN_CHEAPER") {
-        handlePlanAdjustment("budget", latestMessage)
-        return
-      }
-
-      if (isRoomContext && intent.type === "ROOM_PLAN_COMPACT") {
-        handlePlanAdjustment("compact", latestMessage)
-        return
-      }
-
-      if (isRoomContext && (intent.type === "ROOM_TOGETHER" || intent.type === "ROOM_SEPARATE")) {
-        const partySize = profile.familySize ?? derivedProfile.partySize ?? 1
-        const newAllocation = intent.type === "ROOM_TOGETHER"
-          ? [partySize]
-          : Array(partySize).fill(1)
-        updateProfile({ roomAllocation: newAllocation })
-        handlePlanAdjustment("distribution", latestMessage, newAllocation)
-        return
-      }
-
-      // Try to parse explicit room composition from the raw message
-      if (isRoomContext && (intent.type === "UNKNOWN" || intent.type === "ROOMS")) {
-        const explicitRequests = parseExplicitRoomRequests(latestMessage, rooms)
-        if (explicitRequests && explicitRequests.length > 0) {
-          handleExplicitComposition(explicitRequests)
-          return
-        }
-      }
-
-      dispatch({ type: "USER_INTENT", intent })
-    }
-
-    // Use the heuristic path. Orchestrate drives LLM-based room-plan decisions
-    // through its own `adjust_room_plan` tool; the standalone client-side
-    // classifier was removed in Phase 9 (Batch 3).
-    roomPlanFallback()
-  }, [dispatch, dispatchListAmenities, navigateToAmenityByName, startRoomTimer, stopExplorationTimer, handlePlanAdjustment, handleExplicitComposition, profile, derivedProfile, rooms, updateProfile])
+    // Default path — hand the intent to the reducer. Room-plan edits no longer
+    // route through heuristic helpers here; the room planner (kicked from the
+    // user-messages effect via maybeKickRoomPlanner) is the sole authority on
+    // the displayed plan when the rooms panel is open.
+    dispatch({ type: "USER_INTENT", intent })
+  }, [dispatch, dispatchListAmenities, navigateToAmenityByName, startRoomTimer, stopExplorationTimer, isRoomsPanelVisibleRef])
 
   // --- React to new user messages (intent classification + question tracking) ---
   useEffect(() => {
@@ -1565,40 +1313,6 @@ export function useJourney(options: UseJourneyOptions) {
             return
           }
 
-          if (result.tool === "adjust_room_plan" && result.action.action === "set_distribution") {
-            logTurn({
-              stage: "PROFILE_COLLECTION",
-              latestMessage: profileTurnMessageSlice,
-              regexIntent: profileRegexIntent.type,
-              llmIntent: "ROOM_PLAN",
-              action: { type: "ROOM_PLAN_ACTION", action: result.action.action },
-              speech: result.speech,
-              latencyMs: profileLatencyMs,
-              pathway: "orchestrate",
-            })
-            const allocation = result.action.params?.allocation
-            if (Array.isArray(allocation) && allocation.length > 0 && allocation.every((n) => typeof n === "number" && n > 0)) {
-              // Unconditional write — state is idempotent.
-              updateProfile({ roomAllocation: allocation })
-            }
-            prevAwaitingRef.current = freshAwaiting
-            if (fastPathAlreadySpoke) {
-              logDecisionCompare(
-                { type: "ROOM_PLAN_ACTION", action: result.action.action },
-                result.decision_envelope,
-              )
-              return
-            }
-            if (cancelled) return
-            interrupt()
-            repeat(result.speech).catch(() => undefined)
-            logDecisionCompare(
-              { type: "ROOM_PLAN_ACTION", action: result.action.action },
-              result.decision_envelope,
-            )
-            return
-          }
-
           logTurn({
             stage: "PROFILE_COLLECTION",
             latestMessage: profileTurnMessageSlice,
@@ -1669,10 +1383,10 @@ export function useJourney(options: UseJourneyOptions) {
       currentState.subState === "panel_open"
     ) {
       // Single room selection — fuzzy match room name.
-      // Multi-room composition ("2 standard rooms and 1 loft") is now routed
-      // through orchestrate's `adjust_room_plan` tool (set_room_composition)
-      // in unified "on" mode; the standalone classifier branch was removed
-      // in Phase 9 (Batch 3).
+      // Multi-room composition ("2 standard rooms and 1 loft") is handled by
+      // the dedicated room planner (/api/room-planner), kicked from
+      // `maybeKickRoomPlanner` below. This fuzzy match only routes to a
+      // specific room card; anything else falls through to the planner.
       const matched = matchRoomByName(latestMessage, rooms)
       if (matched) {
         onRoomCardTappedRef.current({
@@ -1841,12 +1555,9 @@ export function useJourney(options: UseJourneyOptions) {
           )
           preGeneratedSpeechRef.current = envelope.speech
           processIntent(fullIntentObject, latestMessage, currentState, stage)
-          // Phase 1 Room Planner: when the envelope intent is a room-edit
-          // intent AND the rooms panel is visible, ALSO kick the dedicated
-          // planner. The planner's SET_ROOM_PLAN dispatch fires later than
-          // the existing path's UI updates (planOverride etc.), so its
-          // output wins when both land. The existing `adjust_room_plan`
-          // handler stays — planner is additive, not a replacement.
+          // Phase 2 Room Planner: sole room brain when the rooms panel is
+          // open. Fires for every non-exit, non-internal-nav utterance; see
+          // `maybeKickRoomPlanner` above for the gate.
           maybeKickRoomPlanner(intentTag, latestMessage)
           logDecisionCompare(
             { type: "USER_INTENT", intent: intentTag },
@@ -1873,39 +1584,6 @@ export function useJourney(options: UseJourneyOptions) {
           interrupt()
           repeat(result.speech).catch(() => undefined)
           logDecisionCompare({ type: "NO_ACTION" }, result.decision_envelope)
-          return
-        }
-
-        if (result.tool === "adjust_room_plan") {
-          logTurn({
-            stage,
-            latestMessage: turnMessageSlice,
-            regexIntent: regexIntent.type,
-            llmIntent: "ROOM_PLAN",
-            action: { type: "ROOM_PLAN_ACTION", action: result.action.action },
-            speech: result.speech,
-            latencyMs,
-            pathway: "orchestrate",
-          })
-          applyOrchestrateProfileUpdates(
-            (result as { profileUpdates?: Record<string, unknown> }).profileUpdates,
-            "adjust_room_plan",
-          )
-          preGeneratedSpeechRef.current = result.speech
-          const handled = executeRoomPlanAction(result.action, latestMessage)
-          if (!handled) {
-            preGeneratedSpeechRef.current = null
-            processIntent(regexIntent, latestMessage, currentState, stage)
-          }
-          // Phase 1 Room Planner: any adjust_room_plan action is a room-edit
-          // by definition. Kick the dedicated planner in parallel so the
-          // LLM-driven room list is refreshed (it will land after the
-          // executeRoomPlanAction-driven UI change and supersede it).
-          maybeKickRoomPlanner("ROOM_PLAN_ACTION", latestMessage)
-          logDecisionCompare(
-            { type: "ROOM_PLAN_ACTION", action: result.action.action },
-            result.decision_envelope,
-          )
           return
         }
 
@@ -1997,7 +1675,7 @@ export function useJourney(options: UseJourneyOptions) {
     // orchestrate calls (see Phase 3 on-mode blocker). We read the freshest
     // profile/derivedProfile via profileRef.current / derivedProfileRef.current
     // at call time inside the on-mode IIFE instead.
-  }, [userMessages, dispatch, trackQuestion, trackRequirement, processIntent, rooms, useUnifiedOrchestrator, useUnifiedOrchestratorMode, profileStageUsesOrchestrate, fireShadowOrchestrate, executeRoomPlanAction, interrupt, repeat, maybeKickRoomPlanner])
+  }, [userMessages, dispatch, trackQuestion, trackRequirement, processIntent, rooms, useUnifiedOrchestrator, useUnifiedOrchestratorMode, profileStageUsesOrchestrate, fireShadowOrchestrate, interrupt, repeat, maybeKickRoomPlanner])
 
   // --- Abort in-flight PROFILE_COLLECTION orchestrate on stage transition ---
   // When the journey leaves PROFILE_COLLECTION (e.g., FORCE_ADVANCE fired),

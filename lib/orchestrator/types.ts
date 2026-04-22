@@ -6,8 +6,8 @@ import type { AvatarDerivedProfile } from "@/lib/liveavatar/useUserProfile"
 // TurnDecision envelope (Phase 1 of /home refactor)
 //
 // Additive, normalized view of whatever the orchestrator decided this turn,
-// regardless of which legacy tool fired (navigate_and_speak, adjust_room_plan,
-// profile_turn, no_action_speak). The client consumes this alongside the
+// regardless of which legacy tool fired (navigate_and_speak, profile_turn,
+// no_action_speak). The client consumes this alongside the
 // existing legacy response fields. Do NOT dispatch on decision yet — that is
 // Phase 3. Phase 1 ships it in the wire for shadow-mode groundwork.
 // ---------------------------------------------------------------------------
@@ -168,8 +168,6 @@ export type JourneyEffect =
   | { type: "OPEN_BOOKING_URL" }
   | { type: "SELECT_HOTEL"; slug: string; hotelName: string; location: string; description: string }
   | { type: "STOP_LISTENING" }
-  | { type: "SET_ROOM_ALLOCATION"; allocation: number[] }
-  | { type: "UPDATE_ROOM_PLAN"; plan: import("@/lib/hotel-data").RoomPlan; warning?: string }
   | { type: "STOP_AVATAR" }
   | { type: "HIDE_UE5_STREAM" }
 

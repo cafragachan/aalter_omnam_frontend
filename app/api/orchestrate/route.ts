@@ -62,27 +62,6 @@ const NavigateAndSpeakSchema = z.object({
   profileUpdates: ProfileUpdatesSchema.optional(),
 })
 
-const AdjustRoomPlanSchema = z.object({
-  action: z.enum([
-    "adjust_budget",
-    "set_room_composition",
-    "compact_plan",
-    "set_distribution",
-    "recompute_with_preferences",
-    "no_room_change",
-  ]),
-  speech: z.string().min(1).max(500),
-  // Flat params — each action uses a subset of these
-  target_per_night: z.number().optional(),
-  rooms: z.array(z.object({ room_id: z.string(), quantity: z.number() })).optional(),
-  max_rooms: z.number().optional(),
-  allocation: z.array(z.number()).optional(),
-  budget_range: z.string().optional(),
-  distribution_preference: z.string().optional(),
-  room_type_preference: z.string().optional(),
-  profileUpdates: ProfileUpdatesSchema.optional(),
-})
-
 const NoActionSpeakSchema = z.object({
   speech: z.string().min(1).max(500),
   profileUpdates: ProfileUpdatesSchema.optional(),
@@ -99,7 +78,6 @@ const ProfileTurnSchema = z.object({
 
 const TOOL_SCHEMAS: Record<string, z.ZodTypeAny> = {
   navigate_and_speak: NavigateAndSpeakSchema,
-  adjust_room_plan: AdjustRoomPlanSchema,
   no_action_speak: NoActionSpeakSchema,
   profile_turn: ProfileTurnSchema,
 }
@@ -541,10 +519,10 @@ ${collectedSummary}`
   // profile view, the LLM can override stale body fields when the conversation
   // clearly disagrees (e.g., guest said "we're 6 not 8" mid-exploration).
   //
-  // Phase 9: all four tools (`navigate_and_speak`, `adjust_room_plan`,
-  // `no_action_speak`, `profile_turn`) accept `profileUpdates`. Mid-exploration
-  // corrections ("we're 6 not 8", "switch to May 15–20") are persisted by
-  // setting that field on whichever tool the LLM is calling this turn.
+  // Phase 9: all three tools (`navigate_and_speak`, `no_action_speak`,
+  // `profile_turn`) accept `profileUpdates`. Mid-exploration corrections
+  // ("we're 6 not 8", "switch to May 15–20") are persisted by setting that
+  // field on whichever tool the LLM is calling this turn.
   let transcriptReconstructionBlock = ""
   if (!isProfileCollection && body.conversationHistory?.length) {
     const lines = body.conversationHistory.map((m) => {
@@ -606,25 +584,7 @@ Classify the user's intent into exactly one of these categories:
 2. Only return AMENITY_BY_NAME when the user's message itself references a specific amenity. A bare "yes" with a suggestedAmenityName in context is still AFFIRMATIVE.
 3. Use UNKNOWN only when the message genuinely does not map to any intent.
 4. **AMENITY_BY_NAME takes priority over TRAVEL_TO_HOTEL.** If the message mentions a specific amenity or facility ("take me to the pool", "go to the lobby", "let's visit the conference room"), classify as AMENITY_BY_NAME, not TRAVEL_TO_HOTEL. TRAVEL_TO_HOTEL only applies when the destination is "the hotel" generically.
-${hasRooms ? `
-## Room Plan Classification Rules
 
-When the user's message is about room selection or planning, use the \`adjust_room_plan\` tool instead of \`navigate_and_speak\`. The action field must be one of:
-
-- **adjust_budget**: User wants cheaper/more affordable rooms, or mentions a specific price target (e.g., "around $400 total", "something cheaper"). Include target_per_night in params if they mention a number.
-- **set_room_composition**: User names specific rooms and/or quantities (e.g., "penthouse for us and a standard for the nanny", "two loft suites"). Use room IDs from the catalog above — never invent IDs. When the user says a room type generically (e.g., "a standard"), pick the cheapest matching room ID.
-- **compact_plan**: User wants fewer rooms or to fit everyone together (e.g., "can we fit into one room", "fewer rooms"). Include max_rooms in params if they specify a number.
-- **set_distribution**: User specifies how to split guests across rooms (e.g., "adults in one room and kids in another"). Return allocation as an array of guest counts per room in params.
-- **recompute_with_preferences**: User has a preference for room type, view, or style but isn't naming exact rooms (e.g., "I'd prefer a lake view", "something more spacious").
-- **no_room_change**: The message is NOT about room plan adjustments at all.
-
-### Room Plan Rules
-
-1. You MUST use room IDs from the provided catalog for set_room_composition. Never invent room IDs.
-2. When the user mentions a dollar amount, that is the target total per night, not per room.
-3. If the message is ambiguous between two actions, prefer the more specific one (set_room_composition > recompute_with_preferences > adjust_budget).
-4. If the message has nothing to do with room selection or planning, do NOT use adjust_room_plan — use navigate_and_speak or no_action_speak instead.
-` : ""}
 ## Speech Generation Rules
 
 Every tool call MUST include a "speech" field — a natural spoken response for the avatar to say aloud.
@@ -639,12 +599,13 @@ Every tool call MUST include a "speech" field — a natural spoken response for 
 
 ## Tool Selection
 
-- Use **navigate_and_speak** for navigation intents (ROOMS, BACK, AMENITY_BY_NAME, AFFIRMATIVE, NEGATIVE, TRAVEL_TO_HOTEL, etc.) and other non-room-plan intents.${hasRooms ? "\n- Use **adjust_room_plan** for room plan requests (budget changes, room composition, distribution, preferences)." : ""}
-- Use **no_action_speak** when the message doesn't map to any navigation or room plan action — just generate a helpful spoken response.
+- Use **navigate_and_speak** for navigation intents (ROOMS, BACK, AMENITY_BY_NAME, AFFIRMATIVE, NEGATIVE, TRAVEL_TO_HOTEL, ROOM_TOGETHER, ROOM_SEPARATE, ROOM_PLAN_CHEAPER, ROOM_PLAN_COMPACT, etc.).
+- Use **no_action_speak** when the message doesn't map to any navigation intent — just generate a helpful spoken response.
+- **Room plan changes are handled by a dedicated client-side planner system**, not by this route. Do NOT try to compose a room plan here. When the guest asks for cheaper rooms, more compact rooms, specific room types, or a different distribution, just classify the utterance with \`navigate_and_speak\` (using the appropriate ROOM_* intent when one fits, otherwise UNKNOWN) and generate brief acknowledging speech. The client's room planner will read the transcript and update the rooms panel.
 
 ## Profile Corrections (all stages)
 
-If during any turn the user corrects or supplements profile data (examples: "we're 6 not 8", "actually mom is joining too", "switch to May 15–20", "call me Lisa not Cesar"), set the optional \`profileUpdates\` field on whichever tool you're calling with the corrected field(s). Do NOT use \`profile_turn\` for mid-exploration corrections — only use \`profileUpdates\` on the tool that fits the user's primary intent (usually \`navigate_and_speak\` or \`no_action_speak\`; \`adjust_room_plan\` if party size change requires rebalancing rooms). Only include fields that changed — omit everything else. Profile writes are idempotent and safe to emit alongside any action.${regexHintBlock}${roomBlock}${guestBlock}${transcriptReconstructionBlock}${profileCollectionBlock}`
+If during any turn the user corrects or supplements profile data (examples: "we're 6 not 8", "actually mom is joining too", "switch to May 15–20", "call me Lisa not Cesar"), set the optional \`profileUpdates\` field on whichever tool you're calling with the corrected field(s). Do NOT use \`profile_turn\` for mid-exploration corrections — only use \`profileUpdates\` on the tool that fits the user's primary intent (usually \`navigate_and_speak\` or \`no_action_speak\`). Only include fields that changed — omit everything else. Profile writes are idempotent and safe to emit alongside any action.${regexHintBlock}${roomBlock}${guestBlock}${transcriptReconstructionBlock}${profileCollectionBlock}`
 }
 
 // ---------------------------------------------------------------------------
@@ -921,11 +882,7 @@ const PROFILE_TURN_TOOL: OpenAITool = {
   },
 }
 
-function buildTools(
-  hasRooms: boolean,
-  includeAdjustRoomPlan = true,
-  adjustRoomPlanActions?: string[],
-) {
+function buildTools() {
   const tools: OpenAITool[] = [
     {
       type: "function" as const,
@@ -955,81 +912,11 @@ function buildTools(
     },
   ]
 
-  if (includeAdjustRoomPlan) {
-    const actions = adjustRoomPlanActions ?? [
-      "adjust_budget",
-      "set_room_composition",
-      "compact_plan",
-      "set_distribution",
-      "recompute_with_preferences",
-      "no_room_change",
-    ]
-    tools.push({
-      type: "function" as const,
-      function: {
-        name: "adjust_room_plan",
-        description: "Classify a room plan adjustment and generate speech",
-        parameters: {
-          type: "object",
-          properties: {
-            action: {
-              type: "string",
-              enum: actions,
-              description: "The room plan action to take",
-            },
-            target_per_night: {
-              type: "number",
-              description: "For adjust_budget: the user's target total price per night in dollars. Omit for other actions.",
-            },
-            rooms: {
-              type: "array",
-              items: {
-                type: "object",
-                properties: {
-                  room_id: { type: "string", description: "Room ID from the catalog" },
-                  quantity: { type: "number", description: "Number of this room type" },
-                },
-                required: ["room_id", "quantity"],
-              },
-              description: "For set_room_composition: array of rooms and quantities. Omit for other actions.",
-            },
-            max_rooms: {
-              type: "number",
-              description: "For compact_plan: maximum rooms the user wants. Omit for other actions.",
-            },
-            allocation: {
-              type: "array",
-              items: { type: "number" },
-              description: "For set_distribution: guest counts per room, e.g. [2, 2]. Omit for other actions.",
-            },
-            budget_range: {
-              type: "string",
-              description: "For recompute_with_preferences: budget preference if mentioned. Omit for other actions.",
-            },
-            distribution_preference: {
-              type: "string",
-              description: "For recompute_with_preferences: 'together', 'separate', or 'auto'. Omit for other actions.",
-            },
-            room_type_preference: {
-              type: "string",
-              description: "For recompute_with_preferences: preferred room type or view. Omit for other actions.",
-            },
-            speech: {
-              type: "string",
-              description: "Natural spoken response for the avatar (1-3 sentences, preserve all room names, amounts, and quantities verbatim)",
-            },
-          },
-          required: ["action", "speech"],
-        },
-      },
-    })
-  }
-
   tools.push({
     type: "function" as const,
     function: {
       name: "no_action_speak",
-      description: "No navigation or room plan action — just generate a helpful spoken response",
+      description: "No navigation action — just generate a helpful spoken response",
       parameters: {
         type: "object",
         properties: {
@@ -1160,32 +1047,6 @@ function buildTurnDecision(args: {
     }
   }
 
-  if (functionName === "adjust_room_plan") {
-    const action = typeof result.action === "string" ? result.action : "no_room_change"
-    // Capture every flat param the tool schema allows — the client can pick
-    // whichever it cares about. Undefined fields are omitted so the envelope
-    // stays compact.
-    const rawUpdates: Record<string, unknown> = {
-      target_per_night: result.target_per_night,
-      rooms: result.rooms,
-      max_rooms: result.max_rooms,
-      allocation: result.allocation,
-      budget_range: result.budget_range,
-      distribution_preference: result.distribution_preference,
-      room_type_preference: result.room_type_preference,
-    }
-    const updates: Record<string, unknown> = {}
-    for (const [k, v] of Object.entries(rawUpdates)) {
-      if (v !== undefined) updates[k] = v
-    }
-    return {
-      action: { type: "ROOM_PLAN_ACTION", action, updates },
-      speech,
-      ...(reasoningAnnotated ? { reasoning: reasoningAnnotated } : {}),
-      ...profileUpdatesSuffix,
-    }
-  }
-
   if (functionName === "profile_turn") {
     const decisionVal = result.decision
     const decision: "ask_next" | "clarify" | "ready" =
@@ -1246,7 +1107,6 @@ export async function POST(request: Request) {
       )
     }
 
-    const hasRooms = !!(body.rooms && body.rooms.length > 0)
     const isProfileCollection = body.journeyContext.stage === "PROFILE_COLLECTION"
     // Phase 4: reconstruct profile from client body + transcript before
     // building the prompt. Logged at the bottom of the handler so we can
@@ -1257,11 +1117,12 @@ export async function POST(request: Request) {
     )
     const systemPrompt = buildSystemPrompt(body, reconstructedProfile)
     // PROFILE_COLLECTION uses a single profile_turn tool that owns extraction,
-    // decision, and speech — no navigate/room-plan tools are offered here.
-    // Other stages keep the legacy tools.
+    // decision, and speech — no navigate tools are offered here. Other stages
+    // get navigate_and_speak + no_action_speak. Room-plan changes are handled
+    // by the dedicated client-side planner (/api/room-planner), not this route.
     const tools = isProfileCollection
       ? [PROFILE_TURN_TOOL]
-      : buildTools(hasRooms, hasRooms, undefined)
+      : buildTools()
     const toolChoice = isProfileCollection
       ? ({ type: "function" as const, function: { name: "profile_turn" } })
       : "auto"
@@ -1347,10 +1208,6 @@ export async function POST(request: Request) {
         )
       }
 
-      // Note: adjust_room_plan params are validated loosely here.
-      // The downstream executeRoomPlanAction handles missing/malformed params
-      // gracefully via optional chaining and fallback logic.
-
       // Build response
       let result = validated.data as Record<string, unknown>
       let validatorOverride: "ages_mismatch" | "ready_premature" | null = null
@@ -1395,20 +1252,6 @@ export async function POST(request: Request) {
       if (functionName === "navigate_and_speak") {
         responseBody.intent = result.intent
         if (result.amenityName) responseBody.amenityName = result.amenityName
-        responseBody.speech = cleanSpeech(result.speech)
-        passThroughProfileUpdates()
-      } else if (functionName === "adjust_room_plan") {
-        responseBody.action = result.action
-        // Pack flat fields back into a params object for the client
-        responseBody.params = {
-          target_per_night: result.target_per_night,
-          rooms: result.rooms,
-          max_rooms: result.max_rooms,
-          allocation: result.allocation,
-          budget_range: result.budget_range,
-          distribution_preference: result.distribution_preference,
-          room_type_preference: result.room_type_preference,
-        }
         responseBody.speech = cleanSpeech(result.speech)
         passThroughProfileUpdates()
       } else if (functionName === "profile_turn") {

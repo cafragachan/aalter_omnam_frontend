@@ -87,6 +87,7 @@ export function useRoomPlanner(): {
             ? profile.endDate.toISOString().slice(0, 10)
             : undefined,
           budgetRange: profile.budgetRange,
+          roomAllocation: profile.roomAllocation,
         },
         currentPlan: snapshot.currentRoomPlan
           ? snapshot.currentRoomPlan.rooms.map((r) => ({ roomId: r.roomId, quantity: r.quantity }))

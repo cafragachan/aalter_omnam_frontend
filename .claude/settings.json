@@ -94,7 +94,8 @@
       "Bash(grep -c 'effects\\\\.push\\({ type: \"SPEAK\",')",
       "Bash(git rm *)",
       "Bash(tee /tmp/tsc.log)",
-      "Bash(echo \"EXIT:$?\")"
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(awk 'NR==604' app/api/orchestrate/route.ts)"
     ]
   }
 }

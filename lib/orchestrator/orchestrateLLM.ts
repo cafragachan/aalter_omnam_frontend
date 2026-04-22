@@ -1,21 +1,6 @@
 import { z } from "zod"
 import type { UserIntent } from "./intents"
 import type { JourneyState, TurnDecision } from "./types"
-
-// ---------------------------------------------------------------------------
-// RoomPlanAction — discriminated union of the 6 `adjust_room_plan` tool
-// actions returned by /api/orchestrate. Previously lived alongside the
-// standalone classifyRoomPlanLLM client; folded here after Phase 9 deletions
-// since orchestrate is the sole decider.
-// ---------------------------------------------------------------------------
-
-export type RoomPlanAction =
-  | { action: "adjust_budget"; params: { target_per_night?: number } }
-  | { action: "set_room_composition"; params: { rooms: { room_id: string; quantity: number }[] } }
-  | { action: "compact_plan"; params: { max_rooms?: number } }
-  | { action: "set_distribution"; params: { allocation: number[] } }
-  | { action: "recompute_with_preferences"; params: { budget_range?: string; distribution_preference?: string; room_type_preference?: string } }
-  | { action: "no_room_change"; params: Record<string, never> }
 import type { UserDBProfile } from "@/lib/auth-context"
 import type {
   PersistedPersonality,
@@ -80,7 +65,6 @@ export type ProfileTurnDecision = "ask_next" | "clarify" | "ready"
 
 export type OrchestrateResult = (
   | { tool: "navigate_and_speak"; intent: UserIntent; speech: string }
-  | { tool: "adjust_room_plan"; action: RoomPlanAction; speech: string }
   | { tool: "no_action_speak"; speech: string }
   | {
       tool: "profile_turn"
@@ -197,8 +181,6 @@ export async function orchestrateLLM(
       tool: string
       intent?: string
       amenityName?: string
-      action?: string
-      params?: Record<string, unknown>
       speech?: string
       reasoning?: string
       profileUpdates?: ProfileUpdates
@@ -251,29 +233,6 @@ export async function orchestrateLLM(
           ? { type: "AMENITY_BY_NAME", amenityName: data.amenityName }
           : ({ type: data.intent } as UserIntent)
       const base = { tool: "navigate_and_speak" as const, intent, speech: data.speech }
-      return envelope ? { ...base, decision_envelope: envelope } : base
-    }
-
-    if (data.tool === "adjust_room_plan") {
-      if (!data.action) return null
-      const validActions = [
-        "adjust_budget",
-        "set_room_composition",
-        "compact_plan",
-        "set_distribution",
-        "recompute_with_preferences",
-        "no_room_change",
-      ]
-      if (!validActions.includes(data.action)) return null
-      const roomPlanAction = {
-        action: data.action,
-        params: data.params ?? {},
-      } as RoomPlanAction
-      const base = {
-        tool: "adjust_room_plan" as const,
-        action: roomPlanAction,
-        speech: data.speech,
-      }
       return envelope ? { ...base, decision_envelope: envelope } : base
     }
 
