@@ -713,12 +713,22 @@ export function useJourney(options: UseJourneyOptions) {
       return
     }
 
-    // Bare "yes" → resolve against suggested amenity in state
+    // Bare "yes" in HOTEL_EXPLORATION with a suggestedAmenityName standing
+    // proposal (from a just-listed amenities response) → resolve to that
+    // amenity. This is safe because the avatar's immediately-prior utterance
+    // concretely proposed it.
+    //
+    // NOTE: we used to also resolve AFFIRMATIVE → suggestedNext in
+    // AMENITY_VIEWING, but the LLM's freestyled speech there ("want to know
+    // more about the pool?") frequently invited yes/no about STAYING rather
+    // than advancing. The interception then hijacked the transition to the
+    // suggestedNext amenity, producing a "said yes, got teleported" UX.
+    // Now the LLM is authoritative for AMENITY_VIEWING turns: if it proposes
+    // advancement, it emits navigate_and_speak:AMENITY_BY_NAME(suggestedNext);
+    // if it proposes staying with more details, it emits no_action_speak.
+    // See the AMENITY_VIEWING prompt block in /api/orchestrate for the
+    // contract.
     if (intent.type === "AFFIRMATIVE") {
-      if (currentState.stage === "AMENITY_VIEWING" && currentState.suggestedNext) {
-        navigateToAmenityByName(currentState.suggestedNext)
-        return
-      }
       if (currentState.stage === "HOTEL_EXPLORATION" && currentState.suggestedAmenityName) {
         navigateToAmenityByName(currentState.suggestedAmenityName)
         return

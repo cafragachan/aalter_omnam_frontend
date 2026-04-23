@@ -126,6 +126,21 @@ export function evaluateFastPath(args: FastPathArgs): FastPathResult {
     }
   }
 
+  // Symmetric carve-out for guest_breakdown. The regex extractor sets
+  // `partySize` from "8 adults" / "2 guests" / "we're 4" but does NOT
+  // decompose the number into `guestComposition: {adults, children}`.
+  // Result: freshAwaiting lands on "guest_breakdown" and fast-path would
+  // speak "Will it be all adults, or are there any little ones in your
+  // group?" — even though the user JUST said "8 adults". The LLM extracts
+  // composition correctly from the transcript; defer to it so the canned
+  // redundant question doesn't fire.
+  if (freshAwaiting === "guest_breakdown" && prevAwaiting !== "guest_breakdown") {
+    return {
+      eligible: false,
+      reason: `${prevAwaiting}→guest_breakdown uses LLM extraction (regex can't decompose "N adults")`,
+    }
+  }
+
   return {
     eligible: true,
     nextAwaiting: freshAwaiting,

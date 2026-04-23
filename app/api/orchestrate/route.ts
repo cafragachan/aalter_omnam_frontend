@@ -442,10 +442,21 @@ Return exactly one \`profile_turn\` tool call. The transcript above is the sourc
 
 - Dates: "between the 10th and the 15th of May" → \`startDate: "${today.slice(0, 4)}-05-10", endDate: "${today.slice(0, 4)}-05-15"\`. Accept any clear range.
 - Vague dates: "mid-June", "sometime in spring", "next week" → do NOT guess. Set \`decision: "clarify"\`.
-- Party: "2 adults and 4 children" → \`partySize: 6, guestComposition: { adults: 2, children: 4 }\`. "8 guests" alone → \`partySize: 8\` only; leave guestComposition for a follow-up.
+- Party: "2 adults and 4 children" → \`partySize: 6, guestComposition: { adults: 2, children: 4 }\`. "8 guests" alone (no decomposition) → \`partySize: 8\` only; leave guestComposition for a follow-up.
+- **Adults-only decomposition**: "8 adults" / "just the two of us, all adults" / "four grown-ups" → \`partySize: N, guestComposition: { adults: N, children: 0 }\`. Always set \`children: 0\` EXPLICITLY — never emit \`{ adults: N }\` without children. Downstream schemas require both fields.
+- **All-adults follow-up**: if a prior turn captured partySize but not composition, and the latest turn says "all adults" / "just adults" / "no kids" / "no little ones", decompose: \`guestComposition: { adults: partySize, children: 0 }\`.
 - Ages: "2, 4, 6, and 8" or "2, 4, 6, 8" for 4 children → \`childrenAges: [2, 4, 6, 8]\`. When the latest guest turn is bare numbers AND a previous avatar turn asked about ages, treat them as ages.
 - Age mismatch: if guest gave fewer/more ages than children count, or a range like "between 12 and 16" for 4 kids → \`decision: "clarify"\`. Do NOT silently accept.
-- Room distribution: "all in one room" → \`roomAllocation: [partySize]\`. "separate rooms" → \`[1,1,...]\` (partySize ones). "two rooms, four and two" → \`[4, 2]\`. "evenly" with partySize 8 across 2 rooms → \`[4, 4]\`.
+- Room distribution: "all in one room" → \`roomAllocation: [partySize]\`. "separate rooms" → \`[1,1,...]\` (partySize ones). "two rooms, four and two" → \`[4, 2]\`. "evenly" with partySize 8 across 2 rooms → \`[4, 4]\`. Bare "N rooms" (e.g. "4 rooms" for partySize 8) → \`[partySize/N, partySize/N, ...]\` when evenly divisible, else ask to clarify the split.
+
+### Transcription-artifact rule (HeyGen VAD splitting)
+
+The speech-to-text sometimes chunks one user utterance into two turns, ending the first with a comma, dash, or mid-word cut-off: "All adults—", "we will be eight ad—", "and, uh,". Treat such cut-offs as non-signal, NOT as ambiguity warranting \`"clarify"\`.
+
+- If the MOST RECENT turn looks incomplete OR merely restates something already captured, combine it with prior turns and proceed to \`ask_next\` / \`ready\`.
+- Example: prior turn "we will be 8 adults", latest turn "All adults—" → composition fully captured (adults=8, children=0); do NOT ask "confirm the exact number of adults". Ask the NEXT missing field instead.
+- Example: prior turn "between May 10 and 15", latest turn "the—" → dates captured; move on.
+- Only emit \`"clarify"\` when the composite of ALL turns genuinely fails to yield the answer.
 
 ### Decision rules
 
@@ -544,6 +555,47 @@ If the guest asks about an amenity that isn't in the list (e.g., "do you have a 
     hotelAmenitiesBlock = `\n\n## Hotel amenities (ground truth)
 
 This property has no bookable amenity spaces to tour. If the guest asks, acknowledge that and redirect to rooms or the surrounding area. Do NOT invent amenities (no spa, gym, restaurant, etc.).`
+  }
+
+  // AMENITY_VIEWING stage-specific guidance.
+  //
+  // The guest has just been navigated to one of the hotel's amenity spaces
+  // (pool / lobby / conference room). The journey state computes a
+  // `suggestedNext` amenity mechanically (first unvisited one). The LLM is
+  // the sole authority on what a guest's "yes" means in this stage —
+  // whether they want to stay for more details or advance to suggestedNext.
+  // The client reducer used to auto-advance on AFFIRMATIVE when
+  // suggestedNext was set; that produced a "said yes, got teleported" UX
+  // when the avatar's speech had invited "want to know more?".
+  let amenityViewingBlock = ""
+  if (body.journeyContext.stage === "AMENITY_VIEWING") {
+    const currentAmenity = body.journeyContext.suggestedAmenityName // reused slot; server doesn't have currentAmenity; leave generic
+    const suggestedNext = body.journeyContext.suggestedNext
+    amenityViewingBlock = `\n\n## AMENITY_VIEWING stage guidance (current stage)
+
+The guest is touring a specific amenity space right now.${suggestedNext ? ` The next unvisited amenity the client wants to surface is: **${suggestedNext}**.` : " No further unvisited amenity is queued."}${currentAmenity ? ` (Context: recently referenced amenity "${currentAmenity}".)` : ""}
+
+### Intent contract for this stage (critical)
+
+Your tool choice and intent tag MUST match what your speech proposes. The reducer will NOT guess. Pick ONE of the three patterns below per turn.
+
+1. **Advance to the next amenity** — when the guest clearly wants to move on (either they named another amenity, or they said "yes" after you offered suggestedNext): emit \`navigate_and_speak\` with \`intent: "AMENITY_BY_NAME"\` and \`amenityName: "${suggestedNext ?? "<name>"}"\`. Your speech should mention that amenity by name so the guest hears what they're being taken to.
+
+2. **Stay and elaborate on the current amenity** — when the guest wants more details, asks a question about the current amenity, or says "yes" after you offered "want to know more about this?": emit \`no_action_speak\` with 1-3 sentences of actual content about the current amenity. Do NOT emit AFFIRMATIVE / AMENITY_BY_NAME here — you are not navigating, you are elaborating.
+
+3. **Back to hotel overview / other navigation** — use \`navigate_and_speak\` with the matching intent (\`BACK\`, \`HOTEL_EXPLORE\`, \`ROOMS\`, \`LOCATION\`, etc).
+
+### Self-consistency rule
+
+Before emitting, sanity-check: does the speech you're about to produce invite the same action your intent implies?
+- Speech "Shall we head to the ${suggestedNext ?? "next amenity"}?" → intent \`AMENITY_BY_NAME\` on the guest's "yes" next turn.
+- Speech "Would you like to hear more about the pool?" → on the guest's "yes" next turn, use \`no_action_speak\` with actual pool details. Do NOT suddenly switch to AMENITY_BY_NAME.
+
+When in doubt, prefer speech that proposes advancement to suggestedNext (if available) — it's the more common intent at this stage.
+
+### Hard don'ts
+
+- Do NOT emit bare \`USER_INTENT: AFFIRMATIVE\` in this stage. It's ambiguous without a binding prior proposal, and the reducer will not auto-advance on it anymore. Either commit to AMENITY_BY_NAME (advance) or no_action_speak (stay).`
   }
 
   // VIRTUAL_LOUNGE stage-specific guidance.
@@ -686,7 +738,7 @@ Every tool call MUST include a "speech" field — a natural spoken response for 
 
 ## Profile Corrections (all stages)
 
-If during any turn the user corrects or supplements profile data (examples: "we're 6 not 8", "actually mom is joining too", "switch to May 15–20", "call me Lisa not Cesar"), set the optional \`profileUpdates\` field on whichever tool you're calling with the corrected field(s). Do NOT use \`profile_turn\` for mid-exploration corrections — only use \`profileUpdates\` on the tool that fits the user's primary intent (usually \`navigate_and_speak\` or \`no_action_speak\`). Only include fields that changed — omit everything else. Profile writes are idempotent and safe to emit alongside any action.${regexHintBlock}${roomBlock}${hotelAmenitiesBlock}${guestBlock}${transcriptReconstructionBlock}${virtualLoungeBlock}${profileCollectionBlock}`
+If during any turn the user corrects or supplements profile data (examples: "we're 6 not 8", "actually mom is joining too", "switch to May 15–20", "call me Lisa not Cesar"), set the optional \`profileUpdates\` field on whichever tool you're calling with the corrected field(s). Do NOT use \`profile_turn\` for mid-exploration corrections — only use \`profileUpdates\` on the tool that fits the user's primary intent (usually \`navigate_and_speak\` or \`no_action_speak\`). Only include fields that changed — omit everything else. Profile writes are idempotent and safe to emit alongside any action.${regexHintBlock}${roomBlock}${hotelAmenitiesBlock}${guestBlock}${transcriptReconstructionBlock}${virtualLoungeBlock}${amenityViewingBlock}${profileCollectionBlock}`
 }
 
 // ---------------------------------------------------------------------------

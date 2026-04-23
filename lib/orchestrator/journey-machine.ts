@@ -714,13 +714,15 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           return { nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" }, effects }
 
         case "AFFIRMATIVE":
-          // "Yes" after we suggested the next amenity → useJourney intercepts
-          // and dispatches NAVIGATE_TO_AMENITY. If it reaches here, no suggestion active.
-          if (state.suggestedNext) {
-            // Safety: shouldn't normally reach here (useJourney intercepts), but handle gracefully
-            effects.push({ type: "SPEAK_INTENT", key: "amenitySuggestFallback", args: { suggestedNext: state.suggestedNext } })
-            return { nextState: state, effects }
-          }
+          // AFFIRMATIVE in AMENITY_VIEWING is ambiguous without knowing what
+          // the avatar just proposed — could mean "yes, tell me more about
+          // the current amenity" OR "yes, take me to suggestedNext". The
+          // LLM (which authored the prior speech) is the only authority
+          // that knows which. Under `=on` the LLM emits AMENITY_BY_NAME
+          // when advancing or no_action_speak when staying — so reaching
+          // this branch means the LLM really meant a bare AFFIRMATIVE.
+          // Drain preGen speech (the LLM's authored acknowledgment) and
+          // hold state; never silently advance to suggestedNext here.
           effects.push({ type: "SPEAK_INTENT", key: "amenityFallbackPrompt" })
           return { nextState: state, effects }
 
