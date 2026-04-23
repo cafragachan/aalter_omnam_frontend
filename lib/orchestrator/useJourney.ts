@@ -1254,8 +1254,15 @@ export function useJourney(options: UseJourneyOptions) {
             if (cancelled) return
 
             if (result.decision === "ready") {
-              // Warm handoff — substitute the reducer's hardcoded advance speech.
-              preGeneratedSpeechRef.current = result.speech
+              // why: PILOT_MODE sends ready → VIRTUAL_LOUNGE:asking, whose
+              // reducer emits SPEAK_INTENT `profileReadyWelcome` ("…would you
+              // like to explore our virtual lounge?"). If the LLM drifts and
+              // authors "let me take you to the hotel", substituting that
+              // speech misleads the guest into expecting a hotel transition
+              // while the reducer is actually waiting for a yes/no about the
+              // lounge. Null the override so the reducer's canned lounge-ask
+              // always plays on this one transition.
+              preGeneratedSpeechRef.current = null
               dispatch({ type: "FORCE_ADVANCE" })
               prevAwaitingRef.current = freshAwaiting
               logDecisionCompare(
@@ -1304,7 +1311,11 @@ export function useJourney(options: UseJourneyOptions) {
               return
             }
             if (cancelled) return
-            preGeneratedSpeechRef.current = result.speech
+            // why: same rationale as the profile_turn ready path — FORCE_ADVANCE
+            // from PROFILE_COLLECTION lands in VIRTUAL_LOUNGE:asking whose reducer
+            // speaks `profileReadyWelcome`. Overriding with LLM speech about "the
+            // hotel" misleads the guest about what comes next.
+            preGeneratedSpeechRef.current = null
             dispatch({ type: "FORCE_ADVANCE" })
             logDecisionCompare(
               { type: "USER_INTENT", intent: result.intent.type },

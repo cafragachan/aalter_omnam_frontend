@@ -458,11 +458,11 @@ Return exactly one \`profile_turn\` tool call. The transcript above is the sourc
 ### Worked examples of the LLM getting it wrong (DO NOT DO THESE)
 
 Guest just said "Between 12 and 16" when there are 4 children:
-- WRONG: \`{ profileUpdates: { guestComposition: { adults: 4, children: 4, childrenAges: [12, 13, 14, 15] } }, decision: "ready", speech: "Great, I've noted the children's ages. Let me take you to the hotel!" }\`
+- WRONG: \`{ profileUpdates: { guestComposition: { adults: 4, children: 4, childrenAges: [12, 13, 14, 15] } }, decision: "ready", speech: "Great, I've noted the children's ages. Before we head to the hotel, shall we explore the virtual lounge?" }\`
 - RIGHT: \`{ profileUpdates: {}, decision: "clarify", speech: "Could you tell me each child's age individually rather than a range?" }\`
 
 Profile only has partySize + guestComposition; dates, travel purpose, room allocation are all missing:
-- WRONG: \`{ decision: "ready", speech: "Lovely, let's head over." }\`
+- WRONG: \`{ decision: "ready", speech: "Lovely, shall we stop by the virtual lounge first?" }\` (the OTHER required fields are still missing — decision must be "ask_next")
 - RIGHT: \`{ decision: "ask_next", speech: "When are you thinking of traveling?" }\`
 
 Guest said "mid-June":
@@ -481,10 +481,11 @@ Guest said "8 guests" and "4 are children":
 
 ### Ready-handoff style (when decision = "ready")
 
-- Produce a warm 1-2 sentence handoff that restates 2-4 captured details. This is the ONE place warmth is allowed.
+- Produce a warm 1-2 sentence handoff that restates 2-4 captured details AND offers the virtual lounge before the hotel. The next stage is the virtual lounge (exclusive artwork and retail on display), NOT the hotel — every ready handoff must end with an invitation to visit the lounge or skip straight to the hotel.
+- Do NOT say "let me take you to the hotel", "let's head to the hotel", or "let's head over" on its own — those mislead the guest into expecting the hotel when the next prompt is about the lounge.
 - Examples:
-  - "Lovely — May 10 to 15, four adults and four children, split two and two. Let me take you to the hotel."
-  - "May 10 to 15, the four of you for a family trip. Let's head over."
+  - "Wonderful — May 10 to 15, four adults and four children, split two and two. Before we head to the hotel, would you like to stop by the virtual lounge? We have some exclusive artwork and retail on display."
+  - "May 10 to 15, the four of you for a family trip. Shall we explore the virtual lounge first for a look at some art and retail, or go straight to the hotel?"
 
 ### Do not
 
@@ -503,6 +504,46 @@ ${collectedSummary}`
   let regexHintBlock = ""
   if (!isProfileCollection && body.regexHint && body.regexHint !== "UNKNOWN") {
     regexHintBlock = `\n\nRegex classifier hint (use as a tiebreaker; override only if the conversation makes it clear the hint is wrong): ${body.regexHint}`
+  }
+
+  // VIRTUAL_LOUNGE stage-specific guidance.
+  //
+  // The reducer's VIRTUAL_LOUNGE:exploring branch routes only TRAVEL_TO_HOTEL,
+  // NEGATIVE, AFFIRMATIVE, and a small set of hotel-content intents into state
+  // transitions — everything else is ignored. Without explicit guidance the
+  // LLM tends to mis-classify lounge-exit phrasings ("I'm ready", "let's go",
+  // "take me to the hotel") as AMENITY_BY_NAME / AFFIRMATIVE / UNKNOWN,
+  // which the reducer then drops silently. This block forces the correct
+  // tag selection at exit-time and pushes off-topic / stay-longer utterances
+  // into `no_action_speak` so the `=on` handler's speech path keeps the
+  // avatar audible.
+  let virtualLoungeBlock = ""
+  if (body.journeyContext.stage === "VIRTUAL_LOUNGE") {
+    const sub = body.journeyContext.subState ?? "exploring"
+    virtualLoungeBlock = `\n\n## VIRTUAL_LOUNGE stage guidance (current stage)
+
+The guest is currently in the virtual lounge — a pre-hotel space showcasing exclusive artwork and retail pieces. They have NOT yet entered the hotel. The lounge contains NO hotel amenities (pool, spa, restaurant, lobby, conference, gym, bar); those live inside the hotel and are inaccessible from here.
+
+Current sub-state: ${sub}
+
+### When sub-state is "asking"
+
+The avatar just asked: "would you like to explore the virtual lounge first, or go straight to the hotel?" The guest's reply drives the transition:
+
+- AFFIRMATIVE ("yes", "sure", "let's see it", "show me", "okay") — classify as AFFIRMATIVE. They'll stay in the lounge and free-roam.
+- NEGATIVE ("no", "skip it", "not now") OR any explicit desire for the hotel ("take me to the hotel", "let's go to the hotel", "I'm ready", "straight to the hotel") — classify as TRAVEL_TO_HOTEL. They'll advance into the hotel.
+
+### When sub-state is "exploring"
+
+The guest is free-roaming the lounge. Any utterance signalling readiness to move on — "I'm ready", "let's go", "take me to the hotel", "okay I'm done", "next", "continue", "that's enough", "on to the hotel", "let's continue", "shall we go?" — MUST be classified as TRAVEL_TO_HOTEL (via navigate_and_speak). Do NOT use AFFIRMATIVE, AMENITY_BY_NAME, BACK, or UNKNOWN for these — the reducer only advances on TRAVEL_TO_HOTEL / NEGATIVE / AFFIRMATIVE here, and getting the tag wrong drops the transition silently.
+
+If the guest wants to stay longer, asks about the art or retail, or says something off-topic ("what's the weather?", "tell me about this piece", "how much is that sculpture?"), use the **no_action_speak** tool with a brief engaging response. NEVER leave a turn silent — every exploring-stage turn must produce audible speech either by advancing (TRAVEL_TO_HOTEL) or speaking via no_action_speak.
+
+### Hard don'ts for this stage
+
+- Do NOT classify generic lounge-exit phrasings as AMENITY_BY_NAME. The lounge has no hotel amenities; the amenity-name enum values (pool, spa, restaurant, lobby, etc.) are hotel-only.
+- If the guest asks about a hotel amenity by name while in the lounge ("take me to the pool"), treat it as TRAVEL_TO_HOTEL — they're implying they want to leave the lounge for the hotel. Mention in speech that the hotel is next so the transition feels coherent.
+- Do NOT classify bare "let's go" / "I'm ready" as AFFIRMATIVE during exploring — there is no standing yes/no proposal in that sub-state. Use TRAVEL_TO_HOTEL.`
   }
 
   // Phase 4: universal transcript-aware reconstruction block.
@@ -605,7 +646,7 @@ Every tool call MUST include a "speech" field — a natural spoken response for 
 
 ## Profile Corrections (all stages)
 
-If during any turn the user corrects or supplements profile data (examples: "we're 6 not 8", "actually mom is joining too", "switch to May 15–20", "call me Lisa not Cesar"), set the optional \`profileUpdates\` field on whichever tool you're calling with the corrected field(s). Do NOT use \`profile_turn\` for mid-exploration corrections — only use \`profileUpdates\` on the tool that fits the user's primary intent (usually \`navigate_and_speak\` or \`no_action_speak\`). Only include fields that changed — omit everything else. Profile writes are idempotent and safe to emit alongside any action.${regexHintBlock}${roomBlock}${guestBlock}${transcriptReconstructionBlock}${profileCollectionBlock}`
+If during any turn the user corrects or supplements profile data (examples: "we're 6 not 8", "actually mom is joining too", "switch to May 15–20", "call me Lisa not Cesar"), set the optional \`profileUpdates\` field on whichever tool you're calling with the corrected field(s). Do NOT use \`profile_turn\` for mid-exploration corrections — only use \`profileUpdates\` on the tool that fits the user's primary intent (usually \`navigate_and_speak\` or \`no_action_speak\`). Only include fields that changed — omit everything else. Profile writes are idempotent and safe to emit alongside any action.${regexHintBlock}${roomBlock}${guestBlock}${transcriptReconstructionBlock}${virtualLoungeBlock}${profileCollectionBlock}`
 }
 
 // ---------------------------------------------------------------------------
