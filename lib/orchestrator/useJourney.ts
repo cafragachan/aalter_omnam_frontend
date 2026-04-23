@@ -19,7 +19,6 @@ import { renderSpeech } from "./speech-renderer"
 import { logTurn, logEffect, type EffectEntry } from "@/lib/debug"
 import {
   getRecommendedAmenity,
-  matchRoomByName,
   type Amenity,
   type HotelCatalog,
   type Room,
@@ -185,7 +184,7 @@ export function useJourney(options: UseJourneyOptions) {
   const { messages: allMessages } = useHeyGenLiveAvatarContext()
   const { repeat, interrupt, stopListening } = useHeyGenAvatarActions("FULL")
   const guestIntelligence = useGuestIntelligence()
-  const { trackQuestion, trackRoomExplored, trackAmenityExplored, trackRequirement, startRoomTimer, startAmenityTimer, stopExplorationTimer, setBookingOutcome } = guestIntelligence
+  const { trackQuestion, trackAmenityExplored, trackRequirement, startRoomTimer, startAmenityTimer, stopExplorationTimer, setBookingOutcome } = guestIntelligence
 
   // --- Phase 6: unified store ---
   // The internal JourneyState was previously held in a local ref (the third
@@ -1243,31 +1242,11 @@ export function useJourney(options: UseJourneyOptions) {
 
     const currentState = stateRef.current
 
-    // --- Voice-driven room selection (before intent classification) ---
-    // When the rooms panel is open, try to fuzzy-match the raw utterance
-    // against available room names. This lets users say things like
-    // "the mountain view", "show me the penthouse", "loft suite lake" etc.
-    if (
-      currentState.stage === "HOTEL_EXPLORATION" &&
-      currentState.subState === "panel_open"
-    ) {
-      // Single room selection — fuzzy match room name.
-      // Multi-room composition ("2 standard rooms and 1 loft") is handled by
-      // the dedicated room planner (/api/room-planner), kicked from
-      // `maybeKickRoomPlanner` below. This fuzzy match only routes to a
-      // specific room card; anything else falls through to the planner.
-      const matched = matchRoomByName(latestMessage, rooms)
-      if (matched) {
-        onRoomCardTappedRef.current({
-          roomId: matched.id,
-          roomName: matched.name,
-          occupancy: matched.occupancy,
-        })
-        return
-      }
-      // No match — fall through to normal intent classification
-      // (the user might be saying "go back", "show amenities", etc.)
-    }
+    // Voice-driven room edits (single-room fuzzy match or multi-room
+    // composition) are handled exclusively by the room planner via
+    // `maybeKickRoomPlanner` below. The planner returns a fresh plan; the
+    // UE5 selectedRoom sync effect in app/home/page.tsx re-signals UE5
+    // with the concatenated room-id list on every plan change.
 
     const regexIntent = classifyIntent(latestMessage)
     const turnMessageSlice = latestMessage.slice(-80)
@@ -1610,22 +1589,6 @@ export function useJourney(options: UseJourneyOptions) {
     })
   }, [dispatch])
 
-  const onRoomCardTapped = useCallback(
-    (payload: { roomId: string; roomName: string; occupancy: string }) => {
-      stopExplorationTimer()
-      trackRoomExplored(payload.roomId)
-      currentRoomIdRef.current = payload.roomId
-
-      dispatch({
-        type: "ROOM_CARD_TAPPED",
-        roomName: payload.roomName,
-        occupancy: payload.occupancy,
-        roomId: payload.roomId,
-      })
-    },
-    [dispatch, stopExplorationTimer, trackRoomExplored],
-  )
-
   const onUnitSelectedUE5 = useCallback(
     (payload: { roomName: string; description?: string; price?: string; level?: string }) => {
       dispatch({
@@ -1659,18 +1622,10 @@ export function useJourney(options: UseJourneyOptions) {
     dispatch({ type: "USER_INTENT", intent: { type: "BACK" } })
   }, [dispatch, stopExplorationTimer])
 
-  // Stable ref to onRoomCardTapped so the user-messages effect (which calls
-  // it from the fuzzy room-name match branch) doesn't need it in its deps.
-  const onRoomCardTappedRef = useRef(onRoomCardTapped)
-  useEffect(() => {
-    onRoomCardTappedRef.current = onRoomCardTapped
-  })
-
   return {
     dispatch,
     getInternalState,
     onHotelSelected,
-    onRoomCardTapped,
     onUnitSelectedUE5,
     onAmenityCardTapped,
     onNavigateBack,

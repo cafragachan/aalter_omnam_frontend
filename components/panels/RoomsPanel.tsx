@@ -8,7 +8,6 @@ type RoomsPanelProps = {
   visible: boolean
   hotelName: string
   rooms: Room[]
-  onSelectRoom: (room: Room) => void
   onClose: () => void
   /** @deprecated Use recommendedPlan instead */
   recommendedRoomId?: string | null
@@ -22,7 +21,6 @@ export function RoomsPanel({
   visible,
   hotelName: _hotelName,
   rooms,
-  onSelectRoom,
   onClose: _onClose,
   recommendedRoomId,
   recommendedPlan,
@@ -95,7 +93,6 @@ export function RoomsPanel({
                   <HotelRoomCard
                     key={room.id}
                     room={room}
-                    onClick={() => onSelectRoom(room)}
                     recommended={isRecommended(room.id)}
                     recommendedQuantity={planQuantities.get(room.id)}
                   />

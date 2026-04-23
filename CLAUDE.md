@@ -50,7 +50,7 @@ The user talks to an AI avatar concierge (Ava) who guides them through a multi-s
 3. **ProfileSync** syncs extracted data → `UserProfileContext` (global state)
 4. **useJourney** watches profile + messages → runs through `journeyReducer` (pure state machine) → produces effects
 5. **Effects** execute: avatar speaks (`repeat()`), UE5 commands sent, UI panels open/close, fade transitions
-6. **UI panels** call the handlers exposed by `useJourney` directly (`onRoomCardTapped`, `onUnitSelectedUE5`, etc.) — no pub/sub
+6. **UI panels** call the handlers exposed by `useJourney` directly (`onUnitSelectedUE5`, `onAmenityCardTapped`, `onHotelSelected`, etc.) — no pub/sub. The rooms panel is display-only: room selection is driven by the planner + UE5 unit-selection events, not card taps.
 
 ### Journey Stages
 
@@ -119,7 +119,7 @@ components/
 `journeyReducer()` in `lib/orchestrator/journey-machine.ts` is a **pure function** — no React, no side effects. It takes `(state, action)` and returns `{ nextState, effects[] }`. Effects are descriptive objects (`SPEAK`, `UE5_COMMAND`, `OPEN_PANEL`, etc.) executed by the `useJourney` hook. This makes the orchestration testable and traceable.
 
 ### 3. UI panels call useJourney handlers directly
-UI panels (rooms, amenities, destinations, unit detail) invoke the handlers exposed by `useJourney` — `onRoomCardTapped`, `onUnitSelectedUE5`, `onAmenityCardTapped`, `onNavigateBack`, `onHotelSelected` — as props. There is no event bus; the orchestrator owns the journey transitions and the panels are pure views driven by reducer state.
+UI panels (amenities, destinations, unit detail) invoke the handlers exposed by `useJourney` — `onUnitSelectedUE5`, `onAmenityCardTapped`, `onNavigateBack`, `onHotelSelected` — as props. There is no event bus; the orchestrator owns the journey transitions and the panels are pure views driven by reducer state. The rooms panel is display-only: its cards do not fire events — room selection is driven entirely by the planner's `SET_ROOM_PLAN` (which triggers `UE5 selectedRoom`) and by UE5 unit-selection events flowing back through `onUnitSelectedUE5`.
 
 ### 4. Intent classification is centralized
 All regex-based user intent detection lives in `lib/orchestrator/intents.ts`. The `classifyIntent(message)` function returns a typed `UserIntent` (`ROOMS`, `AMENITIES`, `LOCATION`, `INTERIOR`, `EXTERIOR`, `BACK`, `HOTEL_EXPLORE`, `UNKNOWN`). Designed to be swappable for AI-based NLU.
@@ -132,7 +132,7 @@ All regex-based user intent detection lives in `lib/orchestrator/intents.ts`. Th
 **Outgoing (Frontend → UE5):**
 - `{ type: "startTEST", value: "startTEST" }` — start the experience
 - `{ type: "gameEstate", value: "rooms" | "amenities" | "location" | "default" }` — scene navigation
-- `{ type: "selectedRoom", value: roomId }` — highlight room units
+- `{ type: "selectedRoom", value: "r1,r2,..." }` — comma-separated list of recommended room-type ids to highlight in the scene. Driven by `currentRoomPlan` updates (the planner is the sole writer); quantities are not sent — UE5 only needs the set of types. Emitted on every plan change.
 - `{ type: "unitView", value: "interior" | "exterior" }` — view selected unit
 - `{ type: "communal", value: amenityId }` — navigate to amenity space
 - `{ type: "sunPosition", value: "daylight" | "sunset" | "night" }` — change lighting

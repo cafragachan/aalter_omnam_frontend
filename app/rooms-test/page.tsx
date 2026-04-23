@@ -11,7 +11,6 @@ const ROOMS_PANEL_WIDTH = Math.round(AVATAR_WIDTH * 1.3)
 export default function RoomsTestPage() {
   const rooms = useMemo(() => getRoomsByHotelId("1"), [])
   const [showPanel, setShowPanel] = useState(true)
-  const [lastSelectedRoom, setLastSelectedRoom] = useState<string | null>(null)
 
   const recommendedPlan = useMemo<RoomPlan | null>(() => {
     const first = rooms[0]
@@ -67,7 +66,6 @@ export default function RoomsTestPage() {
           >
             {showPanel ? "Hide panel" : "Show panel"}
           </Button>
-          {lastSelectedRoom && <span>Selected: {lastSelectedRoom}</span>}
         </div>
 
         {showPanel && (
@@ -77,7 +75,6 @@ export default function RoomsTestPage() {
                 visible={showPanel}
                 hotelName="EDITION | Lake Como"
                 rooms={rooms}
-                onSelectRoom={(room) => setLastSelectedRoom(room.name)}
                 onClose={() => setShowPanel(false)}
                 recommendedPlan={recommendedPlan}
               />

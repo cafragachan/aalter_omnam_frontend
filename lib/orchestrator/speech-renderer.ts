@@ -80,16 +80,14 @@ export function renderSpeech(key: SpeechKey, args?: SpeechArgs): string {
       return DEFAULT_SPEECH.amenityBookNudge
     case "amenityPickRooms":
       return DEFAULT_SPEECH.amenityPickRooms
+    case "unitExploreDeclined":
+      return DEFAULT_SPEECH.unitExploreDeclined
+    case "unitDeclineClarify":
+      return DEFAULT_SPEECH.unitDeclineClarify
 
     // ---- Templated keys ------------------------------------------------
     case "destinationPicked":
       return DEFAULT_SPEECH.destinationPicked(String(args?.hotelName ?? ""))
-
-    case "roomCardTapped":
-      return DEFAULT_SPEECH.roomCardTapped(
-        String(args?.roomName ?? ""),
-        String(args?.occupancy ?? ""),
-      )
 
     case "unitPicked":
       return DEFAULT_SPEECH.unitPicked(String(args?.roomName ?? ""))

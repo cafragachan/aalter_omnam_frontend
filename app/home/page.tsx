@@ -920,7 +920,6 @@ function HomePageContent({
 
   // --- UI panel visibility (local state, driven by orchestrator callbacks) ---
   const [showRoomsPanel, setShowRoomsPanel] = useState(false)
-  const [lastPickedRoomId, setLastPickedRoomId] = useState<string | null>(null)
 
   // --- UE5 Bridge (WebSocket + fade transitions + unit state) ---
   // Phase 8: UE5 unit selections are forwarded directly to useJourney via a
@@ -1038,12 +1037,10 @@ function HomePageContent({
 
   const recommendedPlan = plannerPlan
   const unitDetailRoom = useMemo<Room | null>(() => {
-    const byLastPickedId = lastPickedRoomId ? rooms.find((r) => r.id === lastPickedRoomId) ?? null : null
     const selectedUnitName = ue5.selectedUnit?.roomName?.trim().toLowerCase()
-    if (!selectedUnitName) return byLastPickedId
-    const byUnitName = rooms.find((r) => r.name.trim().toLowerCase() === selectedUnitName) ?? null
-    return byUnitName ?? byLastPickedId
-  }, [lastPickedRoomId, rooms, ue5.selectedUnit])
+    if (!selectedUnitName) return null
+    return rooms.find((r) => r.name.trim().toLowerCase() === selectedUnitName) ?? null
+  }, [rooms, ue5.selectedUnit])
 
   // --- Panel open/close callbacks (passed to useJourney) ---
   const handleOpenPanel = useCallback((panel: "rooms" | "amenities" | "location") => {
@@ -1065,7 +1062,6 @@ function HomePageContent({
     ue5.resetToDefault()
     ue5.clearSelectedUnit()
     setShowRoomsPanel(false)
-    setLastPickedRoomId(null)
   }, [ue5])
 
   // --- Auto-select hotel (used by pilot mode in the journey state machine) ---
@@ -1106,7 +1102,6 @@ function HomePageContent({
 
   const {
     dispatch: journeyDispatch,
-    onRoomCardTapped: journeyOnRoomCardTapped,
     onUnitSelectedUE5: journeyOnUnitSelectedUE5,
   } = useJourney({
     onOpenPanel: handleOpenPanel,
@@ -1183,19 +1178,32 @@ function HomePageContent({
     })
   }, [selectHotel, setJourneyStage, updateProfile, journeyDispatch])
 
-  // --- Room selection handler (Phase 8: direct call into useJourney) ---
-  const handleSelectRoom = useCallback((room: Room) => {
-    setLastPickedRoomId(room.id)
-    journeyOnRoomCardTapped({
-      roomId: room.id,
-      roomName: room.name,
-      occupancy: room.occupancy,
-    })
-  }, [journeyOnRoomCardTapped])
-
+  // --- UE5 selectedRoom sync: fires on every room-plan change ---
+  // The planner (`useRoomPlanner`) is the sole writer of `currentRoomPlan`.
+  // Whenever it lands a new plan we signal UE5 with a comma-joined list of the
+  // unique room-type ids (quantities discarded — UE5 just needs the set of
+  // types to highlight). First fire happens when Trigger 1 (panel_opened)
+  // returns; subsequent fires happen on every voice-driven recompute.
+  //
+  // IMPORTANT: depend on `ue5.selectRoom` (the memoized callback), NOT the
+  // whole `ue5` object — the bridge re-constructs its return literal on every
+  // render, so a dep on `ue5` would re-fire this effect on unrelated renders
+  // (selectedUnit updates, fade overlay flips, etc.) and spam UE5 with
+  // duplicate `selectedRoom` payloads. That spam was overriding the
+  // `unitView=interior` camera move, leaving the guest stuck on the exterior.
+  // `lastSelectedRoomPayloadRef` dedups identical payloads as a second guard.
+  const selectRoomUE5 = ue5.selectRoom
+  const lastSelectedRoomPayloadRef = useRef<string | null>(null)
   useEffect(() => {
-    setLastPickedRoomId(null)
-  }, [selectedHotel])
+    const entries = currentRoomPlan?.rooms ?? []
+    if (entries.length === 0) return
+    const ids = Array.from(new Set(entries.map((r) => r.roomId)))
+    if (ids.length === 0) return
+    const payload = ids.join(",")
+    if (lastSelectedRoomPayloadRef.current === payload) return
+    lastSelectedRoomPayloadRef.current = payload
+    selectRoomUE5(payload)
+  }, [currentRoomPlan, selectRoomUE5])
 
   // --- Trigger 1: rooms panel opens → ask the planner for a fresh plan ---
   // Fires exactly once on the false → true transition. A ref guards against
@@ -1206,6 +1214,11 @@ function HomePageContent({
     const wasOpen = prevShowRoomsPanelRef.current
     prevShowRoomsPanelRef.current = showRoomsPanel
     if (!wasOpen && showRoomsPanel) {
+      // UE5 drops `selectedRoom` state when it leaves the rooms scene, so a
+      // fresh open must re-emit the payload even if the stored plan is
+      // identical to last time. Clearing the dedup ref lets the sync effect
+      // above fire on the next planner landing (or on the existing plan).
+      lastSelectedRoomPayloadRef.current = null
       void requestRoomPlanRef.current("panel_opened")
     }
   }, [showRoomsPanel])
@@ -1258,7 +1271,6 @@ function HomePageContent({
                 visible={showRoomsPanel}
                 hotelName={selectedHotelData?.name ?? ""}
                 rooms={rooms}
-                onSelectRoom={handleSelectRoom}
                 onClose={closeRoomsPanel}
                 recommendedRoomId={recommendedRoomId}
                 recommendedPlan={recommendedPlan}

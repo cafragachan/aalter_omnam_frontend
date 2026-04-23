@@ -45,7 +45,13 @@ export type TurnDecision = {
 // ---------------------------------------------------------------------------
 
 /** Tracks what the avatar last proposed, so a bare "yes" can be resolved contextually */
-export type LastProposal = "rooms" | "amenities" | "location" | "book" | "interior_or_exterior"
+export type LastProposal =
+  | "rooms"
+  | "amenities"
+  | "location"
+  | "book"
+  | "explore_room"
+  | "post_decline_room"
 
 /** Lightweight amenity reference carried in state and actions */
 export type AmenityRef = { id: string; name: string; scene: string }
@@ -77,7 +83,6 @@ export type JourneyAction =
   | { type: "FORCE_ADVANCE" }
   | { type: "HOTEL_PICKED"; slug: string; hotelName: string; location: string; description: string }
   | { type: "USER_INTENT"; intent: UserIntent }
-  | { type: "ROOM_CARD_TAPPED"; roomName: string; occupancy: string; roomId: string }
   | { type: "UNIT_SELECTED_UE5"; roomName: string }
   | { type: "AMENITY_CARD_TAPPED"; name: string; scene: string; amenityId: string; visitedAmenities: string[]; allAmenities: AmenityRef[] }
   | { type: "IDLE_TIMEOUT" }
@@ -139,9 +144,10 @@ export type SpeechKey =
   | "amenityAskBack"
   | "amenityBookNudge"
   | "amenityPickRooms"
+  | "unitExploreDeclined"
+  | "unitDeclineClarify"
   // Templated keys (args documented in journey-machine.ts SPEAK_INTENT push sites)
   | "destinationPicked"        // args: { hotelName }
-  | "roomCardTapped"           // args: { roomName, occupancy }
   | "unitPicked"               // args: { roomName }
   | "amenitySuggestFallback"   // args: { suggestedNext }
   | "amenityNavigate"          // args: { amenityName, narrative, teaser }

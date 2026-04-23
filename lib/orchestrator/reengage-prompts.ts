@@ -16,7 +16,7 @@ const PROFILE_COLLECTION_PROMPTS = [
 const DESTINATION_SELECT_PROMPTS = [
   "Take your time browsing. The EDITION Lake Como is our most popular property right now — shall I tell you more about it?",
   "Each property has a unique character. Would you like me to highlight what makes each one special?",
-  "If you're drawn to any of these, just tap the card and I'll take you inside for a virtual tour.",
+  "If one of these catches your eye, just say the word and I'll take you inside for a virtual tour.",
 ]
 
 const VIRTUAL_LOUNGE_ASKING_PROMPTS = [
@@ -47,9 +47,9 @@ const HOTEL_EXPLORATION_PANEL_PROMPTS = [
 // (see getReengagePrompt below)
 
 const ROOM_SELECTED_PROMPTS = [
-  "Would you like to see the room from a different angle, or shall I tell you more about what's included?",
-  "This room has some wonderful details. Would you like to explore the interior, or see the view from outside?",
-  "If you'd like, I can also show you similar rooms on different floors. Or we can proceed with this one.",
+  "Would you like me to tell you more about what's included in this room?",
+  "This room has some wonderful details. Would you like to explore it, or look at other options?",
+  "Happy to keep going with this one, or I can show you another room — just let me know.",
 ]
 
 /**

@@ -3,20 +3,18 @@ import type { Room } from "@/lib/hotel-data"
 
 interface HotelRoomCardProps {
   room: Room
-  onClick?: () => void
   recommended?: boolean
   /** How many of this room type are in the recommended plan (e.g. 2 = "x2") */
   recommendedQuantity?: number
 }
 
-export function HotelRoomCard({ room, onClick, recommended, recommendedQuantity }: HotelRoomCardProps) {
+export function HotelRoomCard({ room, recommended, recommendedQuantity }: HotelRoomCardProps) {
   const descriptionParts = [room.roomType, room.area?.label, room.view?.[0]].filter(Boolean) as string[]
   const description = descriptionParts.length > 0 ? descriptionParts.join(" | ") : "Curated room experience"
 
   return (
     <Card
-      className={`group h-[108px] w-full cursor-pointer gap-0 overflow-hidden rounded-[10px] border bg-white/12 py-0 shadow-[0_20px_48px_-34px_rgba(0,0,0,0.9)] backdrop-blur-xl transition-all hover:bg-white/18 ${recommended ? "border-white/85 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.75),0_20px_48px_-34px_rgba(0,0,0,0.9)]" : "border-white/20"}`}
-      onClick={onClick}
+      className={`group h-[108px] w-full gap-0 overflow-hidden rounded-[10px] border bg-white/12 py-0 shadow-[0_20px_48px_-34px_rgba(0,0,0,0.9)] backdrop-blur-xl ${recommended ? "border-white/85 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.75),0_20px_48px_-34px_rgba(0,0,0,0.9)]" : "border-white/20"}`}
     >
       <div className="flex h-full w-full">
         <div className="relative h-full basis-2/5 overflow-hidden bg-gradient-to-br from-primary/20 to-accent/20">
@@ -35,7 +33,7 @@ export function HotelRoomCard({ room, onClick, recommended, recommendedQuantity 
           <img
             src={room.image}
             alt={room.name}
-            className="absolute inset-0 h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+            className="absolute inset-0 h-full w-full object-cover"
           />
           <div className="absolute inset-0 bg-black/25" />
         </div>

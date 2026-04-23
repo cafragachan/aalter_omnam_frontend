@@ -72,10 +72,12 @@ const BOOK_RE = /\b(book\s*(?:it|this|that|the\s+room|now)?|reserve|make\s+(?:a\
 const AMENITY_RE = /\b(amenity|amenities|facility|facilities)\b/
 const AMENITY_NAME_RE = /\b(lobby|conference|spa|restaurant|pool|gym|bar|lounge|dining)\b/
 const LOCATION_RE = /\b(location|surrounding|surroundings|area|neighbou?rhood|outside|around|nearby|map|walk)\b/
-const INTERIOR_RE = /\b(interior|inside|indoor)\b/
-const EXTERIOR_RE = /\b(exterior|outside|outdoor)\b/
+const INTERIOR_RE = /\b(interior|inside|indoor|explore\s+(?:this|the)\s+(?:room|unit|one))\b/
+// EXTERIOR now also catches "view from here", "see the view", "what's the view" —
+// once a unit is selected, asking about the view is equivalent to exterior.
+const EXTERIOR_RE = /\b(exterior|outside|outdoor|view\s+(?:from|out)(?:\s+(?:here|this|the))?|see\s+the\s+view|what'?s?\s+the\s+view|the\s+view\s+from)\b/
 const BACK_RE = /\b(go back|take me back|head back|back to|return to|cancel|nevermind|never mind|let'?s go back|bring me back)\b/i
-const OTHER_OPTIONS_RE = /\b(other\s+options|something\s+else|explore\s+(?:other|more)|see\s+(?:other|more)|different\s+option|alternatives|what\s+else|other\s+choices|more\s+options)\b/i
+const OTHER_OPTIONS_RE = /\b(other\s+options|something\s+else|explore\s+(?:other|more)|see\s+(?:other|more)|different\s+option|alternatives|what\s+else|other\s+choices|more\s+options|another\s+(?:one|room|option)|different\s+room|see\s+another)\b/i
 
 // Question detection — if user is asking a question (not giving a navigation command),
 // skip navigation keyword matching to avoid false triggers like "what's the room area?"

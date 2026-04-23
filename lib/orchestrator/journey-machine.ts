@@ -31,8 +31,9 @@ export const DEFAULT_SPEECH = {
   otherOptionsRooms: "Let me pull up the available rooms.",
   hotelBackOverview: "Back to the overview. Rooms, amenities, or the area?",
   unknownResponse: "Unfortunately I can't help with that at this moment. Let me know if I can assist you with anything else regarding your stay.",
-  roomCardTapped: (roomName: string, occupancy: string) => `The ${roomName} sleeps up to ${occupancy}. Tap a highlighted green unit to step inside.`,
-  unitPicked: (roomName: string) => `Nice — the ${roomName}. Interior or exterior?`,
+  unitPicked: (roomName: string) => `Nice — the ${roomName}. Would you like to explore this room?`,
+  unitExploreDeclined: "Would you like to book this room, choose another one, or explore other options?",
+  unitDeclineClarify: "Sure — would you like to book this one, see another room, or look at other options?",
   openingBookingPage: "Opening the booking page now. Anything else I can help with?",
   tapGreenUnitFirst: "Tap a highlighted green unit first.",
   steppingInside: "Stepping inside — take a look around. Say the word when you're ready to book.",
@@ -560,18 +561,10 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
       }
     }
 
-    if (action.type === "ROOM_CARD_TAPPED") {
-      const { roomName, occupancy, roomId } = action
-      effects.push({ type: "CLOSE_PANELS" })
-      effects.push({ type: "UE5_COMMAND", command: "selectedRoom", value: roomId })
-      effects.push({ type: "SPEAK_INTENT", key: "roomCardTapped", args: { roomName, occupancy } })
-      return { nextState: { stage: "ROOM_SELECTED", awaiting: "view_choice", unitSelected: false }, effects }
-    }
-
     if (action.type === "UNIT_SELECTED_UE5") {
       effects.push({ type: "CLOSE_PANELS" })
       effects.push({ type: "SPEAK_INTENT", key: "unitPicked", args: { roomName: action.roomName } })
-      return { nextState: { stage: "ROOM_SELECTED", awaiting: "view_choice", unitSelected: true, lastProposal: "interior_or_exterior" }, effects }
+      return { nextState: { stage: "ROOM_SELECTED", awaiting: "view_choice", unitSelected: true, lastProposal: "explore_room" }, effects }
     }
 
     if (action.type === "AMENITY_CARD_TAPPED") {
@@ -603,7 +596,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
             effects.push({ type: "OPEN_BOOKING_URL" })
             return { nextState: { stage: "ROOM_SELECTED", awaiting: "view_choice", unitSelected: state.unitSelected }, effects }
           }
-          if (proposal === "interior_or_exterior") {
+          if (proposal === "explore_room") {
             if (!state.unitSelected) {
               effects.push({ type: "SPEAK_INTENT", key: "tapGreenUnitFirst" })
               return { nextState: state, effects }
@@ -613,7 +606,28 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
             effects.push({ type: "FADE_TRANSITION" })
             return { nextState: { ...state, lastProposal: "book" }, effects }
           }
+          if (proposal === "post_decline_room") {
+            // Bare "yes" after the decline menu is ambiguous — re-prompt
+            // with the three options (book / another / other) rather than
+            // silently picking one.
+            effects.push({ type: "SPEAK_INTENT", key: "unitDeclineClarify" })
+            return { nextState: state, effects }
+          }
           return { nextState: state, effects: [] }
+        }
+
+        case "NEGATIVE": {
+          if (state.lastProposal === "explore_room") {
+            effects.push({ type: "SPEAK_INTENT", key: "unitExploreDeclined" })
+            return { nextState: { ...state, lastProposal: "post_decline_room" }, effects }
+          }
+          if (state.lastProposal === "post_decline_room") {
+            // "No" to the clarify re-prompt — ask once more.
+            effects.push({ type: "SPEAK_INTENT", key: "unitDeclineClarify" })
+            return { nextState: state, effects }
+          }
+          effects.push({ type: "SPEAK_INTENT", key: "unknownResponse" })
+          return { nextState: state, effects }
         }
 
         case "INTERIOR":
@@ -693,7 +707,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
 
     if (action.type === "UNIT_SELECTED_UE5") {
       effects.push({ type: "SPEAK_INTENT", key: "unitPicked", args: { roomName: action.roomName } })
-      return { nextState: { stage: "ROOM_SELECTED", awaiting: "view_choice", unitSelected: true, lastProposal: "interior_or_exterior" }, effects }
+      return { nextState: { stage: "ROOM_SELECTED", awaiting: "view_choice", unitSelected: true, lastProposal: "explore_room" }, effects }
     }
   }
 
