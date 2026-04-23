@@ -970,6 +970,14 @@ function HomePageContent({
         hotelId: legacy?.hotelId ?? selectedHotelData.id,
         image: legacy?.image ?? "",
         book_url: cr.book_url ?? legacy?.book_url ?? "",
+        area: cr.area ?? legacy?.area,
+        roomType: cr.roomType ?? legacy?.roomType,
+        features: cr.features ?? legacy?.features,
+        view: cr.view ?? legacy?.view,
+        bedding: cr.bedding ?? legacy?.bedding,
+        bath: cr.bath ?? legacy?.bath,
+        tech: cr.tech ?? legacy?.tech,
+        services: cr.services ?? legacy?.services,
       }
     })
   }, [selectedHotelData, catalog, catalogMatchesSelected])

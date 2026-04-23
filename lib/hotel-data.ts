@@ -9,6 +9,12 @@ export interface Hotel {
   coordinates: { lat: number; lng: number }
 }
 
+export interface RoomArea {
+  min_sqm: number
+  max_sqm: number
+  label: string
+}
+
 export interface Room {
   id: string
   name: string
@@ -17,6 +23,14 @@ export interface Room {
   hotelId: string
   image: string
   book_url: string
+  area?: RoomArea
+  roomType?: string
+  features?: string[]
+  view?: string[]
+  bedding?: string[]
+  bath?: string[]
+  tech?: string[]
+  services?: string[]
 }
 
 export interface Amenity {
@@ -68,7 +82,45 @@ export const rooms: Room[] = [
     price: 249,
     hotelId: "1",
     image: "/images/room-standard.jpg",
-    book_url: "https://www.editionhotels.com/lake-como/rooms-and-suites/standard-lake-view/"
+    book_url: "https://www.editionhotels.com/lake-como/rooms-and-suites/standard-lake-view/",
+    area: {
+      min_sqm: 27,
+      max_sqm: 34,
+      label: "27-34 SQM",
+    },
+    roomType: "King bed",
+    features: [
+      "Air-conditioned rooms",
+      "Nespresso machine",
+      "Clothing steamer",
+      "Iron & ironing board upon request",
+      "Minibar",
+      "In-room safe",
+      "Rollaway Bed not permitted",
+      "Baby cot available upon request",
+    ],
+    view: ["Lake view"],
+    bedding: [
+      "Down comforter pillows",
+      "Custom imported linens",
+    ],
+    bath: [
+      "White marble bathroom with enclosed rain walk-in shower",
+      "Single vanity",
+      "Custom Le Labo amenities",
+      "Hairdryer",
+      "Robes & slippers",
+    ],
+    tech: [
+      "Complimentary high-speed Wi-Fi",
+      "55\" Flat screen SMART HDTV with streaming capabilities",
+      "Bang & Olufsen Beoplay Bluetooth speaker",
+    ],
+    services: [
+      "Twice-daily housekeeping service",
+      "Complimentary bottled water daily",
+      "Digital Press available",
+    ],
   },
   {
     id: "r2",
@@ -77,7 +129,53 @@ export const rooms: Room[] = [
     price: 599,
     hotelId: "1",
     image: "/images/room-suite-double.jpg",
-    book_url: "https://www.editionhotels.com/lake-como/rooms-and-suites/penthouse/"
+    book_url: "https://www.editionhotels.com/lake-como/rooms-and-suites/penthouse/",
+    area: {
+      min_sqm: 111,
+      max_sqm: 111,
+      label: "111 SQM",
+    },
+    roomType: "King bed",
+    features: [
+      "Air-conditioned rooms",
+      "Private terrace",
+      "Nespresso machine",
+      "Clothing steamer",
+      "Top floor",
+      "Separate living area with sofa and lounge chairs",
+      "Dining room and fully equipped kitchen",
+      "Floor to ceiling windows",
+      "Fridge",
+      "Iron and ironing board upon request",
+      "Minibar",
+      "In-room safe",
+      "Connecting rooms available",
+      "Rollaway Bed available upon request at extra cost (up to 16 years old)",
+    ],
+    view: ["Lake view", "Mountain view"],
+    bedding: [
+      "Down comforter pillows",
+      "Custom imported linens",
+    ],
+    bath: [
+      "White marble bathroom with enclosed rain walk-in shower",
+      "Standalone bathtub",
+      "Custom Le Labo amenities with exclusive signature EDITION scent",
+      "Single vanity",
+      "Make-up mirror",
+      "Hairdryer",
+      "Robes & slippers",
+    ],
+    tech: [
+      "Complimentary high-speed Wi-Fi",
+      "55\" Flat screen SMART HDTV with streaming capabilities",
+      "Bang & Olufsen Beoplay Bluetooth speaker",
+    ],
+    services: [
+      "Twice-daily housekeeping service",
+      "Complimentary bottled water daily",
+      "Digital Press available",
+    ],
   },
   {
     id: "r3",
@@ -86,7 +184,46 @@ export const rooms: Room[] = [
     price: 399,
     hotelId: "1",
     image: "/images/room-suite-triple.jpg",
-    book_url: "https://www.editionhotels.com/lake-como/rooms-and-suites/loft-suite-lake-view-balcony/"
+    book_url: "https://www.editionhotels.com/lake-como/rooms-and-suites/loft-suite-lake-view-balcony/",
+    area: {
+      min_sqm: 41,
+      max_sqm: 54,
+      label: "41-54 SQM",
+    },
+    roomType: "King bed",
+    features: [
+      "Air-conditioned rooms",
+      "Nespresso machine",
+      "Clothing steamer",
+      "Iron & ironing board upon request",
+      "Minibar",
+      "In-room safe",
+      "Baby cot available upon request",
+      "Rollaway Bed available upon request at extra cost (up to 16 years old)",
+    ],
+    view: ["Lake view"],
+    bedding: [
+      "Down comforter pillows",
+      "Custom imported linens",
+    ],
+    bath: [
+      "White marble bathroom with enclosed rain walk-in shower",
+      "Bathtub",
+      "Single vanity",
+      "Custom Le Labo amenities with exclusive signature EDITION scent",
+      "Hairdryer",
+      "Robes & slippers",
+    ],
+    tech: [
+      "Complimentary high-speed Wi-Fi",
+      "55\" Flat screen SMART HDTV with streaming capabilities",
+      "Bang & Olufsen Beoplay Bluetooth speaker",
+    ],
+    services: [
+      "Twice-daily housekeeping service",
+      "Complimentary bottled water daily",
+      "Digital Press available",
+    ],
   },
   {
     id: "r4",
@@ -95,7 +232,44 @@ export const rooms: Room[] = [
     price: 199,
     hotelId: "1",
     image: "/images/standard_mountain_view.jpg",
-    book_url: "https://www.editionhotels.com/lake-como/rooms-and-suites/standard/"
+    book_url: "https://www.editionhotels.com/lake-como/rooms-and-suites/standard/",
+    area: {
+      min_sqm: 25,
+      max_sqm: 32,
+      label: "25-32 SQM",
+    },
+    roomType: "King bed",
+    features: [
+      "Air-conditioned rooms",
+      "Nespresso machine",
+      "Clothing steamer",
+      "Iron & ironing board upon request",
+      "Minibar",
+      "In-room safe",
+      "Rollaway Bed not permitted",
+    ],
+    view: ["Mountain view"],
+    bedding: [
+      "Down comforter pillows",
+      "Custom imported linens",
+    ],
+    bath: [
+      "White marble bathroom with enclosed rain walk-in shower",
+      "Single vanity",
+      "Custom Le Labo amenities",
+      "Hairdryer",
+      "Robes & slippers",
+    ],
+    tech: [
+      "Complimentary high-speed Wi-Fi",
+      "55\" Flat screen SMART HDTV with streaming capabilities",
+      "Bang & Olufsen Beoplay Bluetooth speaker",
+    ],
+    services: [
+      "Twice-daily housekeeping service",
+      "Complimentary bottled water daily",
+      "Digital Press available",
+    ],
   },
   {
     id: "r5",
@@ -104,7 +278,46 @@ export const rooms: Room[] = [
     price: 349,
     hotelId: "1",
     image: "/images/loft_mountain_view.jpg",
-    book_url: "https://www.editionhotels.com/lake-como/rooms-and-suites/loft-suite-mountain-view/"
+    book_url: "https://www.editionhotels.com/lake-como/rooms-and-suites/loft-suite-mountain-view/",
+    area: {
+      min_sqm: 49,
+      max_sqm: 51,
+      label: "49-51 SQM",
+    },
+    roomType: "King bed",
+    features: [
+      "Air-conditioned rooms",
+      "Nespresso machine",
+      "Clothing steamer",
+      "Iron & ironing board upon request",
+      "Minibar",
+      "In-room safe",
+      "Baby cot available upon request",
+      "Rollaway Bed available upon request at extra cost (up to 16 years old)",
+    ],
+    view: ["Mountain view"],
+    bedding: [
+      "Down comforter pillows",
+      "Custom imported linens",
+    ],
+    bath: [
+      "White marble bathroom with enclosed rain walk-in shower",
+      "Bathtub",
+      "Single vanity",
+      "Custom Le Labo amenities with exclusive signature EDITION scent",
+      "Hairdryer",
+      "Robes & slippers",
+    ],
+    tech: [
+      "Complimentary high-speed Wi-Fi",
+      "55\" Flat screen SMART HDTV with streaming capabilities",
+      "Bang & Olufsen Beoplay Bluetooth speaker",
+    ],
+    services: [
+      "Twice-daily housekeeping service",
+      "Complimentary bottled water daily",
+      "Digital Press available",
+    ],
   },
 ]
 
@@ -168,6 +381,14 @@ export interface HotelCatalog {
     occupancy: number
     price: number
     book_url?: string
+    area?: RoomArea
+    roomType?: string
+    features?: string[]
+    view?: string[]
+    bedding?: string[]
+    bath?: string[]
+    tech?: string[]
+    services?: string[]
   }>
   amenities: Array<{
     id: string
@@ -228,6 +449,14 @@ export function getHotelCatalog(slug: string): HotelCatalog | null {
       occupancy: Number.isFinite(parsedOccupancy) && parsedOccupancy > 0 ? parsedOccupancy : 2,
       price: r.price,
       ...(r.book_url ? { book_url: r.book_url } : {}),
+      ...(r.area ? { area: r.area } : {}),
+      ...(r.roomType ? { roomType: r.roomType } : {}),
+      ...(r.features ? { features: r.features } : {}),
+      ...(r.view ? { view: r.view } : {}),
+      ...(r.bedding ? { bedding: r.bedding } : {}),
+      ...(r.bath ? { bath: r.bath } : {}),
+      ...(r.tech ? { tech: r.tech } : {}),
+      ...(r.services ? { services: r.services } : {}),
     }
   })
 
