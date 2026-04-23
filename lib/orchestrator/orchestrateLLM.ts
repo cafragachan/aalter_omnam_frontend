@@ -86,6 +86,16 @@ export interface OrchestrateInput {
   travelPurpose?: string
   interests?: string[]
   rooms?: { id: string; name: string; occupancy: number; price: number }[]
+  /**
+   * The actual amenity names available at the currently-selected hotel
+   * (e.g., ["Pool", "Lobby", "Conference Room"]). Sent to the orchestrate
+   * prompt so the LLM grounds its speech in real property data and doesn't
+   * hallucinate amenities from the intent-classification enum (the enum
+   * lists pool/spa/restaurant/gym/etc as CATEGORIES, but any given property
+   * has a smaller subset). Drives the "only mention these amenities" guard
+   * in the HOTEL_EXPLORATION / AMENITY_VIEWING / ROOM_SELECTED prompt block.
+   */
+  hotelAmenityNames?: string[]
   partySize?: number
   budgetRange?: string
   guestComposition?: { adults: number; children: number } | null
@@ -158,6 +168,7 @@ export async function orchestrateLLM(
         travelPurpose: rest.travelPurpose,
         interests: rest.interests,
         rooms: rest.rooms,
+        hotelAmenityNames: rest.hotelAmenityNames,
         partySize: rest.partySize,
         budgetRange: rest.budgetRange,
         guestComposition: rest.guestComposition,

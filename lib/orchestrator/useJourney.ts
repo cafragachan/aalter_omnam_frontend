@@ -303,6 +303,32 @@ export function useJourney(options: UseJourneyOptions) {
     [],
   )
 
+  // --- Unified `=on` orchestrator debounce + abort (non-PC stages) ---
+  // Port of PC's (debounce + AbortController) primitive to the non-PC stages.
+  // Without this, rapid HeyGen VAD fragments each fire their own orchestrate
+  // call and every prior response is dropped via a `cancelled` flag — leaving
+  // the avatar silent and eventually letting idle-reengage speak over
+  // already-expressed intent. See `plans/unified-orchestrator-cascade-fix.md`.
+  const unifiedTurnTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const unifiedTurnAbortRef = useRef<AbortController | null>(null)
+
+  const killCurrentUnifiedTurn = useCallback(
+    (reason: "new-turn" | "stage-change" | "unmount") => {
+      if (unifiedTurnTimerRef.current) {
+        clearTimeout(unifiedTurnTimerRef.current)
+        unifiedTurnTimerRef.current = null
+      }
+      const controller = unifiedTurnAbortRef.current
+      if (controller && !controller.signal.aborted) {
+        // eslint-disable-next-line no-console
+        console.log("[UNIFIED-TURN-ABORT]", { reason })
+        controller.abort()
+      }
+      unifiedTurnAbortRef.current = null
+    },
+    [],
+  )
+
   // --- Phase 2.5 fast-path state ---
   // Tracks the previous `profileCollectionAwaiting(...)` value so each user
   // turn can tell whether regex extraction made progress this turn.
@@ -399,11 +425,25 @@ export function useJourney(options: UseJourneyOptions) {
     if (typeof endDate === "string") updates.endDate = new Date(endDate)
     if (guestComposition && typeof guestComposition === "object") {
       const gc = guestComposition as { adults?: number; children?: number; childrenAges?: number[] }
-      // UPDATE_PROFILE deep-merges guestComposition, so partial updates
-      // (e.g. just childrenAges) preserve adults/children from prior state.
-      updates.guestComposition = gc as import("@/lib/context").GuestComposition
-      if (typeof gc.adults === "number" && typeof gc.children === "number") {
-        updates.familySize = gc.adults + gc.children
+      const hasAdults = typeof gc.adults === "number"
+      const hasChildren = typeof gc.children === "number"
+      if (hasAdults || hasChildren) {
+        // Declaring a new composition — default the missing side to 0 so
+        // downstream schemas (room-planner requires both fields as numbers)
+        // and familySize math don't see NaN. See the profile_turn APPLY
+        // path in this file for the same normalization.
+        const adults = hasAdults ? gc.adults! : 0
+        const children = hasChildren ? gc.children! : 0
+        updates.guestComposition = {
+          adults,
+          children,
+          ...(gc.childrenAges ? { childrenAges: gc.childrenAges } : {}),
+        }
+        updates.familySize = adults + children
+      } else {
+        // Partial update (e.g. ages only). Pass through and let the store's
+        // deep-merge keep prior adults/children.
+        updates.guestComposition = gc as import("@/lib/context").GuestComposition
       }
     } else if (typeof partySize === "number") {
       updates.familySize = partySize
@@ -660,6 +700,7 @@ export function useJourney(options: UseJourneyOptions) {
           rooms: isRoomContext
             ? rooms.map((r) => ({ id: r.id, name: r.name, occupancy: parseInt(r.occupancy, 10) || 2, price: r.price }))
             : undefined,
+          hotelAmenityNames: amenities.map((a) => a.name),
           partySize: (profile.familySize ?? derivedProfile.partySize) ?? undefined,
           budgetRange: profile.budgetRange ?? undefined,
           guestComposition: profile.guestComposition ?? derivedProfile.guestComposition ?? undefined,
@@ -693,7 +734,7 @@ export function useJourney(options: UseJourneyOptions) {
         )
       })()
     },
-    [profile, derivedProfile, rooms, allMessages, applyOrchestrateProfileUpdates],
+    [profile, derivedProfile, rooms, amenities, allMessages, applyOrchestrateProfileUpdates],
   )
 
   /** Dispatch LIST_AMENITIES action with pre-computed hotel data */
@@ -713,7 +754,7 @@ export function useJourney(options: UseJourneyOptions) {
     dispatch({ type: "IDLE_TIMEOUT" })
   }, [dispatch])
 
-  useIdleDetection({
+  const { resetTimer: resetIdleTimer } = useIdleDetection({
     journeyStage,
     onIdle: handleIdle,
   })
@@ -1094,6 +1135,10 @@ export function useJourney(options: UseJourneyOptions) {
         abortStaleProfileOrchestrate("new-turn")
         const controller = new AbortController()
         profileOrchestrateAbortRef.current = controller
+        // Reset the idle timer on turn-start so the 12s reengage doesn't
+        // fire while an orchestrate is mid-flight during PROFILE_COLLECTION.
+        // Mirrors the hardening applied to the =on non-PC branch.
+        resetIdleTimer()
 
         console.log("[CLIENT→ORCHESTRATE]", JSON.stringify({
           liveProfile_familySize: liveProfile.familySize,
@@ -1216,9 +1261,25 @@ export function useJourney(options: UseJourneyOptions) {
             if (pu.startDate) updates.startDate = new Date(pu.startDate)
             if (pu.endDate) updates.endDate = new Date(pu.endDate)
             if (pu.guestComposition) {
-              updates.guestComposition = pu.guestComposition
-              updates.familySize =
-                pu.guestComposition.adults + pu.guestComposition.children
+              const gc = pu.guestComposition
+              const hasAdults = typeof gc.adults === "number"
+              const hasChildren = typeof gc.children === "number"
+              if (hasAdults || hasChildren) {
+                // Declaring a new composition — default the missing side
+                // to 0. Fixes the "all adults" case where the LLM emits
+                // {adults: 8} without children, which otherwise produced
+                // familySize = NaN and tripped the room-planner schema
+                // (which requires children as a number).
+                const adults = hasAdults ? gc.adults! : 0
+                const children = hasChildren ? gc.children! : 0
+                updates.guestComposition = { ...gc, adults, children }
+                updates.familySize = adults + children
+              } else {
+                // Partial update (e.g., only childrenAges). Pass through
+                // unchanged so the store's deep-merge preserves prior
+                // adults/children — don't clobber them with zeros here.
+                updates.guestComposition = gc
+              }
             } else if (pu.partySize != null) {
               updates.familySize = pu.partySize
             }
@@ -1453,6 +1514,15 @@ export function useJourney(options: UseJourneyOptions) {
     // missing/malformed). The regex result is forwarded as `regexHint` in the
     // request body. The former regex short-circuit for high-confidence intents
     // was removed in Phase 9 (Batch 3).
+    //
+    // VAD-coalescing hardening (2026-04 cascade fix):
+    //   • debounce 600ms — rapid HeyGen VAD fragments ("yeah sure, can I see
+    //     what's here") coalesce into one orchestrate call instead of N.
+    //   • real AbortController — cancelling a stale turn kills the fetch,
+    //     not just the dispatch. Prevents cascading-cancellation silence.
+    //   • idle-timer reset on turn start + land — stops the 12s idle from
+    //     firing while an orchestrate is mid-flight and speaking a stale
+    //     reengage over already-expressed intent.
     if (useUnifiedOrchestratorMode === "on") {
       const isRoomContext = currentState.stage === "HOTEL_EXPLORATION" || currentState.stage === "ROOM_SELECTED"
 
@@ -1468,7 +1538,19 @@ export function useJourney(options: UseJourneyOptions) {
           text: m.message,
         }))
 
-      let cancelled = false
+      // Kill any pending timer OR in-flight fetch from a prior USER_TX so
+      // this new utterance supersedes it cleanly. Must happen BEFORE creating
+      // the new controller so the refs point at the current turn only.
+      killCurrentUnifiedTurn("new-turn")
+
+      const controller = new AbortController()
+      unifiedTurnAbortRef.current = controller
+
+      unifiedTurnTimerRef.current = setTimeout(() => {
+        unifiedTurnTimerRef.current = null
+        // Reset idle detection on turn-start so the 12s reengage can't
+        // fire over a response that's about to land.
+        resetIdleTimer()
       const orchestrateStart = Date.now()
       ;(async () => {
         // Snapshot the freshest profile/derivedProfile at call time so we don't
@@ -1485,14 +1567,26 @@ export function useJourney(options: UseJourneyOptions) {
           travelPurpose: liveProfile.travelPurpose ?? liveDerived.travelPurpose,
           interests: liveProfile.interests,
           rooms: isRoomContext ? rooms.map((r) => ({ id: r.id, name: r.name, occupancy: parseInt(r.occupancy, 10) || 2, price: r.price })) : undefined,
+          // Ground the LLM in the actual hotel amenities so it doesn't
+          // freestyle "spa/gym/restaurant" from the intent-enum categories.
+          hotelAmenityNames: amenities.map((a) => a.name),
           partySize: (liveProfile.familySize ?? liveDerived.partySize) ?? undefined,
           budgetRange: liveProfile.budgetRange ?? undefined,
           guestComposition: liveProfile.guestComposition ?? liveDerived.guestComposition ?? undefined,
           regexHint: regexIntent.type,
           conversationHistory,
+          signal: controller.signal,
         })
         const latencyMs = Date.now() - orchestrateStart
-        if (cancelled) return
+        if (controller.signal.aborted) return
+        // Reset idle detection on turn-land so the reengage countdown
+        // starts from "just got a response", not from the user's utterance.
+        resetIdleTimer()
+        // Clear the ref only if it still points at our controller (a newer
+        // turn may have already replaced it).
+        if (unifiedTurnAbortRef.current === controller) {
+          unifiedTurnAbortRef.current = null
+        }
 
         if (!result) {
           // Orchestrate failed — fall back to regex + hardcoded speech
@@ -1564,7 +1658,14 @@ export function useJourney(options: UseJourneyOptions) {
             (envelope as { profileUpdates?: Record<string, unknown> }).profileUpdates,
             "envelope",
           )
-          preGeneratedSpeechRef.current = envelope.speech
+          // why: AMENITIES routes through `LIST_AMENITIES` which speaks the
+          // canonical amenity list (actual hotel data + travel-purpose
+          // recommendation). The LLM's envelope speech for an AMENITIES turn
+          // is almost always a hallucinated list ("pool, spa, dining, gym")
+          // because the enum categories bleed into the prompt. Null the
+          // override so the reducer-rendered canonical speech plays.
+          preGeneratedSpeechRef.current =
+            intentTag === "AMENITIES" ? null : envelope.speech
           processIntent(fullIntentObject, latestMessage, currentState, stage)
           // Phase 2 Room Planner: sole room brain when the rooms panel is
           // open. Fires for every non-exit, non-internal-nav utterance; see
@@ -1646,7 +1747,9 @@ export function useJourney(options: UseJourneyOptions) {
           (result as { profileUpdates?: Record<string, unknown> }).profileUpdates,
           "navigate_and_speak",
         )
-        preGeneratedSpeechRef.current = result.speech
+        // See AMENITIES note in envelope-dispatch branch above.
+        preGeneratedSpeechRef.current =
+          result.intent.type === "AMENITIES" ? null : result.speech
         processIntent(result.intent, latestMessage, currentState, stage)
         // Phase 1 Room Planner: fallback path — same room-edit intent gate
         // as the envelope branch above. Covers the case where the envelope
@@ -1658,7 +1761,8 @@ export function useJourney(options: UseJourneyOptions) {
           result.decision_envelope,
         )
       })()
-      return () => { cancelled = true }
+      }, 600)
+      return
     }
 
     // --- Unified "off" mode: regex classifies and dispatches directly ---
@@ -1700,7 +1804,13 @@ export function useJourney(options: UseJourneyOptions) {
     if (journeyStage !== "PROFILE_COLLECTION") {
       abortStaleProfileOrchestrate("stage-change")
     }
-  }, [journeyStage, abortStaleProfileOrchestrate])
+    // Unified-turn cleanup on stage transition: any pending debounce timer
+    // or in-flight orchestrate from the previous stage should not land in
+    // the new stage. Also drop any leftover preGeneratedSpeechRef so the
+    // next SPEAK_INTENT doesn't speak stale cross-stage LLM speech.
+    killCurrentUnifiedTurn("stage-change")
+    preGeneratedSpeechRef.current = null
+  }, [journeyStage, abortStaleProfileOrchestrate, killCurrentUnifiedTurn])
 
   // --- Abort in-flight PROFILE_COLLECTION orchestrate on unmount ---
   // Empty dep list so this cleanup only fires on component unmount, not on
@@ -1714,7 +1824,12 @@ export function useJourney(options: UseJourneyOptions) {
         controller.abort()
       }
       profileOrchestrateAbortRef.current = null
+      // Same for the unified turn — clear any pending timer and abort any
+      // in-flight fetch so unmounted pages don't keep the orchestrate
+      // roundtrip alive.
+      killCurrentUnifiedTurn("unmount")
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // --- Announce destination overlay when stage transitions ---

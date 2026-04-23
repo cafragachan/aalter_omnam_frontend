@@ -471,8 +471,13 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
 
       }
 
-      // Any other intent while in the lounge — ignore silently
-      return { nextState: state, effects: [] }
+      // Any other intent while in the lounge — speak a neutral fallback so
+      // the turn is audible. Crucially, the SPEAK_INTENT also DRAINS
+      // preGeneratedSpeechRef if the =on orchestrate path set it for this
+      // turn — without this the LLM-authored speech would either be lost
+      // (silent turn) or bleed into a future unrelated SPEAK_INTENT.
+      effects.push({ type: "SPEAK_INTENT", key: "unknownResponse" })
+      return { nextState: state, effects }
     }
   }
 
@@ -549,7 +554,9 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           return { nextState: state, effects }
 
         default:
-          return { nextState: state, effects: [] }
+          // Never silent — see note at VIRTUAL_LOUNGE default above.
+          effects.push({ type: "SPEAK_INTENT", key: "unknownResponse" })
+          return { nextState: state, effects }
       }
     }
 
@@ -678,7 +685,9 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           return { nextState: state, effects }
 
         default:
-          return { nextState: state, effects: [] }
+          // Never silent — see note at VIRTUAL_LOUNGE default above.
+          effects.push({ type: "SPEAK_INTENT", key: "unknownResponse" })
+          return { nextState: state, effects }
       }
     }
 
@@ -753,7 +762,9 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           return { nextState: state, effects }
 
         default:
-          return { nextState: state, effects: [] }
+          // Never silent — see note at VIRTUAL_LOUNGE default above.
+          effects.push({ type: "SPEAK_INTENT", key: "unknownResponse" })
+          return { nextState: state, effects }
       }
     }
   }

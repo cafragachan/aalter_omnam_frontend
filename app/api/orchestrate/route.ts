@@ -105,6 +105,14 @@ interface RequestBody {
   message: string
   journeyContext: JourneyContext
   rooms?: RoomInfo[]
+  /**
+   * Actual amenity names available at the currently selected hotel. Used to
+   * ground the prompt so the LLM doesn't freestyle amenities from the
+   * AMENITY_BY_NAME intent enum (which lists pool/spa/restaurant/gym/etc as
+   * classification categories — not as guarantees that the property has
+   * them).
+   */
+  hotelAmenityNames?: string[]
   partySize?: number
   budgetRange?: string
   guestComposition?: { adults: number; children: number; childrenAges?: number[] }
@@ -506,6 +514,38 @@ ${collectedSummary}`
     regexHintBlock = `\n\nRegex classifier hint (use as a tiebreaker; override only if the conversation makes it clear the hint is wrong): ${body.regexHint}`
   }
 
+  // Hotel-amenities grounding block.
+  //
+  // The intent-classification section lists AMENITY_BY_NAME's enum values
+  // (pool, spa, restaurant, lobby, conference, gym, bar, lounge, dining) as
+  // *categories* for classification. The LLM was reading that as a menu of
+  // amenities the property offers and freestyled responses like "we have a
+  // pool, spa, dining, and gym" when asked "what amenities do you have?" —
+  // hallucinating offerings the hotel doesn't actually have.
+  //
+  // This block anchors speech to the actual amenity list sent from the
+  // client. Only applied to stages where the guest could reasonably ask
+  // about hotel facilities.
+  let hotelAmenitiesBlock = ""
+  const isHotelContext =
+    body.journeyContext.stage === "HOTEL_EXPLORATION" ||
+    body.journeyContext.stage === "AMENITY_VIEWING" ||
+    body.journeyContext.stage === "ROOM_SELECTED"
+  if (isHotelContext && body.hotelAmenityNames && body.hotelAmenityNames.length > 0) {
+    const amenityList = body.hotelAmenityNames.join(", ")
+    hotelAmenitiesBlock = `\n\n## Hotel amenities (ground truth)
+
+This property has exactly these amenities: ${amenityList}.
+
+Never mention, recommend, or offer any amenity not in this list. Spa, gym, restaurant, dining, bar, and similar categories from the AMENITY_BY_NAME enum exist as classification categories but are NOT present at this property unless they appear in the list above.
+
+If the guest asks about an amenity that isn't in the list (e.g., "do you have a spa?"), briefly acknowledge it's not available and offer one that IS in the list instead. If the guest asks a generic "what amenities do you have?" question, the client-side handler will speak the canonical list — keep your speech short and concrete, mentioning ONLY items from the list above.`
+  } else if (isHotelContext && (!body.hotelAmenityNames || body.hotelAmenityNames.length === 0)) {
+    hotelAmenitiesBlock = `\n\n## Hotel amenities (ground truth)
+
+This property has no bookable amenity spaces to tour. If the guest asks, acknowledge that and redirect to rooms or the surrounding area. Do NOT invent amenities (no spa, gym, restaurant, etc.).`
+  }
+
   // VIRTUAL_LOUNGE stage-specific guidance.
   //
   // The reducer's VIRTUAL_LOUNGE:exploring branch routes only TRAVEL_TO_HOTEL,
@@ -646,7 +686,7 @@ Every tool call MUST include a "speech" field — a natural spoken response for 
 
 ## Profile Corrections (all stages)
 
-If during any turn the user corrects or supplements profile data (examples: "we're 6 not 8", "actually mom is joining too", "switch to May 15–20", "call me Lisa not Cesar"), set the optional \`profileUpdates\` field on whichever tool you're calling with the corrected field(s). Do NOT use \`profile_turn\` for mid-exploration corrections — only use \`profileUpdates\` on the tool that fits the user's primary intent (usually \`navigate_and_speak\` or \`no_action_speak\`). Only include fields that changed — omit everything else. Profile writes are idempotent and safe to emit alongside any action.${regexHintBlock}${roomBlock}${guestBlock}${transcriptReconstructionBlock}${virtualLoungeBlock}${profileCollectionBlock}`
+If during any turn the user corrects or supplements profile data (examples: "we're 6 not 8", "actually mom is joining too", "switch to May 15–20", "call me Lisa not Cesar"), set the optional \`profileUpdates\` field on whichever tool you're calling with the corrected field(s). Do NOT use \`profile_turn\` for mid-exploration corrections — only use \`profileUpdates\` on the tool that fits the user's primary intent (usually \`navigate_and_speak\` or \`no_action_speak\`). Only include fields that changed — omit everything else. Profile writes are idempotent and safe to emit alongside any action.${regexHintBlock}${roomBlock}${hotelAmenitiesBlock}${guestBlock}${transcriptReconstructionBlock}${virtualLoungeBlock}${profileCollectionBlock}`
 }
 
 // ---------------------------------------------------------------------------

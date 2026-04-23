@@ -33,8 +33,13 @@ const ProfileSchema = z
     partySize: z.number().int().positive().optional(),
     guestComposition: z
       .object({
-        adults: z.number().int().nonnegative(),
-        children: z.number().int().nonnegative(),
+        // All-adults groups and the profile_turn LLM both sometimes send
+        // compositions without `children`. Default to 0 so the wire schema
+        // stays forgiving and the nested-error-at-top-level-key flatten
+        // failure ("profile: Required") stops surfacing. Client normalizes
+        // too, but keep the server defensive.
+        adults: z.number().int().nonnegative().default(0),
+        children: z.number().int().nonnegative().default(0),
         childrenAges: z.array(z.number().int().nonnegative()).optional(),
       })
       .optional(),

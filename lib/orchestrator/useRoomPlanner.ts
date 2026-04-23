@@ -23,9 +23,6 @@ import { useAvatarActions } from "@/lib/liveavatar/useAvatarActions"
 
 type Trigger = "panel_opened" | "user_message"
 
-const FALLBACK_SPEECH =
-  "Sorry, I had trouble pulling up the rooms. Let me try again in a moment."
-
 type RoomPlannerResponse = {
   plan: Array<{ roomId: string; quantity: number }>
   speech: string
@@ -118,8 +115,14 @@ export function useRoomPlanner(): {
             hotelSlug,
             body: errBody,
           }))
-          interrupt()
-          void repeat(FALLBACK_SPEECH).catch(() => undefined)
+          // Deliberately do NOT speak the FALLBACK line here. The reducer
+          // already played the LLM-authored "pulling up the rooms" speech
+          // on the triggering turn; following it up with "Sorry, I had
+          // trouble..." double-speaks and mid-sentence-interrupts the
+          // first utterance (see "competing with itself" symptom). The
+          // rooms panel remains visible with its prior plan — user can
+          // ask again if the state looks stale. Error is logged for
+          // diagnostics either way.
           return
         }
 
@@ -148,8 +151,7 @@ export function useRoomPlanner(): {
           hotelSlug,
           error: (err as Error).message,
         }))
-        interrupt()
-        void repeat(FALLBACK_SPEECH).catch(() => undefined)
+        // See note in the !res.ok branch above — do not speak on error.
       } finally {
         setIsPlanning(false)
       }
