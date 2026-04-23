@@ -93,6 +93,17 @@ interface RoomInfo {
   price: number
 }
 
+interface SelectedRoomInfo extends RoomInfo {
+  area?: { min_sqm: number; max_sqm: number; label: string }
+  roomType?: string
+  features?: string[]
+  view?: string[]
+  bedding?: string[]
+  bath?: string[]
+  tech?: string[]
+  services?: string[]
+}
+
 interface JourneyContext {
   stage: string
   subState?: string
@@ -105,6 +116,7 @@ interface RequestBody {
   message: string
   journeyContext: JourneyContext
   rooms?: RoomInfo[]
+  selectedRoom?: SelectedRoomInfo
   /**
    * Actual amenity names available at the currently selected hotel. Used to
    * ground the prompt so the LLM doesn't freestyle amenities from the
@@ -309,6 +321,26 @@ function buildSystemPrompt(body: RequestBody, reconstructed: ReconstructedProfil
       .map((r) => `  - ${r.name} (id: "${r.id}", occupancy: ${r.occupancy}, price: $${r.price}/night)`)
       .join("\n")
     roomBlock = `\n\n## Available rooms\n\n${roomCatalog}`
+  }
+
+  // --- Selected room details block ---
+  let selectedRoomBlock = ""
+  if (body.selectedRoom) {
+    const entries: string[] = []
+    for (const [key, value] of Object.entries(body.selectedRoom)) {
+      if (value === undefined || value === null) continue
+      if (typeof value === "object") {
+        entries.push(`- ${key}: ${JSON.stringify(value)}`)
+      } else {
+        entries.push(`- ${key}: ${String(value)}`)
+      }
+    }
+    if (entries.length > 0) {
+      selectedRoomBlock =
+        `\n\n## Selected room details\n` +
+        `This is the room currently selected in the room flow. Use these fields when answering feature questions.\n\n` +
+        `${entries.join("\n")}`
+    }
   }
 
   // --- Guest context block ---
@@ -738,7 +770,7 @@ Every tool call MUST include a "speech" field — a natural spoken response for 
 
 ## Profile Corrections (all stages)
 
-If during any turn the user corrects or supplements profile data (examples: "we're 6 not 8", "actually mom is joining too", "switch to May 15–20", "call me Lisa not Cesar"), set the optional \`profileUpdates\` field on whichever tool you're calling with the corrected field(s). Do NOT use \`profile_turn\` for mid-exploration corrections — only use \`profileUpdates\` on the tool that fits the user's primary intent (usually \`navigate_and_speak\` or \`no_action_speak\`). Only include fields that changed — omit everything else. Profile writes are idempotent and safe to emit alongside any action.${regexHintBlock}${roomBlock}${hotelAmenitiesBlock}${guestBlock}${transcriptReconstructionBlock}${virtualLoungeBlock}${amenityViewingBlock}${profileCollectionBlock}`
+If during any turn the user corrects or supplements profile data (examples: "we're 6 not 8", "actually mom is joining too", "switch to May 15–20", "call me Lisa not Cesar"), set the optional \`profileUpdates\` field on whichever tool you're calling with the corrected field(s). Do NOT use \`profile_turn\` for mid-exploration corrections — only use \`profileUpdates\` on the tool that fits the user's primary intent (usually \`navigate_and_speak\` or \`no_action_speak\`). Only include fields that changed — omit everything else. Profile writes are idempotent and safe to emit alongside any action.${regexHintBlock}${roomBlock}${selectedRoomBlock}${hotelAmenitiesBlock}${guestBlock}${transcriptReconstructionBlock}${virtualLoungeBlock}${amenityViewingBlock}${profileCollectionBlock}`
 }
 
 // ---------------------------------------------------------------------------

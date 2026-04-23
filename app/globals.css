@@ -174,6 +174,34 @@
     pointer-events: none;
     z-index: 0;
   }
+
+  .unit-detail-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.55) rgba(255, 255, 255, 0.08);
+  }
+
+  .unit-detail-scroll::-webkit-scrollbar {
+    width: 10px;
+  }
+
+  .unit-detail-scroll::-webkit-scrollbar-track {
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.02));
+  }
+
+  .unit-detail-scroll::-webkit-scrollbar-thumb {
+    border: 2px solid transparent;
+    border-radius: 999px;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.78), rgba(255, 255, 255, 0.35));
+    background-clip: padding-box;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45);
+  }
+
+  .unit-detail-scroll::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0.45));
+    background-clip: padding-box;
+  }
 }
 
 /* Hide Next.js DevTools indicator */

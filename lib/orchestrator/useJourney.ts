@@ -1323,6 +1323,27 @@ export function useJourney(options: UseJourneyOptions) {
         // calls via the `cancelled` cleanup below).
         const liveProfile = profileRef.current
         const liveDerived = derivedProfileRef.current
+        const selectedRoomForContext = (() => {
+          if (!isRoomContext) return undefined
+          const selectedRoomId = currentRoomIdRef.current
+          if (!selectedRoomId) return undefined
+          const selectedRoom = rooms.find((r) => r.id === selectedRoomId)
+          if (!selectedRoom) return undefined
+          return {
+            id: selectedRoom.id,
+            name: selectedRoom.name,
+            occupancy: parseInt(selectedRoom.occupancy, 10) || 2,
+            price: selectedRoom.price,
+            area: selectedRoom.area,
+            roomType: selectedRoom.roomType,
+            features: selectedRoom.features,
+            view: selectedRoom.view,
+            bedding: selectedRoom.bedding,
+            bath: selectedRoom.bath,
+            tech: selectedRoom.tech,
+            services: selectedRoom.services,
+          }
+        })()
         const result = await orchestrateLLM({
           message: latestMessage,
           state: currentState,
@@ -1330,6 +1351,7 @@ export function useJourney(options: UseJourneyOptions) {
           travelPurpose: liveProfile.travelPurpose ?? liveDerived.travelPurpose,
           interests: liveProfile.interests,
           rooms: isRoomContext ? rooms.map((r) => ({ id: r.id, name: r.name, occupancy: parseInt(r.occupancy, 10) || 2, price: r.price })) : undefined,
+          selectedRoom: selectedRoomForContext,
           // Ground the LLM in the actual hotel amenities so it doesn't
           // freestyle "spa/gym/restaurant" from the intent-enum categories.
           hotelAmenityNames: amenities.map((a) => a.name),

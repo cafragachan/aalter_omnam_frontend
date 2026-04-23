@@ -81,6 +81,20 @@ export interface OrchestrateInput {
   travelPurpose?: string
   interests?: string[]
   rooms?: { id: string; name: string; occupancy: number; price: number }[]
+  selectedRoom?: {
+    id: string
+    name: string
+    occupancy: number
+    price: number
+    area?: { min_sqm: number; max_sqm: number; label: string }
+    roomType?: string
+    features?: string[]
+    view?: string[]
+    bedding?: string[]
+    bath?: string[]
+    tech?: string[]
+    services?: string[]
+  }
   /**
    * The actual amenity names available at the currently-selected hotel
    * (e.g., ["Pool", "Lobby", "Conference Room"]). Sent to the orchestrate
@@ -163,6 +177,7 @@ export async function orchestrateLLM(
         travelPurpose: rest.travelPurpose,
         interests: rest.interests,
         rooms: rest.rooms,
+        selectedRoom: rest.selectedRoom,
         hotelAmenityNames: rest.hotelAmenityNames,
         partySize: rest.partySize,
         budgetRange: rest.budgetRange,
