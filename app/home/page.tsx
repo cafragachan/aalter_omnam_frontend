@@ -920,6 +920,7 @@ function HomePageContent({
 
   // --- UI panel visibility (local state, driven by orchestrator callbacks) ---
   const [showRoomsPanel, setShowRoomsPanel] = useState(false)
+  const [lastPickedRoomId, setLastPickedRoomId] = useState<string | null>(null)
 
   // --- UE5 Bridge (WebSocket + fade transitions + unit state) ---
   // Phase 8: UE5 unit selections are forwarded directly to useJourney via a
@@ -1036,6 +1037,13 @@ function HomePageContent({
   }, [currentRoomPlan, rooms])
 
   const recommendedPlan = plannerPlan
+  const unitDetailRoom = useMemo<Room | null>(() => {
+    const byLastPickedId = lastPickedRoomId ? rooms.find((r) => r.id === lastPickedRoomId) ?? null : null
+    const selectedUnitName = ue5.selectedUnit?.roomName?.trim().toLowerCase()
+    if (!selectedUnitName) return byLastPickedId
+    const byUnitName = rooms.find((r) => r.name.trim().toLowerCase() === selectedUnitName) ?? null
+    return byUnitName ?? byLastPickedId
+  }, [lastPickedRoomId, rooms, ue5.selectedUnit])
 
   // --- Panel open/close callbacks (passed to useJourney) ---
   const handleOpenPanel = useCallback((panel: "rooms" | "amenities" | "location") => {
@@ -1057,6 +1065,7 @@ function HomePageContent({
     ue5.resetToDefault()
     ue5.clearSelectedUnit()
     setShowRoomsPanel(false)
+    setLastPickedRoomId(null)
   }, [ue5])
 
   // --- Auto-select hotel (used by pilot mode in the journey state machine) ---
@@ -1176,12 +1185,17 @@ function HomePageContent({
 
   // --- Room selection handler (Phase 8: direct call into useJourney) ---
   const handleSelectRoom = useCallback((room: Room) => {
+    setLastPickedRoomId(room.id)
     journeyOnRoomCardTapped({
       roomId: room.id,
       roomName: room.name,
       occupancy: room.occupancy,
     })
   }, [journeyOnRoomCardTapped])
+
+  useEffect(() => {
+    setLastPickedRoomId(null)
+  }, [selectedHotel])
 
   // --- Trigger 1: rooms panel opens → ask the planner for a fresh plan ---
   // Fires exactly once on the false → true transition. A ref guards against
@@ -1234,7 +1248,7 @@ function HomePageContent({
         )}
 
         {/* Unit detail panel */}
-        <UnitDetailPanel unit={ue5.selectedUnit} />
+        <UnitDetailPanel unit={ue5.selectedUnit} room={unitDetailRoom} />
 
         <div className="pointer-events-none relative z-10 flex min-h-screen flex-col justify-between px-6 pb-10 pt-12 sm:px-10">
           <div />
