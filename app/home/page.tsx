@@ -1232,6 +1232,8 @@ function HomePageContent({
   }, [ue5])
 
   const showDestinationsOverlay = journeyStage === "DESTINATION_SELECT"
+  const avatarThumbnailWidth = 210
+  const roomsPanelWidth = Math.round(avatarThumbnailWidth * 1.3)
 
   // -----------------------------------------------------------------------
   // Render — panels are rendered outside the pointer-events-none wrapper
@@ -1249,6 +1251,21 @@ function HomePageContent({
 
         {/* Unit detail panel */}
         <UnitDetailPanel unit={ue5.selectedUnit} room={unitDetailRoom} />
+        {showRoomsPanel && (
+          <div className="pointer-events-auto fixed right-4 top-4 bottom-[calc(4rem+2vh)] z-20">
+            <div className="h-full" style={{ width: roomsPanelWidth }}>
+              <RoomsPanel
+                visible={showRoomsPanel}
+                hotelName={selectedHotelData?.name ?? ""}
+                rooms={rooms}
+                onSelectRoom={handleSelectRoom}
+                onClose={closeRoomsPanel}
+                recommendedRoomId={recommendedRoomId}
+                recommendedPlan={recommendedPlan}
+              />
+            </div>
+          </div>
+        )}
 
         <div className="pointer-events-none relative z-10 flex min-h-screen flex-col justify-between px-6 pb-10 pt-12 sm:px-10">
           <div />
@@ -1256,17 +1273,17 @@ function HomePageContent({
           {/* Avatar control panel */}
           <div className="mt-auto">
             <div className="pointer-events-auto inline-flex items-stretch rounded-[20px] border border-white/25 bg-gradient-to-br from-white/20 via-white/10 to-white/5 shadow-[0_20px_60px_-28px_rgba(0,0,0,0.85)] backdrop-blur-2xl">
-              {/* Avatar — 5px padding top/left/bottom, flush right edge */}
+              {/* Avatar - 5px padding top/left/bottom, flush right edge */}
               <div className="p-[5px] pr-0">
                 <div
                   className="relative overflow-hidden rounded-[16px] bg-black shadow-2xl"
-                  style={{ width: 210, aspectRatio: "1 / 1.25" }}
+                  style={{ width: avatarThumbnailWidth, aspectRatio: "1 / 1.25" }}
                 >
                   <SandboxSessionPlayer fit="cover" />
                 </div>
               </div>
 
-              {/* Right body — buttons */}
+              {/* Right body - buttons */}
               <div className="flex flex-col items-center justify-between py-4 px-[15px] min-w-[70px]">
                 <div />
                 {selectedHotel && journeyStage === "HOTEL_EXPLORATION" && (
@@ -1289,7 +1306,7 @@ function HomePageContent({
         )}
       </div>
 
-      {/* --- Panels rendered outside the wrapper, as siblings of the iframe --- */}
+      {/* --- Overlays rendered outside the wrapper, as siblings of the iframe --- */}
 
       {/* Destinations overlay */}
       <DestinationsOverlay
@@ -1298,16 +1315,7 @@ function HomePageContent({
         onClose={() => setJourneyStage("PROFILE_COLLECTION")}
       />
 
-      {/* Rooms panel */}
-      <RoomsPanel
-        visible={showRoomsPanel}
-        hotelName={selectedHotelData?.name ?? ""}
-        rooms={rooms}
-        onSelectRoom={handleSelectRoom}
-        onClose={closeRoomsPanel}
-        recommendedRoomId={recommendedRoomId}
-        recommendedPlan={recommendedPlan}
-      />
     </>
   )
 }
+
