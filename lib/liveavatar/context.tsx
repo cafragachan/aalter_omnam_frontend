@@ -1,6 +1,6 @@
 ﻿"use client"
 
-import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import {
   AgentEventsEnum,
   ConnectionQuality,
@@ -22,6 +22,14 @@ type LiveAvatarContextProps = {
   isUserTalking: boolean
   isAvatarTalking: boolean
   messages: LiveAvatarSessionMessage[]
+  /**
+   * Manually append a message to the transcript. Used by chat mode to inject
+   * user-typed input and avatar responses that bypass HeyGen's STT/TTS
+   * (and therefore never fire USER_TRANSCRIPTION / AVATAR_TRANSCRIPTION).
+   * In voice mode this should not be called — HeyGen's events populate
+   * `messages` on their own.
+   */
+  appendMessage: (sender: MessageSender, text: string) => void
 }
 
 const LiveAvatarContext = createContext<LiveAvatarContextProps | null>(null)
@@ -163,6 +171,13 @@ export function LiveAvatarContextProvider({
     }
   }, [])
 
+  const appendMessage = useCallback((sender: MessageSender, text: string) => {
+    setMessages((prev) => [
+      ...prev,
+      { sender, message: text, timestamp: Date.now() },
+    ])
+  }, [])
+
   const value = useMemo(
     () => ({
       sessionRef,
@@ -174,8 +189,9 @@ export function LiveAvatarContextProvider({
       isUserTalking,
       isAvatarTalking,
       messages,
+      appendMessage,
     }),
-    [connectionQuality, isAvatarTalking, isMuted, isStreamReady, isUserTalking, messages, sessionState, voiceChatState],
+    [appendMessage, connectionQuality, isAvatarTalking, isMuted, isStreamReady, isUserTalking, messages, sessionState, voiceChatState],
   )
 
   return <LiveAvatarContext.Provider value={value}>{children}</LiveAvatarContext.Provider>

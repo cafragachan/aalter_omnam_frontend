@@ -5,6 +5,9 @@ import type React from "react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Mic, MicOff, Lock, Mail, LogIn, User, Phone, Calendar, UserPlus, ArrowLeft, Globe } from "lucide-react"
 import { DebugHud, SandboxSessionPlayer, useDebugLogger } from "@/components/liveavatar/SandboxLiveAvatar"
+import { ModeToggle } from "@/components/liveavatar/ModeToggle"
+import { ChatPanel } from "@/components/chat/ChatPanel"
+import { InputModeProvider, useInputMode } from "@/lib/input-mode/context"
 import { LiveAvatarContextProvider, useLiveAvatarContext } from "@/lib/liveavatar"
 import { ProfileSync } from "@/components/ProfileSync"
 import { DestinationsOverlay } from "@/components/panels/DestinationsOverlay"
@@ -852,7 +855,9 @@ export default function HomePage() {
           )} */}
           {sessionToken && (
             <HydratedLiveAvatarContext sessionToken={sessionToken}>
-              <HomePageContent onHideUE5Stream={() => setUe5Hidden(true)} catalog={catalog} />
+              <InputModeProvider>
+                <HomePageContent onHideUE5Stream={() => setUe5Hidden(true)} catalog={catalog} />
+              </InputModeProvider>
             </HydratedLiveAvatarContext>
           )}
         </>
@@ -1234,7 +1239,13 @@ function HomePageContent({
 
   const showDestinationsOverlay = journeyStage === "DESTINATION_SELECT"
   const avatarThumbnailWidth = 210
+  const avatarThumbnailHeight = Math.round(avatarThumbnailWidth * 1.25)
   const roomsPanelWidth = Math.round(avatarThumbnailWidth * 1.3)
+  const chatPanelWidth = 360
+  const chatPanelHeight = 420
+
+  const { mode: inputMode } = useInputMode()
+  const isChatMode = inputMode === "chat"
 
   // -----------------------------------------------------------------------
   // Render — panels are rendered outside the pointer-events-none wrapper
@@ -1273,20 +1284,34 @@ function HomePageContent({
           {/* Avatar control panel */}
           <div className="mt-auto">
             <div className="pointer-events-auto inline-flex items-stretch rounded-[20px] border border-white/25 bg-gradient-to-br from-white/20 via-white/10 to-white/5 shadow-[0_20px_60px_-28px_rgba(0,0,0,0.85)] backdrop-blur-2xl">
-              {/* Avatar - 5px padding top/left/bottom, flush right edge */}
-              <div className="p-[5px] pr-0">
+              {/* Avatar thumbnail — ALWAYS mounted to keep the HeyGen session
+                  alive. In chat mode we pin it off-screen (visibility:hidden +
+                  absolute position) rather than unmount, because unmounting
+                  SandboxSessionPlayer triggers stopSession() and would tear
+                  down the WebRTC stream. */}
+              <div
+                className={isChatMode ? "pointer-events-none invisible absolute -left-[9999px] top-0" : "p-[5px] pr-0"}
+                aria-hidden={isChatMode}
+              >
                 <div
                   className="relative overflow-hidden rounded-[16px] bg-black shadow-2xl"
-                  style={{ width: avatarThumbnailWidth, aspectRatio: "1 / 1.25" }}
+                  style={{ width: avatarThumbnailWidth, height: avatarThumbnailHeight }}
                 >
                   <SandboxSessionPlayer fit="cover" />
                 </div>
               </div>
 
+              {/* Chat surface — takes the thumbnail's layout slot in chat mode. */}
+              {isChatMode && (
+                <div className="p-[5px] pr-0">
+                  <ChatPanel width={chatPanelWidth} height={chatPanelHeight} />
+                </div>
+              )}
+
               {/* Right body - buttons */}
-              <div className="flex flex-col items-center justify-between py-4 px-[15px] min-w-[70px]">
-                <div />
-                <MicToggle />
+              <div className="flex flex-col items-center justify-end gap-3 py-4 px-[15px] min-w-[70px]">
+                {!isChatMode && <MicToggle />}
+                <ModeToggle />
               </div>
             </div>
           </div>
