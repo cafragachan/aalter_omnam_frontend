@@ -15,9 +15,10 @@ export type TurnDecisionAction =
   // server wire format in app/api/orchestrate/route.ts → buildTurnDecision).
   // This is NOT a full UserIntent object — callers must reconstruct the
   // UserIntent union before handing it to processIntent / the reducer.
-  // `amenityName` is surfaced alongside for AMENITY_BY_NAME; `params` is
-  // retained for any future intent-specific payload we choose to ship.
-  | { type: "USER_INTENT"; intent: string; amenityName?: string; params?: Record<string, unknown> }
+  // `amenityName` is surfaced alongside for AMENITY_BY_NAME; `lightingMode`
+  // for LIGHTING_SET; `params` is retained for any future intent-specific
+  // payload we choose to ship.
+  | { type: "USER_INTENT"; intent: string; amenityName?: string; lightingMode?: "daylight" | "sunset" | "night"; params?: Record<string, unknown> }
   | {
       type: "PROFILE_TURN_RESULT"
       decision: "ask_next" | "clarify" | "ready"
@@ -146,12 +147,14 @@ export type SpeechKey =
   | "amenityPickRooms"
   | "unitExploreDeclined"
   | "unitDeclineClarify"
+  | "lightingAskWhich"
   // Templated keys (args documented in journey-machine.ts SPEAK_INTENT push sites)
   | "destinationPicked"        // args: { hotelName }
   | "unitPicked"               // args: { roomName }
   | "amenitySuggestFallback"   // args: { suggestedNext }
   | "amenityNavigate"          // args: { amenityName, narrative, teaser }
   | "amenityListing"           // args: { allAmenities, visitedAmenities, travelPurpose?, recommendedAmenityName? }
+  | "lightingSet"              // args: { mode: "daylight" | "sunset" | "night" }
   | "reengage"                 // args: { state }
   | "literal"                  // args: { text } — escape hatch for dynamic strings
 

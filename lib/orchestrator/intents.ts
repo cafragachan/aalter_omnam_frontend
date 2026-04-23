@@ -27,6 +27,8 @@ export type UserIntent =
   | { type: "ROOM_PLAN_COMPACT" }
   | { type: "RETURN_TO_LOUNGE" }
   | { type: "END_EXPERIENCE" }
+  | { type: "LIGHTING_CHANGE" }
+  | { type: "LIGHTING_SET"; mode: "daylight" | "sunset" | "night" }
   | { type: "UNKNOWN" }
 
 // END_EXPERIENCE — multi-strategy detection:
@@ -78,6 +80,16 @@ const INTERIOR_RE = /\b(interior|inside|indoor|explore\s+(?:this|the)\s+(?:room|
 const EXTERIOR_RE = /\b(exterior|outside|outdoor|view\s+(?:from|out)(?:\s+(?:here|this|the))?|see\s+the\s+view|what'?s?\s+the\s+view|the\s+view\s+from)\b/
 const BACK_RE = /\b(go back|take me back|head back|back to|return to|cancel|nevermind|never mind|let'?s go back|bring me back)\b/i
 const OTHER_OPTIONS_RE = /\b(other\s+options|something\s+else|explore\s+(?:other|more)|see\s+(?:other|more)|different\s+option|alternatives|what\s+else|other\s+choices|more\s+options|another\s+(?:one|room|option)|different\s+room|see\s+another)\b/i
+
+// Lighting control — specific time-of-day words map to canonical modes.
+// "night" bare is too greedy; require a disambiguating suffix (nighttime /
+// night mode / night light) or an anchoring phrase (after dark).
+const LIGHTING_DAYLIGHT_RE = /\b(day[\s-]?light|day[\s-]?time|morning\s+light|bright(?:er)?\s+(?:light|lighting))\b/i
+const LIGHTING_SUNSET_RE = /\b(sunset|dusk|twilight|golden\s+hour|evening\s+light)\b/i
+const LIGHTING_NIGHT_RE = /\b(night[\s-]?time|night[\s-]?mode|night\s+light|after\s*dark|star[\s-]?light|moon[\s-]?light)\b/i
+// Generic lighting request without a specific mode — requires verb+noun
+// pairing so stray words like "mood" in unrelated context don't trigger.
+const LIGHTING_GENERIC_RE = /\b(?:chang|switch|adjust|set|see|try|show)(?:e|ed|ing|s)?\s+(?:the\s+|a\s+|some\s+|it\s+to\s+|it\s+with\s+)?(?:light(?:ing)?|ambien[cs]e|atmosphere|mood|time\s+of\s+day|vibe)\b|\bdifferent\s+(?:light(?:ing)?|mood|atmosphere|vibe|time\s+of\s+day)\b|\b(?:light(?:ing)?|ambien[cs]e|atmosphere|mood)\s+mode\b|\bmake\s+it\s+(?:brighter|darker|moodier|cozier|warmer)\b/i
 
 // Question detection — if user is asking a question (not giving a navigation command),
 // skip navigation keyword matching to avoid false triggers like "what's the room area?"
@@ -146,6 +158,19 @@ export function classifyIntent(message: string): UserIntent {
 
   // --- booking intent ---
   if (BOOK_RE.test(lower)) return { type: "BOOK" }
+
+  // --- lighting control (before question guard — lighting requests often
+  //     phrase as questions: "can we see it at sunset?") ---
+  const wantsDaylight = LIGHTING_DAYLIGHT_RE.test(lower)
+  const wantsSunset = LIGHTING_SUNSET_RE.test(lower)
+  const wantsNight = LIGHTING_NIGHT_RE.test(lower)
+  const specificLightingCount = [wantsDaylight, wantsSunset, wantsNight].filter(Boolean).length
+  if (specificLightingCount === 1) {
+    if (wantsDaylight) return { type: "LIGHTING_SET", mode: "daylight" }
+    if (wantsSunset) return { type: "LIGHTING_SET", mode: "sunset" }
+    if (wantsNight) return { type: "LIGHTING_SET", mode: "night" }
+  }
+  if (LIGHTING_GENERIC_RE.test(lower)) return { type: "LIGHTING_CHANGE" }
 
   // --- Question guard: if the user is asking a question without a navigation
   //     action verb, skip all navigation keyword matching. This prevents

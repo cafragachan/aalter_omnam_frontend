@@ -21,9 +21,9 @@ export const DEFAULT_SPEECH = {
   profileReadyWelcome: "Wonderful! Before we head to the hotel, would you like to explore our virtual lounge? We have some exclusive artwork and unique retail offerings on display.",
   destinationPicked: (hotelName: string) => `Excellent — the ${hotelName}. Explore the lounge first, or head straight to the hotel?`,
   loungeExploreAck: "Take your time. Let me know when you're ready to head over.",
-  loungeToHotelIntro: "Let me take you to the hotel. You can explore available rooms, check out the amenities, or wander the surrounding area. And whenever you'd like to return to the virtual lounge, just say the word. What would you like to see first?",
-  hotelWelcome: "Welcome to the hotel. Rooms, amenities, or the grounds — what would you like to see? And whenever you're ready to head back, just say 'return to the virtual lounge.'",
-  hotelIntroShort: "Let me take you to the hotel. Rooms, amenities, or the grounds — what would you like to see?",
+  loungeToHotelIntro: "Let me take you to the hotel. You can explore available rooms, check out the amenities, or wander the surrounding area. If you'd like to see it in a different lighting — daylight, sunset, or at night — just say the word. And whenever you'd like to return to the virtual lounge, just let me know. What would you like to see first?",
+  hotelWelcome: "Welcome to the hotel. Rooms, amenities, or the grounds — what would you like to see? I can also switch the lighting to daylight, sunset, or night whenever you'd like. And whenever you're ready to head back, just say 'return to the virtual lounge.'",
+  hotelIntroShort: "Let me take you to the hotel. Rooms, amenities, or the grounds — what would you like to see? I can also change the lighting if you'd like a different mood.",
   pullUpRooms: "Let me pull up the rooms.",
   amenitiesAskWhich: "Which one — pool, lobby, or conference room?",
   showLocation: "Let me show you the surrounding area.",
@@ -47,6 +47,12 @@ export const DEFAULT_SPEECH = {
   amenityAskBack: "Shall we head back to the hotel overview?",
   amenityBookNudge: "Great to hear you'd like to book! Let me show you the rooms first so you can pick your favorite.",
   amenityPickRooms: "Good call — let me show you the rooms.",
+  lightingAskWhich: "Happy to change the lighting. Would you like to see it in daylight, sunset, or at night?",
+  lightingSet: (mode: "daylight" | "sunset" | "night") => {
+    if (mode === "daylight") return "Switching to daylight."
+    if (mode === "sunset") return "Golden hour it is."
+    return "Nightfall — enjoy."
+  },
 } as const
 
 // ---------------------------------------------------------------------------
@@ -262,6 +268,34 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
     effects.push({ type: "SPEAK_INTENT", key: "downloadData" })
     effects.push({ type: "DOWNLOAD_DATA" })
     return { nextState: state, effects }
+  }
+
+  // -----------------------------------------------------------------------
+  // LIGHTING_CHANGE / LIGHTING_SET — global handlers; only active while the
+  // guest is inside the hotel (HOTEL_EXPLORATION / ROOM_SELECTED / AMENITY_VIEWING).
+  // When not eligible (PROFILE_COLLECTION / DESTINATION_SELECT / VIRTUAL_LOUNGE),
+  // fall through to the stage-specific handlers so their unknown-fallback
+  // keeps the turn audible instead of silently dropping the intent.
+  // -----------------------------------------------------------------------
+  if (
+    action.type === "USER_INTENT" &&
+    (action.intent.type === "LIGHTING_CHANGE" || action.intent.type === "LIGHTING_SET")
+  ) {
+    const lightingEligible =
+      state.stage === "HOTEL_EXPLORATION" ||
+      state.stage === "ROOM_SELECTED" ||
+      state.stage === "AMENITY_VIEWING"
+    if (lightingEligible) {
+      if (action.intent.type === "LIGHTING_CHANGE") {
+        effects.push({ type: "SPEAK_INTENT", key: "lightingAskWhich" })
+        return { nextState: state, effects }
+      }
+      const mode = action.intent.mode
+      effects.push({ type: "UE5_COMMAND", command: "sunPosition", value: mode })
+      effects.push({ type: "SPEAK_INTENT", key: "lightingSet", args: { mode } })
+      return { nextState: state, effects }
+    }
+    // Fall through — the stage handlers below will speak an unknown fallback.
   }
 
   // -----------------------------------------------------------------------

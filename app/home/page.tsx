@@ -6,7 +6,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Mic, MicOff, Lock, Mail, LogIn, User, Phone, Calendar, UserPlus, ArrowLeft, Globe } from "lucide-react"
 import { DebugHud, SandboxSessionPlayer, useDebugLogger } from "@/components/liveavatar/SandboxLiveAvatar"
 import { LiveAvatarContextProvider, useLiveAvatarContext } from "@/lib/liveavatar"
-import { SunToggle, type SunState } from "@/components/SunToggle"
 import { ProfileSync } from "@/components/ProfileSync"
 import { DestinationsOverlay } from "@/components/panels/DestinationsOverlay"
 import { RoomsPanel } from "@/components/panels/RoomsPanel"
@@ -1154,12 +1153,6 @@ function HomePageContent({
   // Data is written incrementally throughout the session, so closing the tab only
   // needs to flush the endedAt timestamp and any pending debounced profile writes.
 
-  // --- Reset sun position when hotel changes ---
-  useEffect(() => {
-    if (!selectedHotel) return
-    ue5.changeSunPosition("daylight")
-  }, [selectedHotel]) // eslint-disable-line react-hooks/exhaustive-deps
-
   // --- Hotel selection handler ---
   const handleSelectHotel = useCallback((slug: string) => {
     const hotel = hotels.find((h) => h.slug === slug)
@@ -1239,11 +1232,6 @@ function HomePageContent({
     ue5.resetToDefault()
   }, [ue5])
 
-  // --- Sun state handler ---
-  const handleSunStateChange = useCallback((value: SunState) => {
-    ue5.changeSunPosition(value)
-  }, [ue5])
-
   const showDestinationsOverlay = journeyStage === "DESTINATION_SELECT"
   const avatarThumbnailWidth = 210
   const roomsPanelWidth = Math.round(avatarThumbnailWidth * 1.3)
@@ -1298,9 +1286,6 @@ function HomePageContent({
               {/* Right body - buttons */}
               <div className="flex flex-col items-center justify-between py-4 px-[15px] min-w-[70px]">
                 <div />
-                {selectedHotel && journeyStage === "HOTEL_EXPLORATION" && (
-                  <SunToggle value={ue5.sunState} onChange={handleSunStateChange} />
-                )}
                 <MicToggle />
               </div>
             </div>

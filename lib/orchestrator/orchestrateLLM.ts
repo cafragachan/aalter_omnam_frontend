@@ -24,6 +24,7 @@ const TurnDecisionActionSchema = z.union([
     type: z.literal("USER_INTENT"),
     intent: z.string(),
     amenityName: z.string().optional(),
+    lightingMode: z.enum(["daylight", "sunset", "night"]).optional(),
     params: z.record(z.string(), z.unknown()).optional(),
   }),
   z.object({
@@ -202,6 +203,7 @@ export async function orchestrateLLM(
       tool: string
       intent?: string
       amenityName?: string
+      lightingMode?: "daylight" | "sunset" | "night"
       speech?: string
       reasoning?: string
       profileUpdates?: ProfileUpdates
@@ -249,10 +251,14 @@ export async function orchestrateLLM(
 
     if (data.tool === "navigate_and_speak") {
       if (!data.intent) return null
-      const intent: UserIntent =
-        data.intent === "AMENITY_BY_NAME" && data.amenityName
-          ? { type: "AMENITY_BY_NAME", amenityName: data.amenityName }
-          : ({ type: data.intent } as UserIntent)
+      let intent: UserIntent
+      if (data.intent === "AMENITY_BY_NAME" && data.amenityName) {
+        intent = { type: "AMENITY_BY_NAME", amenityName: data.amenityName }
+      } else if (data.intent === "LIGHTING_SET" && data.lightingMode) {
+        intent = { type: "LIGHTING_SET", mode: data.lightingMode }
+      } else {
+        intent = { type: data.intent } as UserIntent
+      }
       const base = { tool: "navigate_and_speak" as const, intent, speech: data.speech }
       return envelope ? { ...base, decision_envelope: envelope } : base
     }

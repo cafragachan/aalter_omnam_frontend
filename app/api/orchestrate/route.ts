@@ -33,8 +33,12 @@ const INTENT_VALUES = [
   "ROOM_PLAN_COMPACT",
   "RETURN_TO_LOUNGE",
   "END_EXPERIENCE",
+  "LIGHTING_CHANGE",
+  "LIGHTING_SET",
   "UNKNOWN",
 ] as const
+
+const LIGHTING_MODE_VALUES = ["daylight", "sunset", "night"] as const
 
 // ---------------------------------------------------------------------------
 // Zod schemas for tool argument validation
@@ -58,6 +62,7 @@ const ProfileUpdatesSchema = z.object({
 const NavigateAndSpeakSchema = z.object({
   intent: z.enum(INTENT_VALUES),
   amenityName: z.string().optional(),
+  lightingMode: z.enum(LIGHTING_MODE_VALUES).optional(),
   speech: z.string().min(1).max(500),
   profileUpdates: ProfileUpdatesSchema.optional(),
 })
@@ -732,7 +737,7 @@ Classify the user's intent into exactly one of these categories:
 - **BOOK**: User wants to book, reserve, or proceed with a reservation.
 - **AFFIRMATIVE**: User agrees, says yes, confirms, or accepts a proposal.
 - **NEGATIVE**: User declines, says no, refuses, or rejects a proposal.
-- **TRAVEL_TO_HOTEL**: User wants to proceed to the hotel building itself (NOT a specific room or amenity within it). Typically used when leaving the lounge. Examples: "I'm ready", "let's go", "take me to the hotel", "let's continue". If the user says "take me to the [specific amenity]" (e.g., "take me to the pool"), that is AMENITY_BY_NAME, not TRAVEL_TO_HOTEL.
+- **TRAVEL_TO_HOTEL**: User wants to proceed to the hotel building itself (NOT a specific room or amenity within it). Typically used when leaving the lounge. Examples: "I'm ready", "let's go", "take me to the hotel", "let's continue". If the user says "take me to the [specific amenity]" (e.g., "take me to the pool"), that is AMENITY_BY_NAME, not TRAVEL_TO_HOTEL. **Hotel-intro speech rule**: whenever your \`navigate_and_speak\` emits TRAVEL_TO_HOTEL, the guest is about to enter the hotel for the first time this session — your speech MUST briefly cover (a) what's available to explore (rooms, amenities, grounds), (b) that they can switch the lighting to daylight, sunset, or night any time, and (c) that they can return to the virtual lounge whenever they want. One warm paragraph — don't bullet-list.
 - **OTHER_OPTIONS**: User wants to see other options, alternatives, or something different.
 - **ROOM_TOGETHER**: User wants guests to share rooms or stay together.
 - **ROOM_SEPARATE**: User wants separate / individual rooms for guests.
@@ -741,6 +746,8 @@ Classify the user's intent into exactly one of these categories:
 - **ROOM_PLAN_COMPACT**: User wants fewer rooms / a more compact room arrangement.
 - **RETURN_TO_LOUNGE**: User wants to go back to the virtual lounge / lobby / gallery.
 - **END_EXPERIENCE**: User wants to end the session, say goodbye, or leave.
+- **LIGHTING_CHANGE**: User asks to change the lighting, ambience, mood, atmosphere, or time-of-day feel **without naming a specific mode**. Examples: "change the lighting", "different mood in here", "can we adjust the atmosphere", "make it feel different". ONLY valid in HOTEL_EXPLORATION, ROOM_SELECTED, and AMENITY_VIEWING — never in PROFILE_COLLECTION or VIRTUAL_LOUNGE (fall back to no_action_speak there).
+- **LIGHTING_SET**: User names (or confirms) a specific lighting mode. You MUST also set \`lightingMode\` to one of: "daylight", "sunset", "night". Map evocative phrases: "morning light" / "brighter" / "daytime" → daylight; "golden hour" / "dusk" / "twilight" / "romantic" / "moody" → sunset; "after dark" / "starlight" / "evening" / "darker" / "nighttime" → night. ONLY valid in HOTEL_EXPLORATION / ROOM_SELECTED / AMENITY_VIEWING.
 - **UNKNOWN**: The message does not match any of the above intents.
 
 ### Intent Disambiguation Rules
@@ -1066,6 +1073,11 @@ function buildTools() {
               type: "string",
               description: "The canonical amenity name, required when intent is AMENITY_BY_NAME (one of: pool, spa, restaurant, lobby, conference, gym, bar, lounge, dining)",
             },
+            lightingMode: {
+              type: "string",
+              enum: ["daylight", "sunset", "night"],
+              description: "Required when intent is LIGHTING_SET. Map evocative phrases: 'morning light', 'brighter' → daylight; 'golden hour', 'dusk', 'romantic/moody' → sunset; 'after dark', 'starlight' → night.",
+            },
             speech: {
               type: "string",
               description: "Natural spoken response for the avatar (1-3 sentences, preserve all room names, amounts, and quantities verbatim)",
@@ -1116,7 +1128,7 @@ type TurnDecisionProposalKind =
   | "other"
 
 type TurnDecisionActionWire =
-  | { type: "USER_INTENT"; intent: string; amenityName?: string; params?: Record<string, unknown> }
+  | { type: "USER_INTENT"; intent: string; amenityName?: string; lightingMode?: "daylight" | "sunset" | "night"; params?: Record<string, unknown> }
   | {
       type: "PROFILE_TURN_RESULT"
       decision: "ask_next" | "clarify" | "ready"
@@ -1193,13 +1205,20 @@ function buildTurnDecision(args: {
     const intent = typeof result.intent === "string" ? result.intent : "UNKNOWN"
     const amenityName =
       typeof result.amenityName === "string" ? result.amenityName : undefined
+    const lightingMode =
+      result.lightingMode === "daylight" || result.lightingMode === "sunset" || result.lightingMode === "night"
+        ? (result.lightingMode as "daylight" | "sunset" | "night")
+        : undefined
     const params: Record<string, unknown> | undefined =
-      amenityName ? { amenityName } : undefined
+      amenityName || lightingMode
+        ? { ...(amenityName ? { amenityName } : {}), ...(lightingMode ? { lightingMode } : {}) }
+        : undefined
     const proposal = proposalForIntent(intent, amenityName)
     const action: TurnDecisionActionWire = {
       type: "USER_INTENT",
       intent,
       ...(amenityName ? { amenityName } : {}),
+      ...(lightingMode ? { lightingMode } : {}),
       ...(params ? { params } : {}),
     }
     return {
@@ -1416,6 +1435,7 @@ export async function POST(request: Request) {
       if (functionName === "navigate_and_speak") {
         responseBody.intent = result.intent
         if (result.amenityName) responseBody.amenityName = result.amenityName
+        if (result.lightingMode) responseBody.lightingMode = result.lightingMode
         responseBody.speech = cleanSpeech(result.speech)
         passThroughProfileUpdates()
       } else if (functionName === "profile_turn") {

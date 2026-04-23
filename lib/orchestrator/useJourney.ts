@@ -1393,10 +1393,33 @@ export function useJourney(options: UseJourneyOptions) {
               ? result.intent.amenityName
               : undefined)
 
-          const fullIntentObject: UserIntent =
-            intentTag === "AMENITY_BY_NAME" && amenityName
-              ? { type: "AMENITY_BY_NAME", amenityName }
-              : ({ type: intentTag } as UserIntent)
+          const envelopeLightingMode =
+            envelopeAction.lightingMode === "daylight" ||
+            envelopeAction.lightingMode === "sunset" ||
+            envelopeAction.lightingMode === "night"
+              ? envelopeAction.lightingMode
+              : undefined
+          const paramLightingMode =
+            envelopeAction.params && typeof envelopeAction.params.lightingMode === "string" &&
+            (envelopeAction.params.lightingMode === "daylight" ||
+              envelopeAction.params.lightingMode === "sunset" ||
+              envelopeAction.params.lightingMode === "night")
+              ? (envelopeAction.params.lightingMode as "daylight" | "sunset" | "night")
+              : undefined
+          const resultLightingMode =
+            result.tool === "navigate_and_speak" && result.intent.type === "LIGHTING_SET"
+              ? result.intent.mode
+              : undefined
+          const lightingMode = envelopeLightingMode ?? paramLightingMode ?? resultLightingMode
+
+          let fullIntentObject: UserIntent
+          if (intentTag === "AMENITY_BY_NAME" && amenityName) {
+            fullIntentObject = { type: "AMENITY_BY_NAME", amenityName }
+          } else if (intentTag === "LIGHTING_SET" && lightingMode) {
+            fullIntentObject = { type: "LIGHTING_SET", mode: lightingMode }
+          } else {
+            fullIntentObject = { type: intentTag } as UserIntent
+          }
 
           // eslint-disable-next-line no-console
           console.log("[ENVELOPE-DISPATCH]", {

@@ -84,10 +84,19 @@ export function renderSpeech(key: SpeechKey, args?: SpeechArgs): string {
       return DEFAULT_SPEECH.unitExploreDeclined
     case "unitDeclineClarify":
       return DEFAULT_SPEECH.unitDeclineClarify
+    case "lightingAskWhich":
+      return DEFAULT_SPEECH.lightingAskWhich
 
     // ---- Templated keys ------------------------------------------------
     case "destinationPicked":
       return DEFAULT_SPEECH.destinationPicked(String(args?.hotelName ?? ""))
+
+    case "lightingSet": {
+      const mode = args?.mode
+      const safeMode: "daylight" | "sunset" | "night" =
+        mode === "sunset" || mode === "night" ? mode : "daylight"
+      return DEFAULT_SPEECH.lightingSet(safeMode)
+    }
 
     case "unitPicked":
       return DEFAULT_SPEECH.unitPicked(String(args?.roomName ?? ""))
