@@ -177,7 +177,17 @@ export function useRoomPlanner(): {
 
         dispatch({ type: "SET_ROOM_PLAN", plan: nextPlan })
         interrupt()
-        void repeat(data.speech).catch(() => undefined)
+        // Always close the planner utterance with the unit-picker hint so the
+        // guest knows the UE5 scene is now interactive. Append defensively —
+        // the LLM shouldn't emit this phrase, but guard against duplication
+        // if it ever does.
+        const HINT = "Please click on one of the available highlighted green units displayed."
+        const base = data.speech.trim()
+        const alreadyHinted = /highlighted\s+green\s+unit/i.test(base)
+        const withHint = alreadyHinted
+          ? base
+          : `${base}${/[.!?]$/.test(base) ? "" : "."} ${HINT}`
+        void repeat(withHint).catch(() => undefined)
       } catch (err) {
         // AbortController-triggered termination: a newer requestPlan call
         // superseded this one (or the component unmounted). Silently return
