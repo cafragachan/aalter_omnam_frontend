@@ -36,6 +36,36 @@ const AMENITY_ALIASES: Record<string, string> = {
 }
 
 // ---------------------------------------------------------------------------
+// Speech-authority rule (=on dispatch).
+//
+// When the reducer authors canonical speech for an intent — either directly
+// (e.g., `pullUpRooms`, `hotelBackOverview`) or via a follow-up action it
+// dispatches (e.g., AMENITIES → `LIST_AMENITIES` → `amenityListing` which
+// reads actual hotel data + travel-purpose recommendation) — the reducer's
+// speech is the source of truth. The LLM envelope speech for these intents
+// is almost always a paraphrase or, worse, a hallucinated list that
+// contradicts ground truth.
+//
+// Rule: if the intent is in this set, NULL `preGeneratedSpeechRef` before
+// dispatch so the reducer's rendered speech plays. If not in the set, keep
+// the LLM envelope speech — those intents either have no canonical reducer
+// speech (UNKNOWN, unrecognized fallback) or the LLM's warmth is preferable
+// to the reducer's tone (AFFIRMATIVE / TRAVEL_TO_HOTEL transitions).
+//
+// Consequence: adding a new intent that the reducer speaks canonically
+// requires adding it here. That's the price of the invariant.
+// ---------------------------------------------------------------------------
+const CANONICAL_REDUCER_INTENTS: ReadonlySet<string> = new Set([
+  "AMENITIES",       // → LIST_AMENITIES → amenityListing (actual hotel data)
+  "ROOMS",           // → pullUpRooms (+ room planner speaks the plan after)
+  "LOCATION",        // → showLocation
+  "BACK",            // → hotelBackOverview / backToOtherRooms / backToHotelOverview
+  "BOOK",            // → bookPickRoom
+  "HOTEL_EXPLORE",   // → hotelBackOverview
+  "OTHER_OPTIONS",   // → otherOptionsRooms (or AMENITY_VIEWING list flow)
+])
+
+// ---------------------------------------------------------------------------
 // Phase 1 shadow-compare helper.
 //
 // Compares a legacy-dispatched action against the server's TurnDecision
@@ -1658,14 +1688,12 @@ export function useJourney(options: UseJourneyOptions) {
             (envelope as { profileUpdates?: Record<string, unknown> }).profileUpdates,
             "envelope",
           )
-          // why: AMENITIES routes through `LIST_AMENITIES` which speaks the
-          // canonical amenity list (actual hotel data + travel-purpose
-          // recommendation). The LLM's envelope speech for an AMENITIES turn
-          // is almost always a hallucinated list ("pool, spa, dining, gym")
-          // because the enum categories bleed into the prompt. Null the
-          // override so the reducer-rendered canonical speech plays.
+          // Speech-authority rule: if the reducer authors canonical speech
+          // for this intent, drop the LLM envelope speech so the rendered
+          // canonical line plays instead. See CANONICAL_REDUCER_INTENTS at
+          // the top of the file for the full rationale.
           preGeneratedSpeechRef.current =
-            intentTag === "AMENITIES" ? null : envelope.speech
+            CANONICAL_REDUCER_INTENTS.has(intentTag) ? null : envelope.speech
           processIntent(fullIntentObject, latestMessage, currentState, stage)
           // Phase 2 Room Planner: sole room brain when the rooms panel is
           // open. Fires for every non-exit, non-internal-nav utterance; see
@@ -1747,9 +1775,9 @@ export function useJourney(options: UseJourneyOptions) {
           (result as { profileUpdates?: Record<string, unknown> }).profileUpdates,
           "navigate_and_speak",
         )
-        // See AMENITIES note in envelope-dispatch branch above.
+        // See the CANONICAL_REDUCER_INTENTS note at the top of the file.
         preGeneratedSpeechRef.current =
-          result.intent.type === "AMENITIES" ? null : result.speech
+          CANONICAL_REDUCER_INTENTS.has(result.intent.type) ? null : result.speech
         processIntent(result.intent, latestMessage, currentState, stage)
         // Phase 1 Room Planner: fallback path — same room-edit intent gate
         // as the envelope branch above. Covers the case where the envelope
