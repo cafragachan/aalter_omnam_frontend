@@ -1111,16 +1111,6 @@ function HomePageContent({
     // Phase 3 but does not use it yet — the existing amenities/rooms props
     // remain the operative channel until Phase 3 plumbs catalog into orchestrate.
     catalog,
-    // Phase 3: tri-state rollout flag ("off" | "shadow" | "on").
-    //   - "off"    = legacy regex short-circuit, no parallel orchestrate call.
-    //   - "shadow" = dispatch on regex as today, but also call orchestrate in
-    //                parallel for every non-PROFILE_COLLECTION turn and log a
-    //                [SHADOW] comparison. No user-visible behavior change.
-    //   - "on"     = orchestrate drives dispatch; regex becomes a `regexHint`.
-    // Default "shadow" for Phase 3 rollout. Flip to "on" via
-    // NEXT_PUBLIC_UNIFIED_ORCHESTRATOR after shadow-mode validation passes.
-    useUnifiedOrchestrator:
-      (process.env.NEXT_PUBLIC_UNIFIED_ORCHESTRATOR as "off" | "shadow" | "on" | undefined) ?? "shadow",
     // Phase 2.5: default ON. Set NEXT_PUBLIC_PROFILE_FAST_PATH=false to disable.
     useProfileFastPath: process.env.NEXT_PUBLIC_PROFILE_FAST_PATH !== "false",
   })

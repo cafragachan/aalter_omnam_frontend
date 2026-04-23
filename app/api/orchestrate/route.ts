@@ -1015,11 +1015,11 @@ function buildTools() {
 }
 
 // ---------------------------------------------------------------------------
-// TurnDecision builder (Phase 1 envelope)
+// TurnDecision builder
 //
-// Normalizes whichever tool fired into a single shape the client can
-// shadow-compare against its legacy dispatch path. Kept server-side so the
-// wire format is owned by the route and clients don't have to re-derive it.
+// Normalizes whichever tool fired into the authoritative wire shape the
+// client dispatches against. Kept server-side so the wire format is owned
+// by the route and clients don't have to re-derive it.
 // ---------------------------------------------------------------------------
 
 type TurnDecisionProposalKind =
@@ -1033,7 +1033,6 @@ type TurnDecisionProposalKind =
 
 type TurnDecisionActionWire =
   | { type: "USER_INTENT"; intent: string; amenityName?: string; params?: Record<string, unknown> }
-  | { type: "ROOM_PLAN_ACTION"; action: string; updates: Record<string, unknown> }
   | {
       type: "PROFILE_TURN_RESULT"
       decision: "ask_next" | "clarify" | "ready"

@@ -27,11 +27,6 @@ const TurnDecisionActionSchema = z.union([
     params: z.record(z.string(), z.unknown()).optional(),
   }),
   z.object({
-    type: z.literal("ROOM_PLAN_ACTION"),
-    action: z.string(),
-    updates: z.record(z.string(), z.unknown()),
-  }),
-  z.object({
     type: z.literal("PROFILE_TURN_RESULT"),
     decision: z.enum(["ask_next", "clarify", "ready"]),
     awaiting: z.string().optional(),

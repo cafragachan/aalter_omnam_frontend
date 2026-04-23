@@ -95,7 +95,8 @@
       "Bash(git rm *)",
       "Bash(tee /tmp/tsc.log)",
       "Bash(echo \"EXIT:$?\")",
-      "Bash(awk 'NR==604' app/api/orchestrate/route.ts)"
+      "Bash(awk 'NR==604' app/api/orchestrate/route.ts)",
+      "Bash(awk 'NR>=913 && NR<=1821' \"c:/Users/CesarFragachan/Documents/Repos/aalter_omnam_frontend/lib/orchestrator/useJourney.ts\")"
     ]
   }
 }

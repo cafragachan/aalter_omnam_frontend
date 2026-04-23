@@ -11,11 +11,15 @@
 //
 // On success: dispatches `SET_ROOM_PLAN` into the OmnamStore and speaks the
 // LLM-provided line via interrupt() + repeat(). On failure (network/timeout/
-// non-200): speaks a warm fallback, does NOT touch the store, logs
-// `[ROOM_PLANNER_ERROR]`.
+// non-200): logs `[ROOM_PLANNER_ERROR]` and silently returns (no fallback
+// speech — see the comment in the error branch).
+//
+// Staleness: each call aborts the previous in-flight fetch so a slow
+// response from an older turn cannot clobber a newer plan or speak over
+// the latest turn's utterance.
 // ---------------------------------------------------------------------------
 
-import { useCallback, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { useOmnamStore, type CurrentRoomPlan } from "@/lib/omnam-store"
 import { useLiveAvatarContext } from "@/lib/liveavatar/context"
 import { MessageSender } from "@/lib/liveavatar/types"
@@ -46,6 +50,24 @@ export function useRoomPlanner(): {
   selectedHotelRef.current = state.app.selectedHotel
 
   const [isPlanning, setIsPlanning] = useState(false)
+
+  // Staleness guard: aborting the previous controller on each new call
+  // terminates any in-flight fetch so slow older responses can't overwrite
+  // a newer plan or speak over the current turn. Mirrors the pattern used
+  // by `unifiedTurnAbortRef` in useJourney.ts.
+  const abortRef = useRef<AbortController | null>(null)
+
+  // Abort any pending request when the hook unmounts so orphan fetches
+  // don't keep the roundtrip alive.
+  useEffect(() => {
+    return () => {
+      const controller = abortRef.current
+      if (controller && !controller.signal.aborted) {
+        controller.abort()
+      }
+      abortRef.current = null
+    }
+  }, [])
 
   const requestPlan = useCallback(
     async (trigger: Trigger, latestMessage?: string): Promise<void> => {
@@ -94,12 +116,23 @@ export function useRoomPlanner(): {
         latestMessage,
       }
 
+      // Abort any previous in-flight planner call so a slow stale response
+      // cannot overwrite a newer plan.
+      const previous = abortRef.current
+      if (previous && !previous.signal.aborted) {
+        console.log("[ROOM_PLANNER_ABORT]", JSON.stringify({ reason: "new-call", trigger }))
+        previous.abort()
+      }
+      const controller = new AbortController()
+      abortRef.current = controller
+
       setIsPlanning(true)
       try {
         const res = await fetch("/api/room-planner", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
+          signal: controller.signal,
         })
 
         if (!res.ok) {
@@ -146,6 +179,16 @@ export function useRoomPlanner(): {
         interrupt()
         void repeat(data.speech).catch(() => undefined)
       } catch (err) {
+        // AbortController-triggered termination: a newer requestPlan call
+        // superseded this one (or the component unmounted). Silently return
+        // — no speech, no fallback, no error log beyond the abort trace
+        // emitted when we kicked off the new call.
+        if (
+          (err instanceof DOMException && err.name === "AbortError") ||
+          (err instanceof Error && err.name === "AbortError")
+        ) {
+          return
+        }
         console.error("[ROOM_PLANNER_ERROR]", JSON.stringify({
           trigger,
           hotelSlug,
@@ -153,7 +196,14 @@ export function useRoomPlanner(): {
         }))
         // See note in the !res.ok branch above — do not speak on error.
       } finally {
-        setIsPlanning(false)
+        // Clear the ref only if it still points at our controller (a newer
+        // requestPlan may have replaced it). Reset isPlanning only when this
+        // call is the current one — otherwise the newer call already set it
+        // true and will clear it on its own terminate.
+        if (abortRef.current === controller) {
+          abortRef.current = null
+          setIsPlanning(false)
+        }
       }
     },
     [dispatch, stateRef, interrupt, repeat],

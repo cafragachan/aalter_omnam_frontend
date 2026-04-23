@@ -3,13 +3,11 @@ import type { UserIntent } from "./intents"
 import type { AvatarDerivedProfile } from "@/lib/liveavatar/useUserProfile"
 
 // ---------------------------------------------------------------------------
-// TurnDecision envelope (Phase 1 of /home refactor)
+// TurnDecision envelope
 //
-// Additive, normalized view of whatever the orchestrator decided this turn,
-// regardless of which legacy tool fired (navigate_and_speak, profile_turn,
-// no_action_speak). The client consumes this alongside the
-// existing legacy response fields. Do NOT dispatch on decision yet — that is
-// Phase 3. Phase 1 ships it in the wire for shadow-mode groundwork.
+// Normalized view of whatever the orchestrator decided this turn, regardless
+// of which tool fired (navigate_and_speak, profile_turn, no_action_speak).
+// The client dispatches directly off this envelope's `action`.
 // ---------------------------------------------------------------------------
 
 export type TurnDecisionAction =
@@ -20,7 +18,6 @@ export type TurnDecisionAction =
   // `amenityName` is surfaced alongside for AMENITY_BY_NAME; `params` is
   // retained for any future intent-specific payload we choose to ship.
   | { type: "USER_INTENT"; intent: string; amenityName?: string; params?: Record<string, unknown> }
-  | { type: "ROOM_PLAN_ACTION"; action: string; updates: Record<string, unknown> }
   | {
       type: "PROFILE_TURN_RESULT"
       decision: "ask_next" | "clarify" | "ready"
