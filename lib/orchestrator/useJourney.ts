@@ -186,7 +186,7 @@ export function useJourney(options: UseJourneyOptions) {
   const { profile, journeyStage, setJourneyStage, updateProfile } = useUserProfileContext()
   const { userProfile: authIdentity, returningUserData } = useAuth()
   const { profile: derivedProfile, isExtractionPending, userMessages } = useHeyGenUserProfile()
-  const { messages: allMessages } = useHeyGenLiveAvatarContext()
+  const { messages: allMessages, isAvatarTalking } = useHeyGenLiveAvatarContext()
   const { repeat, interrupt, stopListening } = useHeyGenAvatarActions("FULL")
   const guestIntelligence = useGuestIntelligence()
   const { trackQuestion, trackRoomExplored, trackAmenityExplored, trackRequirement, startRoomTimer, startAmenityTimer, stopExplorationTimer, setBookingOutcome } = guestIntelligence
@@ -226,6 +226,40 @@ export function useJourney(options: UseJourneyOptions) {
 
   // --- Pre-generated speech ref (Phase 4: orchestrate fills this before processIntent) ---
   const preGeneratedSpeechRef = useRef<string | null>(null)
+
+  // --- Per-turn latency instrumentation ---
+  // One row logged per user→avatar turn as `[TURN-LATENCY]` so we can see
+  // where time is going (debounce wait vs orchestrate vs HeyGen TTS).
+  // t0 = user transcription lands, t1 = debounce timer fires, t2 = fetch
+  // start, t3 = fetch end, t5 = AVATAR_SPEAK_STARTED. The gap t3→t5 includes
+  // the repeat() WebSocket send + HeyGen TTS warmup; if that's the dominant
+  // slice, no client-side refactor will help.
+  type TurnTiming = {
+    t0: number
+    t1?: number
+    t2?: number
+    t3?: number
+    message: string
+    stage: string
+  }
+  const turnTimingRef = useRef<TurnTiming | null>(null)
+  const markTurnTiming = useCallback(
+    (mark: "t0" | "t1" | "t2" | "t3", info?: { message?: string; stage?: string }) => {
+      const now = performance.now()
+      if (mark === "t0") {
+        turnTimingRef.current = {
+          t0: now,
+          message: info?.message ?? "",
+          stage: info?.stage ?? "",
+        }
+        return
+      }
+      const t = turnTimingRef.current
+      if (!t) return
+      t[mark] = now
+    },
+    [],
+  )
 
   // --- PROFILE_COLLECTION debounce + cancellation refs ---
   const profileMsgDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -860,6 +894,39 @@ export function useJourney(options: UseJourneyOptions) {
   // Cancel any pending shortcut Phase-2 timer on unmount.
   useEffect(() => () => cancelShortcutFollowup(), [cancelShortcutFollowup])
 
+  // --- Per-turn latency log emit (t5 = AVATAR_SPEAK_STARTED) ---
+  // Fires once per turn when the avatar's first audio frame plays. Skipped
+  // if the timing ref isn't populated (e.g., pre-warm or any speak that
+  // wasn't preceded by an instrumented orchestrate call). One-shot per turn:
+  // the ref is cleared after emit so a subsequent isAvatarTalking flicker
+  // (interrupt + new repeat in the same turn) doesn't re-log.
+  useEffect(() => {
+    if (!isAvatarTalking) return
+    const t = turnTimingRef.current
+    if (!t) return
+    const t5 = performance.now()
+    const round = (n: number | undefined) =>
+      n === undefined ? null : Math.round(n - t.t0)
+    console.log(
+      "[TURN-LATENCY]",
+      JSON.stringify({
+        stage: t.stage,
+        msg: t.message.slice(0, 60),
+        totalMs: Math.round(t5 - t.t0),
+        debounceMs: round(t.t1),
+        fetchStartMs: round(t.t2),
+        fetchEndMs: round(t.t3),
+        orchestrateMs:
+          t.t2 !== undefined && t.t3 !== undefined
+            ? Math.round(t.t3 - t.t2)
+            : null,
+        postOrchestrateToAudioMs:
+          t.t3 !== undefined ? Math.round(t5 - t.t3) : null,
+      }),
+    )
+    turnTimingRef.current = null
+  }, [isAvatarTalking])
+
   // --- React to new user messages (intent classification + question tracking) ---
   useEffect(() => {
     // Phase 5: on first run, baseline the ref to the hydrated message count
@@ -873,6 +940,7 @@ export function useJourney(options: UseJourneyOptions) {
     lastMessageCountRef.current = userMessages.length
 
     const latestMessage = userMessages[userMessages.length - 1]?.message ?? ""
+    markTurnTiming("t0", { message: latestMessage, stage: stateRef.current.stage })
 
     // Track questions for GuestIntelligence
     if (latestMessage.includes("?")) {
@@ -1060,6 +1128,7 @@ export function useJourney(options: UseJourneyOptions) {
 
       if (profileMsgDebounceRef.current) clearTimeout(profileMsgDebounceRef.current)
       profileMsgDebounceRef.current = setTimeout(() => {
+        markTurnTiming("t1")
         // Read the FRESHEST profile/derivedProfile via refs, not closure — the
         // closure snapshot is from scheduling time and misses AI extractions
         // that completed during the debounce window (AI extraction has its own
@@ -1134,6 +1203,7 @@ export function useJourney(options: UseJourneyOptions) {
         const profileTurnMessageSlice = latestMessage.slice(-80)
         const profileRegexIntent = classifyIntent(latestMessage)
         ;(async () => {
+          markTurnTiming("t2")
           const result = await orchestrateLLM({
             message: latestMessage,
             state: stateRef.current,
@@ -1156,6 +1226,7 @@ export function useJourney(options: UseJourneyOptions) {
             conversationHistory,
             signal: controller.signal,
           })
+          markTurnTiming("t3")
           const profileLatencyMs = Date.now() - profileOrchestrateStart
           // Do NOT cancel here — profile state writes are idempotent and must
           // always land. Cancellation only applies to speech/dispatch below.
@@ -1460,6 +1531,7 @@ export function useJourney(options: UseJourneyOptions) {
 
     unifiedTurnTimerRef.current = setTimeout(() => {
       unifiedTurnTimerRef.current = null
+      markTurnTiming("t1")
       // Reset idle detection on turn-start so the 12s reengage can't
       // fire over a response that's about to land.
       resetIdleTimer()
@@ -1511,6 +1583,7 @@ export function useJourney(options: UseJourneyOptions) {
               ...(liveCatalog.hotelWebsiteUrl ? { websiteUrl: liveCatalog.hotelWebsiteUrl } : {}),
             }
           : undefined
+        markTurnTiming("t2")
         const result = await orchestrateLLM({
           message: latestMessage,
           state: currentState,
@@ -1534,6 +1607,7 @@ export function useJourney(options: UseJourneyOptions) {
           conversationHistory,
           signal: controller.signal,
         })
+        markTurnTiming("t3")
         const latencyMs = Date.now() - orchestrateStart
         if (controller.signal.aborted) return
         // Reset idle detection on turn-land so the reengage countdown

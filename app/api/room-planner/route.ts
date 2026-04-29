@@ -320,7 +320,12 @@ export async function POST(request: Request) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          model: "gpt-4o",
+          // Latency batch: swapped from gpt-4o to gpt-5.4-mini. Room planning
+          // is constraint satisfaction (allocate guests across rooms within
+          // capacity caps) — well within mini's capability and ~5x faster.
+          // Watch [ROOM_PLANNER] log latency + capacityOk rate; if invalid
+          // plans become common, fall back to "gpt-4o".
+          model: "gpt-5.4-mini",
           messages: [
             { role: "system", content: systemPrompt },
             { role: "user", content: latestMessageLine },

@@ -1543,11 +1543,17 @@ export async function POST(request: Request) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          // PROFILE_COLLECTION is multi-constraint extraction (dates, party,
-          // ages, purpose, allocation) with hard rules the validator enforces.
-          // gpt-4o-mini routinely returns empty profileUpdates + decision:
-          // "ready", looping the same ask. gpt-4o handles it reliably.
-          model: isProfileCollection ? "gpt-4o" : "gpt-4o-mini",
+          // Latency batch (post-Day-1): swapped from gpt-4o / gpt-4o-mini to
+          // the gpt-5.4 family for ~3-5x faster output. PROFILE_COLLECTION
+          // (multi-constraint extraction with the validator backstop) gets
+          // gpt-5.4-mini; everything else gets gpt-5.4-nano. Watch the
+          // `validatorOverride` rate in the [ORCHESTRATE] log lines — if PC
+          // overrides spike past ~30% of turns, fall back to "gpt-4o" for PC.
+          // History note: gpt-4o-mini previously failed PC by looping
+          // ask_next/ready with empty profileUpdates; that's why PC was on
+          // gpt-4o. gpt-5.4-mini is a newer-generation model and should
+          // handle the structured extraction reliably.
+          model: isProfileCollection ? "gpt-5.4-mini" : "gpt-5.4-nano",
           messages: [
             { role: "system", content: systemPrompt },
             { role: "user", content: `User message: "${body.message}"${journeyBlock}` },
