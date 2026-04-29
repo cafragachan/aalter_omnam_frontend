@@ -25,7 +25,7 @@ import { useJourney } from "@/lib/orchestrator"
 import { useRoomPlanner } from "@/lib/orchestrator/useRoomPlanner"
 import { useUE5Bridge } from "@/lib/ue5/bridge"
 import { useVagonSession } from "@/lib/ue5/useVagonSession"
-import { hotels, getHotelBySlug, getRoomsByHotelId, getAmenitiesByHotelId, getRecommendedRoomId } from "@/lib/hotel-data"
+import { hotels, getHotelBySlug, getRoomsByHotelId, getAmenitiesByHotelId } from "@/lib/hotel-data"
 import type { Room, Amenity, HotelCatalog } from "@/lib/hotel-data"
 import { useUE5WebSocket } from "@/lib/useUE5WebSocket"
 import { GlassPanel } from "@/components/glass-panel"
@@ -885,7 +885,7 @@ function HomePageContent({
   catalog: HotelCatalog | null
 }) {
   const { selectHotel, selectedHotel } = useApp()
-  const { profile, journeyStage, setJourneyStage, updateProfile } = useUserProfileContext()
+  const { journeyStage, setJourneyStage, updateProfile } = useUserProfileContext()
   const { sessionState, sessionRef, voiceChatState } = useLiveAvatarContext()
   const { repeat } = useAvatarActions()
   useDebugLogger()
@@ -1004,18 +1004,15 @@ function HomePageContent({
     })
   }, [selectedHotelData, catalog, catalogMatchesSelected])
 
-  const recommendedRoomId = useMemo(
-    () => getRecommendedRoomId(rooms, profile.familySize, profile.budgetRange),
-    [rooms, profile.familySize, profile.budgetRange],
-  )
-
   // Phase 2 Room Planner: the LLM-driven plan from `/api/room-planner` is the
   // sole source of truth for the RoomsPanel. Client-side heuristic plan
   // composition was deleted; while the planner's response hasn't landed yet
   // (first paint before Trigger 1), `recommendedPlan` is null and the panel
   // renders nothing. Phase 1's intermediate `planOverride` / `computedPlan`
   // fallbacks are gone along with the heuristics that populated them.
-  const currentRoomPlan = useOmnamStore().state.currentRoomPlan
+  const omnamStore = useOmnamStore()
+  const currentRoomPlan = omnamStore.state.currentRoomPlan
+  const omnamDispatch = omnamStore.dispatch
   const plannerPlan = useMemo<import("@/lib/hotel-data").RoomPlan | null>(() => {
     if (!currentRoomPlan || currentRoomPlan.rooms.length === 0) return null
     const byId = new Map(rooms.map((r) => [r.id, r]))
@@ -1041,6 +1038,31 @@ function HomePageContent({
   }, [currentRoomPlan, rooms])
 
   const recommendedPlan = plannerPlan
+
+  // --- User-driven plan edits from the rooms-panel cards ---
+  // These dispatch into the OmnamStore (which recomputes totals/capacity from
+  // the static room catalog and tags `source: 'user'`). Each edit also aborts
+  // any in-flight planner request so a slow stale response cannot overwrite
+  // the guest's just-made edit. The downstream UE5 `selectedRoom` sync (see
+  // below) is purely derived from `currentRoomPlan` and fires automatically.
+  //
+  // `plannerAbortRef` is forward-referenced — `roomPlanner` is created further
+  // down (it depends on `useOmnamStore` which is read at the top of the
+  // component, but the hook itself is colocated with `useJourney` plumbing).
+  // The ref is populated by a useEffect after `roomPlanner` exists.
+  const plannerAbortRef = useRef<() => void>(() => undefined)
+  const handleAddRoomToPlan = useCallback((roomId: string) => {
+    plannerAbortRef.current()
+    omnamDispatch({ type: "EDIT_ROOM_PLAN", edit: { kind: "add", roomId } })
+  }, [omnamDispatch])
+  const handleSetRoomQuantity = useCallback((roomId: string, quantity: number) => {
+    plannerAbortRef.current()
+    omnamDispatch({ type: "EDIT_ROOM_PLAN", edit: { kind: "setQuantity", roomId, quantity } })
+  }, [omnamDispatch])
+  const handleRemoveRoomFromPlan = useCallback((roomId: string) => {
+    plannerAbortRef.current()
+    omnamDispatch({ type: "EDIT_ROOM_PLAN", edit: { kind: "remove", roomId } })
+  }, [omnamDispatch])
   const unitDetailRoom = useMemo<Room | null>(() => {
     const selectedUnitName = ue5.selectedUnit?.roomName?.trim().toLowerCase()
     if (!selectedUnitName) return null
@@ -1097,6 +1119,10 @@ function HomePageContent({
   useEffect(() => {
     requestRoomPlanRef.current = roomPlanner.requestPlan
   }, [roomPlanner.requestPlan])
+  // Forward `roomPlanner.abort` to the user-edit handlers declared above.
+  useEffect(() => {
+    plannerAbortRef.current = roomPlanner.abort
+  }, [roomPlanner.abort])
 
   // Ref view of showRoomsPanel so useJourney can tell whether the rooms panel
   // is currently visible (Trigger 2 gate) without taking it as a reactive dep.
@@ -1283,8 +1309,10 @@ function HomePageContent({
                 hotelName={selectedHotelData?.name ?? ""}
                 rooms={rooms}
                 onClose={closeRoomsPanel}
-                recommendedRoomId={recommendedRoomId}
                 recommendedPlan={recommendedPlan}
+                onAddRoom={handleAddRoomToPlan}
+                onSetRoomQuantity={handleSetRoomQuantity}
+                onRemoveRoom={handleRemoveRoomFromPlan}
               />
             </div>
           </div>

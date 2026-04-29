@@ -39,6 +39,7 @@ import {
 import type { UserProfile, GuestComposition, JourneyStage } from "@/lib/context"
 import { journeyReducer, INITIAL_JOURNEY_STATE } from "@/lib/orchestrator/journey-machine"
 import type { JourneyState, JourneyAction, JourneyEffect } from "@/lib/orchestrator/types"
+import { rooms as ALL_ROOMS } from "@/lib/hotel-data"
 
 // ---------------------------------------------------------------------------
 // AppState — mirror of the old AppContext shape in lib/store.tsx. Kept verbatim
@@ -87,6 +88,13 @@ export type CurrentRoomPlan = {
   rooms: Array<{ roomId: string; quantity: number }>
   totalPerNight: number
   capacity: number
+  /**
+   * Origin of the current plan. `'planner'` means it came from
+   * `/api/room-planner`; `'user'` means the guest edited it through the
+   * RoomsPanel cards. Used to gate the panel-open re-plan trigger so a fresh
+   * planner call doesn't clobber manual edits when the panel is reopened.
+   */
+  source: "planner" | "user"
 }
 
 export type OmnamStoreState = {
@@ -113,7 +121,26 @@ export type AppAction =
   | { type: "ADD_BOOKING"; booking: Omit<AppBooking, "id" | "createdAt"> }
   | { type: "SET_LOADING"; loading: boolean }
 
-export type RoomPlanAction = { type: "SET_ROOM_PLAN"; plan: CurrentRoomPlan }
+export type RoomPlanAction =
+  | { type: "SET_ROOM_PLAN"; plan: CurrentRoomPlan }
+  /**
+   * User-initiated mutation of the current room plan from the RoomsPanel UI.
+   * Three variants:
+   *   • `add` — insert the room with quantity 1 (no-op if already present).
+   *   • `setQuantity` — change the quantity of an existing entry. quantity ≤ 0 removes it.
+   *   • `remove` — drop the entry entirely.
+   * The reducer recomputes `totalPerNight` / `capacity` from the static room
+   * catalog and tags the resulting plan as `source: 'user'`. If the edit
+   * empties the plan, `currentRoomPlan` is reset to `null` (which re-enables
+   * the panel-open re-plan trigger).
+   */
+  | {
+      type: "EDIT_ROOM_PLAN"
+      edit:
+        | { kind: "add"; roomId: string }
+        | { kind: "setQuantity"; roomId: string; quantity: number }
+        | { kind: "remove"; roomId: string }
+    }
 
 /**
  * Imperative override used to replace the pre-Phase-6 direct
@@ -226,7 +253,26 @@ function isJourneyOverride(a: OmnamStoreAction): a is JourneyOverrideAction {
   return a.type === "JOURNEY_STATE_OVERRIDE"
 }
 function isRoomPlanAction(a: OmnamStoreAction): a is RoomPlanAction {
-  return a.type === "SET_ROOM_PLAN"
+  return a.type === "SET_ROOM_PLAN" || a.type === "EDIT_ROOM_PLAN"
+}
+
+// Recompute totals from a list of plan entries by reading the static room
+// catalog. Pure — used by the EDIT_ROOM_PLAN reducer branch. Unknown roomIds
+// (catalog drift) are silently dropped: the planner never invents IDs and the
+// UI only dispatches IDs from the rendered list, so this is defensive.
+function recomputePlanTotals(
+  entries: Array<{ roomId: string; quantity: number }>,
+): { totalPerNight: number; capacity: number } {
+  let totalPerNight = 0
+  let capacity = 0
+  for (const entry of entries) {
+    const room = ALL_ROOMS.find((r) => r.id === entry.roomId)
+    if (!room) continue
+    const occ = parseInt(room.occupancy, 10) || 0
+    totalPerNight += room.price * entry.quantity
+    capacity += occ * entry.quantity
+  }
+  return { totalPerNight, capacity }
 }
 
 // ---------------------------------------------------------------------------
@@ -287,7 +333,61 @@ function omnamRootReducer(
 
   // Room planner (Phase 1) — additive, writes only the plan slice.
   if (isRoomPlanAction(action)) {
-    return { ...state, currentRoomPlan: action.plan }
+    if (action.type === "SET_ROOM_PLAN") {
+      return { ...state, currentRoomPlan: action.plan }
+    }
+
+    // EDIT_ROOM_PLAN — user-driven edit from the RoomsPanel cards.
+    const prevEntries = state.currentRoomPlan?.rooms ?? []
+    let nextEntries: Array<{ roomId: string; quantity: number }>
+
+    // Hoist `action.edit` into a local const inside each case so TypeScript's
+    // discriminant narrowing carries through into the `.map()` / `.filter()`
+    // closures below.
+    const edit = action.edit
+    switch (edit.kind) {
+      case "add": {
+        if (prevEntries.some((e) => e.roomId === edit.roomId)) {
+          // Already in plan — leave alone (caller can use setQuantity to bump).
+          nextEntries = prevEntries
+        } else {
+          nextEntries = [...prevEntries, { roomId: edit.roomId, quantity: 1 }]
+        }
+        break
+      }
+      case "setQuantity": {
+        if (edit.quantity <= 0) {
+          nextEntries = prevEntries.filter((e) => e.roomId !== edit.roomId)
+        } else {
+          nextEntries = prevEntries.map((e) =>
+            e.roomId === edit.roomId ? { ...e, quantity: edit.quantity } : e,
+          )
+        }
+        break
+      }
+      case "remove": {
+        nextEntries = prevEntries.filter((e) => e.roomId !== edit.roomId)
+        break
+      }
+    }
+
+    if (nextEntries.length === 0) {
+      // Empty plan → null. This re-enables the panel-open planner call so a
+      // guest who clears all rooms gets a fresh suggestion next time the
+      // panel reopens.
+      return { ...state, currentRoomPlan: null }
+    }
+
+    const { totalPerNight, capacity } = recomputePlanTotals(nextEntries)
+    return {
+      ...state,
+      currentRoomPlan: {
+        rooms: nextEntries,
+        totalPerNight,
+        capacity,
+        source: "user",
+      },
+    }
   }
 
   // Journey action — delegate to the pure journey reducer. Effects are

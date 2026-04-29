@@ -9,12 +9,16 @@ type RoomsPanelProps = {
   hotelName: string
   rooms: Room[]
   onClose: () => void
-  /** @deprecated Use recommendedPlan instead */
-  recommendedRoomId?: string | null
-  /** Multi-room recommendation plan — drives highlight + quantity badge. The
-   * full catalog is always rendered so the guest can see alternatives; rooms
-   * in the plan get a highlighted border and optional quantity badge. */
+  /** Multi-room plan — drives the suggested-plan summary, the per-card
+   * `selected` state, and the quantity rendered in each selected card. The
+   * full catalog is always rendered so the guest can see alternatives. */
   recommendedPlan?: RoomPlan | null
+  /** Add a room to the current plan with quantity 1. */
+  onAddRoom: (roomId: string) => void
+  /** Change a room's quantity in the current plan. */
+  onSetRoomQuantity: (roomId: string, quantity: number) => void
+  /** Remove a room from the current plan. */
+  onRemoveRoom: (roomId: string) => void
 }
 
 export function RoomsPanel({
@@ -22,25 +26,19 @@ export function RoomsPanel({
   hotelName: _hotelName,
   rooms,
   onClose: _onClose,
-  recommendedRoomId,
   recommendedPlan,
+  onAddRoom,
+  onSetRoomQuantity,
+  onRemoveRoom,
 }: RoomsPanelProps) {
   if (!visible) return null
 
-  // Build a lookup: roomId → quantity from the recommended plan
+  // Build a lookup: roomId → quantity from the current plan.
   const planQuantities = new Map<string, number>()
-  const planRoomIds = new Set<string>()
   if (recommendedPlan) {
     for (const entry of recommendedPlan.entries) {
       planQuantities.set(entry.roomId, entry.quantity)
-      planRoomIds.add(entry.roomId)
     }
-  }
-
-  // A room is "recommended" if it's in the plan, or falls back to legacy recommendedRoomId
-  const isRecommended = (roomId: string) => {
-    if (recommendedPlan) return planRoomIds.has(roomId)
-    return roomId === recommendedRoomId
   }
 
   // Build per-room breakdown for booking.com-style summary
@@ -89,14 +87,21 @@ export function RoomsPanel({
 
             <div className="unit-detail-scroll min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-1">
               {rooms.length > 0 ? (
-                rooms.map((room) => (
-                  <HotelRoomCard
-                    key={room.id}
-                    room={room}
-                    recommended={isRecommended(room.id)}
-                    recommendedQuantity={planQuantities.get(room.id)}
-                  />
-                ))
+                rooms.map((room) => {
+                  const quantity = planQuantities.get(room.id)
+                  const selected = quantity != null
+                  return (
+                    <HotelRoomCard
+                      key={room.id}
+                      room={room}
+                      selected={selected}
+                      quantity={quantity}
+                      onSelect={() => onAddRoom(room.id)}
+                      onQuantityChange={(n) => onSetRoomQuantity(room.id, n)}
+                      onRemove={() => onRemoveRoom(room.id)}
+                    />
+                  )
+                })
               ) : (
                 <p className="text-sm text-white/70">No rooms available for this property.</p>
               )}

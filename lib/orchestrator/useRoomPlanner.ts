@@ -36,6 +36,12 @@ type RoomPlannerResponse = {
 
 export function useRoomPlanner(): {
   requestPlan: (trigger: Trigger, latestMessage?: string) => Promise<void>
+  /**
+   * Cancel any in-flight planner request. Used when the guest manually edits
+   * the plan from the RoomsPanel — a slow planner response from a moment ago
+   * must not overwrite the user's just-made edit.
+   */
+  abort: () => void
   isPlanning: boolean
 } {
   const { state, stateRef, dispatch } = useOmnamStore()
@@ -75,6 +81,21 @@ export function useRoomPlanner(): {
       const hotelSlug = snapshot.app.selectedHotel
       if (!hotelSlug) {
         console.warn("[ROOM_PLANNER] requestPlan called with no selected hotel")
+        return
+      }
+
+      // Skip the panel-open re-plan when the guest has manually curated the
+      // current plan — a fresh planner call would silently clobber their
+      // edits. Voice-driven (user_message) calls still run because the guest
+      // is explicitly asking for a re-plan.
+      if (
+        trigger === "panel_opened" &&
+        snapshot.currentRoomPlan?.source === "user"
+      ) {
+        console.log(
+          "[ROOM_PLANNER_SKIP]",
+          JSON.stringify({ reason: "user-edited-plan", hotelSlug }),
+        )
         return
       }
 
@@ -173,6 +194,7 @@ export function useRoomPlanner(): {
           rooms: data.plan,
           totalPerNight: data.totalPerNight,
           capacity,
+          source: "planner",
         }
 
         dispatch({ type: "SET_ROOM_PLAN", plan: nextPlan })
@@ -219,5 +241,14 @@ export function useRoomPlanner(): {
     [dispatch, stateRef, interrupt, repeat],
   )
 
-  return { requestPlan, isPlanning }
+  const abort = useCallback(() => {
+    const controller = abortRef.current
+    if (controller && !controller.signal.aborted) {
+      console.log("[ROOM_PLANNER_ABORT]", JSON.stringify({ reason: "user-edit" }))
+      controller.abort()
+    }
+    abortRef.current = null
+  }, [])
+
+  return { requestPlan, abort, isPlanning }
 }

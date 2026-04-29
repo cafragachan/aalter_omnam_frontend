@@ -77,6 +77,9 @@ export default function RoomsTestPage() {
                 rooms={rooms}
                 onClose={() => setShowPanel(false)}
                 recommendedPlan={recommendedPlan}
+                onAddRoom={() => undefined}
+                onSetRoomQuantity={() => undefined}
+                onRemoveRoom={() => undefined}
               />
             </div>
           </div>
