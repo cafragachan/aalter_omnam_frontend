@@ -2,6 +2,7 @@ import { ref, get, set, update } from "firebase/database"
 import { database } from "@/lib/firebase"
 import type { UserProfile } from "@/lib/context"
 import type { GuestIntelligence } from "@/lib/guest-intelligence"
+import { rooms as ALL_ROOMS } from "@/lib/hotel-data"
 import type {
   SessionSnapshot,
   PersistedPersonality,
@@ -21,6 +22,16 @@ function unionSet(...arrays: (string[] | undefined)[]): string[] {
     if (arr) for (const v of arr) if (v) s.add(v)
   }
   return Array.from(s)
+}
+
+const ROOM_NAME_BY_ID = new Map(ALL_ROOMS.map((room) => [room.id, room.name]))
+
+function roomExplorationName(room: { roomId: string; roomName?: string }): string {
+  return room.roomName || ROOM_NAME_BY_ID.get(room.roomId) || room.roomId
+}
+
+function normalizeRoomTypeLabels(values: string[] | undefined): string[] | undefined {
+  return values?.map((value) => ROOM_NAME_BY_ID.get(value) ?? value)
 }
 
 function dbPath(userId: string, node: string) {
@@ -82,10 +93,10 @@ export async function mergePreferences(
   const profile = snapshot.profile
 
   // Sort explored items by time spent (descending) for priority ordering
-  const roomNames = gi.roomsExplored
+  const roomNames = [...gi.roomsExplored]
     .sort((a, b) => b.timeSpentMs - a.timeSpentMs)
-    .map((r) => r.roomId)
-  const amenityNames = gi.amenitiesExplored
+    .map(roomExplorationName)
+  const amenityNames = [...gi.amenitiesExplored]
     .sort((a, b) => b.timeSpentMs - a.timeSpentMs)
     .map((a) => a.name)
 
@@ -94,7 +105,7 @@ export async function mergePreferences(
     : existing?.typicalGuestComposition ?? null
 
   const merged: PersistedPreferences = {
-    preferredRoomTypes: unionSet(roomNames, existing?.preferredRoomTypes),
+    preferredRoomTypes: unionSet(roomNames, normalizeRoomTypeLabels(existing?.preferredRoomTypes)),
     preferredDestinations: unionSet(
       profile.destination ? [profile.destination] : [],
       existing?.preferredDestinations,
@@ -232,7 +243,7 @@ export async function mergePreferencesIncremental(
 
   const roomNames = [...gi.roomsExplored]
     .sort((a, b) => b.timeSpentMs - a.timeSpentMs)
-    .map((r) => r.roomId)
+    .map(roomExplorationName)
   const amenityNames = [...gi.amenitiesExplored]
     .sort((a, b) => b.timeSpentMs - a.timeSpentMs)
     .map((a) => a.name)
@@ -242,7 +253,7 @@ export async function mergePreferencesIncremental(
     : existing?.typicalGuestComposition ?? null
 
   const merged: PersistedPreferences = {
-    preferredRoomTypes: unionSet(roomNames, existing?.preferredRoomTypes),
+    preferredRoomTypes: unionSet(roomNames, normalizeRoomTypeLabels(existing?.preferredRoomTypes)),
     preferredDestinations: unionSet(
       profile.destination ? [profile.destination] : [],
       existing?.preferredDestinations,

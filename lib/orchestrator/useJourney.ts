@@ -189,7 +189,7 @@ export function useJourney(options: UseJourneyOptions) {
   const { messages: allMessages } = useHeyGenLiveAvatarContext()
   const { repeat, interrupt, stopListening } = useHeyGenAvatarActions("FULL")
   const guestIntelligence = useGuestIntelligence()
-  const { trackQuestion, trackAmenityExplored, trackRequirement, startRoomTimer, startAmenityTimer, stopExplorationTimer, setBookingOutcome } = guestIntelligence
+  const { trackQuestion, trackRoomExplored, trackAmenityExplored, trackRequirement, startRoomTimer, startAmenityTimer, stopExplorationTimer, setBookingOutcome } = guestIntelligence
 
   // --- Phase 6: unified store ---
   // The internal JourneyState was previously held in a local ref (the third
@@ -212,6 +212,7 @@ export function useJourney(options: UseJourneyOptions) {
   const destinationAnnouncedRef = useRef(false)
   const profileDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const currentRoomIdRef = useRef<string | null>(null)
+  const currentRoomNameRef = useRef<string | null>(null)
 
   // Pre-hotel shortcut: pending Phase 2 timer. Cleared on unmount and on any
   // new shortcut so a rapid second utterance doesn't double-fire.
@@ -798,7 +799,7 @@ export function useJourney(options: UseJourneyOptions) {
     // --- Exploration timer management ---
     if (stage === "ROOM_SELECTED" && (intent.type === "INTERIOR" || intent.type === "EXTERIOR")) {
       if (currentRoomIdRef.current) {
-        startRoomTimer(currentRoomIdRef.current)
+        startRoomTimer(currentRoomIdRef.current, currentRoomNameRef.current ?? undefined)
       }
     }
 
@@ -1811,13 +1812,20 @@ export function useJourney(options: UseJourneyOptions) {
 
   const onUnitSelectedUE5 = useCallback(
     (payload: { roomName: string; description?: string; price?: string; level?: string }) => {
+      const selectedRoomName = payload.roomName.trim()
+      const selectedRoom = rooms.find((r) => r.name.trim().toLowerCase() === selectedRoomName.toLowerCase())
+      currentRoomIdRef.current = selectedRoom?.id ?? null
+      currentRoomNameRef.current = selectedRoom?.name ?? selectedRoomName
+      if (selectedRoom) {
+        trackRoomExplored(selectedRoom.id, selectedRoom.name)
+      }
       dispatch({
         type: "UNIT_SELECTED_UE5",
         roomName: payload.roomName,
       })
       options.onUnitSelected?.(payload.roomName)
     },
-    [dispatch, options],
+    [dispatch, options, rooms, trackRoomExplored],
   )
 
   const onAmenityCardTapped = useCallback(

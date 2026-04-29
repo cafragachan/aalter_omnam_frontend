@@ -10,6 +10,7 @@ import {
   type GuestRecord,
 } from "@/lib/firebase/admin-service"
 import type { SessionSnapshot } from "@/lib/firebase/types"
+import { rooms as ALL_ROOMS } from "@/lib/hotel-data"
 
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
@@ -139,6 +140,18 @@ function outcomeColor(outcome: string): string {
     default:
       return "text-amber-400"
   }
+}
+
+const ROOM_NAME_BY_ID = new Map(ALL_ROOMS.map((room) => [room.id, room.name]))
+
+function roomDisplayName(room: { roomId?: string | null; roomName?: string | null }): string {
+  if (room.roomName) return room.roomName
+  if (room.roomId) return ROOM_NAME_BY_ID.get(room.roomId) ?? room.roomId
+  return "Unknown room"
+}
+
+function normalizeRoomLabels(items: string[] | undefined | null): string[] | undefined | null {
+  return items?.map((item) => ROOM_NAME_BY_ID.get(item) ?? item)
 }
 
 function TagList({ items, emptyText = "None" }: { items: string[] | undefined | null; emptyText?: string }) {
@@ -425,7 +438,7 @@ function PreferencesCard({ preferences }: { preferences: NonNullable<GuestRecord
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="space-y-1.5">
             <p className="text-[11px] uppercase tracking-wider text-white/40">Preferred Room Types</p>
-            <TagList items={preferences.preferredRoomTypes} />
+            <TagList items={normalizeRoomLabels(preferences.preferredRoomTypes)} />
           </div>
           <div className="space-y-1.5">
             <p className="text-[11px] uppercase tracking-wider text-white/40">Preferred Destinations</p>
@@ -869,10 +882,10 @@ function ExplorationBlock({ gi }: { gi: SessionSnapshot["guestIntelligence"] }) 
             <div className="space-y-1">
               {rooms.map((r, i) => (
                 <div
-                  key={`${r.roomId}-${i}`}
+                  key={`${r.roomId}-${r.roomName ?? ""}-${i}`}
                   className="flex items-center justify-between rounded-lg bg-white/5 px-3 py-1.5 text-xs"
                 >
-                  <span className="text-white/80">{r.roomId}</span>
+                  <span className="text-white/80">{roomDisplayName(r)}</span>
                   <span className="text-white/40 tabular-nums">
                     {(r.timeSpentMs / 1000).toFixed(0)}s
                   </span>

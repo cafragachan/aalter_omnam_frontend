@@ -33,6 +33,7 @@ export type BookingOutcome =
 
 export type RoomExploration = {
   roomId: string
+  roomName?: string
   timeSpentMs: number
 }
 
@@ -61,9 +62,9 @@ type GuestIntelligenceContextValue = {
   data: GuestIntelligence
   trackQuestion: (question: string) => void
   trackObjection: (objection: Objection) => void
-  trackRoomExplored: (roomId: string) => void
+  trackRoomExplored: (roomId: string, roomName?: string) => void
   trackAmenityExplored: (name: string) => void
-  startRoomTimer: (roomId: string) => void
+  startRoomTimer: (roomId: string, roomName?: string) => void
   startAmenityTimer: (name: string) => void
   stopExplorationTimer: () => void
   trackRequirement: (requirement: string) => void
@@ -98,6 +99,7 @@ export function GuestIntelligenceProvider({ children }: { children: ReactNode })
   const activeExplorationRef = useRef<{
     type: "room" | "amenity"
     id: string
+    name?: string
     startedAt: number
   } | null>(null)
 
@@ -115,12 +117,16 @@ export function GuestIntelligenceProvider({ children }: { children: ReactNode })
     }))
   }, [])
 
-  const trackRoomExplored = useCallback((roomId: string) => {
+  const trackRoomExplored = useCallback((roomId: string, roomName?: string) => {
     setData((prev) => ({
       ...prev,
       roomsExplored: prev.roomsExplored.some((r) => r.roomId === roomId)
-        ? prev.roomsExplored
-        : [...prev.roomsExplored, { roomId, timeSpentMs: 0 }],
+        ? prev.roomsExplored.map((r) =>
+            r.roomId === roomId && roomName && r.roomName !== roomName
+              ? { ...r, roomName }
+              : r,
+          )
+        : [...prev.roomsExplored, { roomId, roomName: roomName ?? roomId, timeSpentMs: 0 }],
     }))
   }, [])
 
@@ -154,7 +160,13 @@ export function GuestIntelligenceProvider({ children }: { children: ReactNode })
       setData((prev) => ({
         ...prev,
         roomsExplored: prev.roomsExplored.map((r) =>
-          r.roomId === active.id ? { ...r, timeSpentMs: r.timeSpentMs + elapsed } : r,
+          r.roomId === active.id
+            ? {
+                ...r,
+                roomName: active.name ?? r.roomName,
+                timeSpentMs: r.timeSpentMs + elapsed,
+              }
+            : r,
         ),
       }))
     } else {
@@ -167,10 +179,11 @@ export function GuestIntelligenceProvider({ children }: { children: ReactNode })
     }
   }, [])
 
-  const startRoomTimer = useCallback((roomId: string) => {
+  const startRoomTimer = useCallback((roomId: string, roomName?: string) => {
     stopExplorationTimer()
-    activeExplorationRef.current = { type: "room", id: roomId, startedAt: Date.now() }
-  }, [stopExplorationTimer])
+    trackRoomExplored(roomId, roomName)
+    activeExplorationRef.current = { type: "room", id: roomId, name: roomName, startedAt: Date.now() }
+  }, [stopExplorationTimer, trackRoomExplored])
 
   const startAmenityTimer = useCallback((name: string) => {
     stopExplorationTimer()
@@ -186,7 +199,13 @@ export function GuestIntelligenceProvider({ children }: { children: ReactNode })
       return {
         ...data,
         roomsExplored: data.roomsExplored.map((r) =>
-          r.roomId === active.id ? { ...r, timeSpentMs: r.timeSpentMs + elapsed } : r,
+          r.roomId === active.id
+            ? {
+                ...r,
+                roomName: active.name ?? r.roomName,
+                timeSpentMs: r.timeSpentMs + elapsed,
+              }
+            : r,
         ),
       }
     }
