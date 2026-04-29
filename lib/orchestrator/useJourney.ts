@@ -966,12 +966,13 @@ export function useJourney(options: UseJourneyOptions) {
         // next user utterance before this callback's await resolves.
         const fastPathAlreadySpoke = fastPathFiredThisTurnRef.current
 
-        // Full transcript — the LLM is the only writer in PROFILE_COLLECTION
-        // and the earlier slice(-10) caused it to forget fields the guest gave
-        // on the first turn. Token cost is negligible for the short pre-hotel
-        // chat. Cap generously at 80 messages as a runaway guard.
+        // PROFILE_COLLECTION transcript window. The LLM is the only writer in
+        // this stage and an earlier slice(-10) caused it to forget fields the
+        // guest gave on the first turn. 40 messages comfortably covers a
+        // typical onboarding (5–8 user turns × 2 + headroom) while saving
+        // significant TTFT vs. the prior slice(-80).
         const conversationHistory = allMessages
-          .slice(-80)
+          .slice(-40)
           .map((m) => ({
             role: m.sender === MessageSender.AVATAR ? ("avatar" as const) : ("user" as const),
             text: m.message,
@@ -1234,7 +1235,12 @@ export function useJourney(options: UseJourneyOptions) {
           interrupt()
           repeat(result.speech).catch(() => undefined)
         })()
-      }, 700)
+        // Day-1 latency batch: trimmed from 700→400ms. The longer wait was
+        // partly to let AI extraction (800ms debounce + HTTP) complete before
+        // reading derivedProfile via refs, but profile_turn re-extracts from
+        // the transcript so a slightly-stale derivedProfile is harmless. The
+        // AbortController above still supersedes superseded turns.
+      }, 400)
       return
     }
 
@@ -1268,13 +1274,13 @@ export function useJourney(options: UseJourneyOptions) {
     //     reengage over already-expressed intent.
     const isRoomContext = currentState.stage === "HOTEL_EXPLORATION" || currentState.stage === "ROOM_SELECTED"
 
-    // Always send transcript for non-PROFILE_COLLECTION turns. Same 80-message
-    // cap as the PROFILE_COLLECTION branch. Without this the server saw only
-    // stale client state — partySize/guestComposition/travelPurpose frequently
-    // lag behind what the guest actually said because extraction is debounced
-    // across multiple stores.
+    // Non-PROFILE_COLLECTION transcript window. The journey reducer carries
+    // structured state (selected hotel, current stage, sub-state, last
+    // proposal, suggestedNext) so the LLM mostly needs the recent few turns
+    // for conversational context — not the full session. 16 messages keeps
+    // mid-journey corrections ("we're 6 not 8") visible while cutting TTFT.
     const conversationHistory = allMessages
-      .slice(-80)
+      .slice(-16)
       .map((m) => ({
         role: m.sender === MessageSender.AVATAR ? ("avatar" as const) : ("user" as const),
         text: m.message,
@@ -1530,7 +1536,12 @@ export function useJourney(options: UseJourneyOptions) {
         // intent.
         maybeKickRoomPlanner(result.intent.type, latestMessage)
       })()
-    }, 600)
+      // Day-1 latency batch: trimmed from 600→250ms. HeyGen's
+      // USER_TRANSCRIPTION fires per finalized utterance; the AbortController
+      // above already supersedes any second utterance arriving inside the
+      // window, so we can shorten the coalescing wait without risking
+      // duplicate orchestrate calls.
+    }, 250)
 
     // Note: `profile` and `derivedProfile` are intentionally NOT in this deps
     // array. They churn constantly during a session (ProfileSync updates,

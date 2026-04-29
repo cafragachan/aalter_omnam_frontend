@@ -96,7 +96,9 @@
       "Bash(tee /tmp/tsc.log)",
       "Bash(echo \"EXIT:$?\")",
       "Bash(awk 'NR==604' app/api/orchestrate/route.ts)",
-      "Bash(awk 'NR>=913 && NR<=1821' \"c:/Users/CesarFragachan/Documents/Repos/aalter_omnam_frontend/lib/orchestrator/useJourney.ts\")"
+      "Bash(awk 'NR>=913 && NR<=1821' \"c:/Users/CesarFragachan/Documents/Repos/aalter_omnam_frontend/lib/orchestrator/useJourney.ts\")",
+      "Bash(grep -n \"}, 700\\)\\\\|}, 600\\)\\\\|setTimeout.*[0-9]\\\\{3,4\\\\}\\)\" lib/orchestrator/useJourney.ts)",
+      "Bash(echo \"EXIT_CODE=$?\")"
     ]
   }
 }

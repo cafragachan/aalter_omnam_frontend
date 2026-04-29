@@ -74,8 +74,12 @@ const NoActionSpeakSchema = z.object({
 
 const ProfileTurnSchema = z.object({
   // reasoning comes first so the model is forced to think before emitting
-  // structured decisions. We log it but don't route on it.
-  reasoning: z.string().min(1).max(1000),
+  // structured decisions (chain-of-thought). We log it but don't route on it.
+  // Capped at 250 chars (Day-1 latency batch): output tokens dominate
+  // completion time, and the model previously emitted up to ~1000 chars of
+  // reasoning per turn. Shorter CoT preserves the quality benefit while
+  // cutting decode time meaningfully.
+  reasoning: z.string().min(1).max(250),
   profileUpdates: ProfileUpdatesSchema.optional().default({}),
   decision: z.enum(["ask_next", "clarify", "ready"]),
   speech: z.string().min(1).max(500),
@@ -458,7 +462,7 @@ Return exactly one \`profile_turn\` tool call. The transcript above is the sourc
 
 \`profile_turn\` has four fields, produced in this order:
 
-1. \`reasoning\` — REQUIRED. Write this FIRST. 2-5 sentences of internal monologue that answers: (a) what did the guest just say, (b) what does the current state show, (c) what is missing, (d) why is the decision and speech you are about to emit the correct one. This is not spoken aloud — it is a thinking pad. Skipping or hand-waving this field produces bad output.
+1. \`reasoning\` — REQUIRED. Write this FIRST. 1-2 short sentences (max ~250 chars) of internal monologue: what's missing and why your decision and speech are correct. This is a thinking pad, not spoken aloud. Be terse — long reasoning blocks slow the avatar's response without improving quality.
 2. \`profileUpdates\` — any fields you can confidently set from the transcript. Include values even if they're already in the current state (re-assertion is harmless). Omit fields you genuinely cannot determine.
 3. \`decision\` — exactly one of:
    - \`"ready"\` — every required field below is captured. Produce a warm handoff in \`speech\`.
@@ -1008,7 +1012,7 @@ const PROFILE_TURN_TOOL: OpenAITool = {
         reasoning: {
           type: "string",
           description:
-            "Brief internal monologue (2-5 sentences). What did the guest just say? What does the current state show? What's missing? Why is your decision/speech correct? Write this FIRST, before any other field. This is not spoken aloud.",
+            "Brief internal monologue (1-2 short sentences, max ~250 chars). What's missing and why your decision/speech is correct. Write this FIRST, before any other field. Not spoken aloud.",
         },
         profileUpdates: {
           type: "object",
