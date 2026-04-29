@@ -40,7 +40,7 @@ export function HotelRoomCard({
 
   return (
     <Card
-      className={`group w-full gap-0 overflow-hidden rounded-[10px] border bg-white/12 py-0 shadow-[0_20px_48px_-34px_rgba(0,0,0,0.9)] backdrop-blur-xl ${selected ? "border-white/85 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.75),0_20px_48px_-34px_rgba(0,0,0,0.9)]" : "border-white/20"}`}
+      className={`group w-full gap-0 overflow-hidden rounded-[10px] border bg-black/35 py-0 shadow-[0_20px_48px_-30px_rgba(0,0,0,0.95)] backdrop-blur-xl ${selected ? "border-white/85 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.75),0_20px_48px_-30px_rgba(0,0,0,0.95)]" : "border-white/20"}`}
     >
       <div className="flex w-full">
         <div className="relative aspect-[4/3] basis-2/5 overflow-hidden bg-gradient-to-br from-primary/20 to-accent/20">
@@ -91,7 +91,7 @@ export function HotelRoomCard({
                 <SelectContent
                   position="popper"
                   sideOffset={0}
-                  className="min-w-[var(--radix-select-trigger-width)] rounded-md rounded-t-none border-white/30 border-t-transparent bg-slate-900/90 p-0 text-white shadow-[0_18px_45px_-28px_rgba(0,0,0,0.8)] backdrop-blur-2xl data-[side=bottom]:translate-y-0 data-[side=top]:translate-y-0"
+                  className="min-w-[var(--radix-select-trigger-width)] rounded-md rounded-t-none border-white/30 border-t-transparent bg-neutral-900/95 p-0 text-white shadow-[0_18px_45px_-28px_rgba(0,0,0,0.8)] backdrop-blur-2xl data-[side=bottom]:translate-y-0 data-[side=top]:translate-y-0"
                 >
                   {QUANTITY_OPTIONS.map((n) => (
                     <SelectItem
