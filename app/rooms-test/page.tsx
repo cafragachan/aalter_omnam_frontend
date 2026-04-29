@@ -2,8 +2,10 @@
 
 import { useMemo, useState } from "react"
 import { RoomsPanel } from "@/components/panels/RoomsPanel"
+import { UnitDetailPanel } from "@/components/panels/UnitDetailPanel"
 import { Button } from "@/components/ui/button"
 import { getRoomsByHotelId, type RoomPlan } from "@/lib/hotel-data"
+import type { UnitSelectionMessage } from "@/lib/useUE5WebSocket"
 
 const AVATAR_WIDTH = 210
 const ROOMS_PANEL_WIDTH = Math.round(AVATAR_WIDTH * 1.3)
@@ -11,6 +13,8 @@ const ROOMS_PANEL_WIDTH = Math.round(AVATAR_WIDTH * 1.3)
 export default function RoomsTestPage() {
   const rooms = useMemo(() => getRoomsByHotelId("1"), [])
   const [showPanel, setShowPanel] = useState(true)
+  const [showUnitDetail, setShowUnitDetail] = useState(false)
+  const [unitRoomIndex, setUnitRoomIndex] = useState(0)
 
   const recommendedPlan = useMemo<RoomPlan | null>(() => {
     const first = rooms[0]
@@ -44,6 +48,25 @@ export default function RoomsTestPage() {
     }
   }, [rooms])
 
+  const previewRoom = rooms[unitRoomIndex] ?? null
+  const previewUnit = useMemo<UnitSelectionMessage | null>(() => {
+    if (!previewRoom) return null
+    return {
+      type: "unit",
+      roomName: previewRoom.name,
+      description:
+        previewRoom.features?.join(". ") ||
+        `Mock unit for ${previewRoom.name} — used to preview the UnitDetailPanel layout.`,
+      price: String(previewRoom.price),
+      level: String((unitRoomIndex % 5) + 1),
+    }
+  }, [previewRoom, unitRoomIndex])
+
+  const cycleUnit = () => {
+    if (rooms.length === 0) return
+    setUnitRoomIndex((prev) => (prev + 1) % rooms.length)
+  }
+
   return (
     <main className="relative min-h-screen w-full overflow-hidden">
       <video
@@ -57,7 +80,7 @@ export default function RoomsTestPage() {
       <div className="absolute inset-0 bg-black/55" />
 
       <div className="pointer-events-none absolute inset-0 z-10">
-        <div className="pointer-events-auto absolute left-6 top-6 flex items-center gap-3 rounded-xl border border-white/20 bg-black/45 px-3 py-2 text-xs text-white/85 backdrop-blur-md">
+        <div className="pointer-events-auto absolute left-6 top-6 flex flex-wrap items-center gap-3 rounded-xl border border-white/20 bg-black/45 px-3 py-2 text-xs text-white/85 backdrop-blur-md">
           <span>Route: /rooms-test</span>
           <Button
             variant="ghost"
@@ -66,6 +89,22 @@ export default function RoomsTestPage() {
           >
             {showPanel ? "Hide panel" : "Show panel"}
           </Button>
+          <Button
+            variant="ghost"
+            className="h-7 px-2 text-xs text-white hover:bg-white/10"
+            onClick={() => setShowUnitDetail((prev) => !prev)}
+          >
+            {showUnitDetail ? "Hide unit detail" : "Show unit detail"}
+          </Button>
+          {showUnitDetail && rooms.length > 1 && (
+            <Button
+              variant="ghost"
+              className="h-7 px-2 text-xs text-white hover:bg-white/10"
+              onClick={cycleUnit}
+            >
+              Next room ({unitRoomIndex + 1}/{rooms.length})
+            </Button>
+          )}
         </div>
 
         {showPanel && (
@@ -84,6 +123,8 @@ export default function RoomsTestPage() {
             </div>
           </div>
         )}
+
+        {showUnitDetail && <UnitDetailPanel unit={previewUnit} room={previewRoom} />}
       </div>
     </main>
   )

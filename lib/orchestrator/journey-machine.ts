@@ -25,7 +25,7 @@ export const DEFAULT_SPEECH = {
   loungeToHotelIntro: "Welcome to the hotel. You can explore rooms, amenities, or the surrounding area. For ambiance, ask for daylight, sunset, or night, or use the toggle on my right. You can return to the virtual lounge anytime. What would you like to see first?",
   hotelWelcome: "Welcome to the hotel. Would you like to explore rooms, amenities, or the surrounding area? I can also switch to daylight, sunset, or night. To return, simply say 'return to the virtual lounge.'",
   hotelIntroShort: "Welcome to the hotel. Would you like rooms, amenities, or the surrounding area? I can also adjust the lighting.",
-  pullUpRooms: "I'll bring up the rooms now.",
+  pullUpRooms: "I'll bring up the rooms now. You can refine your selection and explore each option by adjusting the quantities on the right.",
   amenitiesAskWhich: "Which amenity would you like: pool, lobby, or conference room?",
   showLocation: "I'll show you the surrounding area.",
   bookPickRoom: "Certainly. Please choose the room you'd like to book.",
