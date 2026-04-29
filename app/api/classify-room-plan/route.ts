@@ -276,7 +276,7 @@ export async function POST(request: Request) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          model: "gpt-4o-mini",
+          model: "gpt-5.4-mini",
           messages: [
             { role: "system", content: systemPrompt },
             { role: "user", content: `User message: "${body.message}"` },

@@ -325,7 +325,7 @@ export async function POST(request: Request) {
           // capacity caps) — well within mini's capability and ~5x faster.
           // Watch [ROOM_PLANNER] log latency + capacityOk rate; if invalid
           // plans become common, fall back to "gpt-4o".
-          model: "gpt-5.4-mini",
+          model: "gpt-4o",
           messages: [
             { role: "system", content: systemPrompt },
             { role: "user", content: latestMessageLine },

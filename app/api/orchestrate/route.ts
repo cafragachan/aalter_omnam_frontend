@@ -79,11 +79,9 @@ const NoActionSpeakSchema = z.object({
 const ProfileTurnSchema = z.object({
   // reasoning comes first so the model is forced to think before emitting
   // structured decisions (chain-of-thought). We log it but don't route on it.
-  // Capped at 250 chars (Day-1 latency batch): output tokens dominate
-  // completion time, and the model previously emitted up to ~1000 chars of
-  // reasoning per turn. Shorter CoT preserves the quality benefit while
-  // cutting decode time meaningfully.
-  reasoning: z.string().min(1).max(250),
+  // Prompted to stay under ~250 chars, but this is diagnostic only. Do not
+  // fail the whole orchestration turn if a model occasionally runs long.
+  reasoning: z.string().min(1).max(1000),
   profileUpdates: ProfileUpdatesSchema.optional().default({}),
   decision: z.enum(["ask_next", "clarify", "ready"]),
   speech: z.string().min(1).max(500),
@@ -1064,6 +1062,12 @@ type MissingField =
   | "travel_purpose"
   | "room_distribution"
 
+type ProfileValidatorOverride =
+  | "ages_mismatch"
+  | "ready_premature"
+  | "ask_next_mismatch"
+  | "ask_next_complete"
+
 function firstMissingField(s: MergedProfileState): MissingField | null {
   if (!s.startDate || !s.endDate) return "dates"
   if (!s.partySize) return "guests"
@@ -1091,10 +1095,39 @@ const CANNED_SPEECH: Record<MissingField, string> = {
   room_distribution: "How would you like to split your guests across rooms?",
 }
 
+function buildMergedProfileState(
+  updates: ProfileUpdatesT,
+  body: RequestBody,
+): MergedProfileState {
+  const mergedGuestComposition = updates.guestComposition
+    ? ({
+        ...(body.guestComposition ?? {}),
+        ...updates.guestComposition,
+      } as MergedProfileState["guestComposition"])
+    : body.guestComposition
+
+  const derivedFromComp =
+    mergedGuestComposition &&
+    typeof mergedGuestComposition.adults === "number" &&
+    typeof mergedGuestComposition.children === "number"
+      ? mergedGuestComposition.adults + mergedGuestComposition.children
+      : undefined
+  const partySize = updates.partySize ?? derivedFromComp ?? body.partySize
+
+  return {
+    startDate: updates.startDate ?? body.startDate,
+    endDate: updates.endDate ?? body.endDate,
+    partySize,
+    guestComposition: mergedGuestComposition,
+    travelPurpose: updates.travelPurpose ?? body.travelPurpose,
+    roomAllocation: updates.roomAllocation ?? body.roomAllocation,
+  }
+}
+
 function validateProfileTurn(
   result: ProfileTurnT,
   body: RequestBody,
-): { result: ProfileTurnT; overridden: "ages_mismatch" | "ready_premature" | null } {
+): { result: ProfileTurnT; overridden: ProfileValidatorOverride | null } {
   console.log("[VALIDATOR] entered", JSON.stringify({
     llmDecision: result.decision,
     llmProfileUpdates: result.profileUpdates,
@@ -1139,40 +1172,11 @@ function validateProfileTurn(
     }
   }
 
+  const merged = buildMergedProfileState(updates, body)
+  const missing = firstMissingField(merged)
+
   // --- Check 2: if decision is "ready", every required field must be set ---
   if (result.decision === "ready") {
-    // Deep-merge guestComposition so a partial update like
-    // { childrenAges: [2, 4] } doesn't wipe adults/children from the body.
-    // Same bug class we already fixed client-side in lib/context.tsx —
-    // the shallow `??` kept reappearing elsewhere because nested objects
-    // need explicit merging.
-    const mergedGuestComposition = updates.guestComposition
-      ? ({
-          ...(body.guestComposition ?? {}),
-          ...updates.guestComposition,
-        } as MergedProfileState["guestComposition"])
-      : body.guestComposition
-
-    // Derive partySize from the MERGED composition (not raw updates), so
-    // adults/children inherited from body still contribute to the total.
-    const derivedFromComp =
-      mergedGuestComposition &&
-      typeof mergedGuestComposition.adults === "number" &&
-      typeof mergedGuestComposition.children === "number"
-        ? mergedGuestComposition.adults + mergedGuestComposition.children
-        : undefined
-    const partySize = updates.partySize ?? derivedFromComp ?? body.partySize
-
-    const merged: MergedProfileState = {
-      startDate: updates.startDate ?? body.startDate,
-      endDate: updates.endDate ?? body.endDate,
-      partySize,
-      guestComposition: mergedGuestComposition,
-      travelPurpose: updates.travelPurpose ?? body.travelPurpose,
-      roomAllocation: updates.roomAllocation ?? body.roomAllocation,
-    }
-
-    const missing = firstMissingField(merged)
     console.log("[VALIDATOR] ready check", JSON.stringify({ merged, missing }))
     if (missing !== null) {
       return {
@@ -1182,6 +1186,46 @@ function validateProfileTurn(
           speech: CANNED_SPEECH[missing],
         },
         overridden: "ready_premature",
+      }
+    }
+  }
+
+  // --- Check 3: if decision is "ask_next", ask the actual next missing field ---
+  //
+  // Smaller/faster models can correctly extract profileUpdates while still
+  // hallucinating stale "missing" fields in speech (e.g. asking for dates
+  // when body.startDate/endDate are already set). The client state + this
+  // turn's updates are authoritative enough to choose the next required
+  // question deterministically.
+  if (result.decision === "ask_next") {
+    console.log("[VALIDATOR] ask_next check", JSON.stringify({
+      merged,
+      missing,
+      llmSpeech: result.speech,
+    }))
+
+    if (missing === null) {
+      return {
+        result: {
+          reasoning: result.reasoning,
+          profileUpdates: updates,
+          decision: "ready",
+          speech: "Wonderful - I have your stay details. Would you like to stop by the virtual lounge first, or go straight to the hotel?",
+        },
+        overridden: "ask_next_complete",
+      }
+    }
+
+    const expectedSpeech = CANNED_SPEECH[missing]
+    if (stripPreamble(result.speech) !== expectedSpeech) {
+      return {
+        result: {
+          reasoning: result.reasoning,
+          profileUpdates: updates,
+          decision: "ask_next",
+          speech: expectedSpeech,
+        },
+        overridden: "ask_next_mismatch",
       }
     }
   }
@@ -1391,7 +1435,7 @@ function buildTurnDecision(args: {
   functionName: string
   result: Record<string, unknown>
   speech: string
-  validatorOverride: "ages_mismatch" | "ready_premature" | null
+  validatorOverride: ProfileValidatorOverride | null
 }): TurnDecisionWire {
   const { functionName, result, speech, validatorOverride } = args
   const reasoning = typeof result.reasoning === "string" ? result.reasoning : undefined
@@ -1609,7 +1653,7 @@ export async function POST(request: Request) {
 
       // Build response
       let result = validated.data as Record<string, unknown>
-      let validatorOverride: "ages_mismatch" | "ready_premature" | null = null
+      let validatorOverride: ProfileValidatorOverride | null = null
 
       // Server-side gate for profile_turn — see validateProfileTurn. Runs
       // BEFORE strip / response construction so any override flows through

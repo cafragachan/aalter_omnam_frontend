@@ -16,7 +16,7 @@ import { evaluateFastPath, CLIENT_CANNED_SPEECH, type ProfileAwaiting } from "./
 import { useIdleDetection } from "./idle-detection"
 import type { JourneyState, JourneyAction, JourneyEffect, AmenityRef } from "./types"
 import { renderSpeech } from "./speech-renderer"
-import { logTurn, logEffect, type EffectEntry } from "@/lib/debug"
+import { logTurn, logEffect, logLatency, type EffectEntry } from "@/lib/debug"
 import {
   getRecommendedAmenity,
   type Amenity,
@@ -186,7 +186,7 @@ export function useJourney(options: UseJourneyOptions) {
   const { profile, journeyStage, setJourneyStage, updateProfile } = useUserProfileContext()
   const { userProfile: authIdentity, returningUserData } = useAuth()
   const { profile: derivedProfile, isExtractionPending, userMessages } = useHeyGenUserProfile()
-  const { messages: allMessages, isAvatarTalking } = useHeyGenLiveAvatarContext()
+  const { messages: allMessages, isAvatarTalking, lastUserSpeakEndedAtRef } = useHeyGenLiveAvatarContext()
   const { repeat, interrupt, stopListening } = useHeyGenAvatarActions("FULL")
   const guestIntelligence = useGuestIntelligence()
   const { trackQuestion, trackRoomExplored, trackAmenityExplored, trackRequirement, startRoomTimer, startAmenityTimer, stopExplorationTimer, setBookingOutcome } = guestIntelligence
@@ -239,16 +239,24 @@ export function useJourney(options: UseJourneyOptions) {
     t1?: number
     t2?: number
     t3?: number
+    userSpeakEndedAt?: number
     message: string
     stage: string
   }
   const turnTimingRef = useRef<TurnTiming | null>(null)
   const markTurnTiming = useCallback(
-    (mark: "t0" | "t1" | "t2" | "t3", info?: { message?: string; stage?: string }) => {
+    (mark: "t0" | "t1" | "t2" | "t3", info?: { message?: string; stage?: string; userSpeakEndedAt?: number | null }) => {
       const now = performance.now()
       if (mark === "t0") {
+        const userSpeakEndedAt =
+          typeof info?.userSpeakEndedAt === "number" &&
+          info.userSpeakEndedAt <= now &&
+          now - info.userSpeakEndedAt < 30_000
+            ? info.userSpeakEndedAt
+            : undefined
         turnTimingRef.current = {
           t0: now,
+          userSpeakEndedAt,
           message: info?.message ?? "",
           stage: info?.stage ?? "",
         }
@@ -907,23 +915,24 @@ export function useJourney(options: UseJourneyOptions) {
     const t5 = performance.now()
     const round = (n: number | undefined) =>
       n === undefined ? null : Math.round(n - t.t0)
-    console.log(
-      "[TURN-LATENCY]",
-      JSON.stringify({
-        stage: t.stage,
-        msg: t.message.slice(0, 60),
-        totalMs: Math.round(t5 - t.t0),
-        debounceMs: round(t.t1),
-        fetchStartMs: round(t.t2),
-        fetchEndMs: round(t.t3),
-        orchestrateMs:
-          t.t2 !== undefined && t.t3 !== undefined
-            ? Math.round(t.t3 - t.t2)
-            : null,
-        postOrchestrateToAudioMs:
-          t.t3 !== undefined ? Math.round(t5 - t.t3) : null,
-      }),
-    )
+    logLatency({
+      stage: t.stage,
+      msg: t.message.slice(0, 60),
+      totalMs: Math.round(t5 - t.t0),
+      totalFromSpeechEndMs:
+        t.userSpeakEndedAt !== undefined ? Math.round(t5 - t.userSpeakEndedAt) : null,
+      sttFinalizationMs:
+        t.userSpeakEndedAt !== undefined ? Math.round(t.t0 - t.userSpeakEndedAt) : null,
+      debounceMs: round(t.t1),
+      fetchStartMs: round(t.t2),
+      fetchEndMs: round(t.t3),
+      orchestrateMs:
+        t.t2 !== undefined && t.t3 !== undefined
+          ? Math.round(t.t3 - t.t2)
+          : null,
+      postOrchestrateToAudioMs:
+        t.t3 !== undefined ? Math.round(t5 - t.t3) : null,
+    })
     turnTimingRef.current = null
   }, [isAvatarTalking])
 
@@ -940,7 +949,11 @@ export function useJourney(options: UseJourneyOptions) {
     lastMessageCountRef.current = userMessages.length
 
     const latestMessage = userMessages[userMessages.length - 1]?.message ?? ""
-    markTurnTiming("t0", { message: latestMessage, stage: stateRef.current.stage })
+    markTurnTiming("t0", {
+      message: latestMessage,
+      stage: stateRef.current.stage,
+      userSpeakEndedAt: lastUserSpeakEndedAtRef.current,
+    })
 
     // Track questions for GuestIntelligence
     if (latestMessage.includes("?")) {
@@ -1811,7 +1824,7 @@ export function useJourney(options: UseJourneyOptions) {
     // previous run, silently killing legitimate in-flight orchestrate calls.
     // We read the freshest profile/derivedProfile via profileRef.current /
     // derivedProfileRef.current at call time inside the IIFE instead.
-  }, [userMessages, dispatch, trackQuestion, trackRequirement, processIntent, rooms, interrupt, repeat, maybeKickRoomPlanner])
+  }, [userMessages, dispatch, trackQuestion, trackRequirement, processIntent, rooms, interrupt, repeat, maybeKickRoomPlanner, lastUserSpeakEndedAtRef])
 
   // --- Abort in-flight PROFILE_COLLECTION orchestrate on stage transition ---
   // When the journey leaves PROFILE_COLLECTION (e.g., FORCE_ADVANCE fired),

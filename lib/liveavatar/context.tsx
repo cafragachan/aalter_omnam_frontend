@@ -1,6 +1,6 @@
 ﻿"use client"
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react"
 import {
   AgentEventsEnum,
   ConnectionQuality,
@@ -21,6 +21,8 @@ type LiveAvatarContextProps = {
   connectionQuality: ConnectionQuality
   isUserTalking: boolean
   isAvatarTalking: boolean
+  /** performance.now() timestamp for the latest HeyGen USER_SPEAK_ENDED event. */
+  lastUserSpeakEndedAtRef: RefObject<number | null>
   messages: LiveAvatarSessionMessage[]
   /**
    * Manually append a message to the transcript. Used by chat mode to inject
@@ -72,6 +74,7 @@ export function LiveAvatarContextProvider({
   const [voiceChatState, setVoiceChatState] = useState<VoiceChatState>(
     sessionRef.current?.voiceChat.state ?? VoiceChatState.INACTIVE,
   )
+  const lastUserSpeakEndedAtRef = useRef<number | null>(null)
   const [isUserTalking, setIsUserTalking] = useState(false)
   const [isAvatarTalking, setIsAvatarTalking] = useState(false)
   const [messages, setMessages] = useState<LiveAvatarSessionMessage[]>(
@@ -125,7 +128,10 @@ export function LiveAvatarContextProvider({
     if (!session) return
 
     const handleUserStart = () => setIsUserTalking(true)
-    const handleUserEnd = () => setIsUserTalking(false)
+    const handleUserEnd = () => {
+      lastUserSpeakEndedAtRef.current = performance.now()
+      setIsUserTalking(false)
+    }
     const handleAvatarStart = () => setIsAvatarTalking(true)
     const handleAvatarEnd = () => setIsAvatarTalking(false)
 
@@ -188,10 +194,11 @@ export function LiveAvatarContextProvider({
       connectionQuality,
       isUserTalking,
       isAvatarTalking,
+      lastUserSpeakEndedAtRef,
       messages,
       appendMessage,
     }),
-    [appendMessage, connectionQuality, isAvatarTalking, isMuted, isStreamReady, isUserTalking, messages, sessionState, voiceChatState],
+    [appendMessage, connectionQuality, isAvatarTalking, isMuted, isStreamReady, isUserTalking, lastUserSpeakEndedAtRef, messages, sessionState, voiceChatState],
   )
 
   return <LiveAvatarContext.Provider value={value}>{children}</LiveAvatarContext.Provider>

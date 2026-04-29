@@ -16,7 +16,7 @@ The user talks to an AI avatar concierge (Ava) who guides them through a multi-s
 - **Styling**: Tailwind CSS v4, glassmorphism design system
 - **AI Avatar**: HeyGen LiveAvatar SDK (`@heygen/liveavatar-web-sdk`) — voice chat, TTS, green-screen chroma-key canvas rendering
 - **3D Backend**: UE5 pixel stream via iframe + WebSocket signalling on `ws://localhost:7788`
-- **NLP**: OpenAI `gpt-4o-mini` via `/api/orchestrate` — unified decider for intent classification, profile extraction, and speech generation every turn
+- **NLP**: OpenAI `gpt-5.4-mini` via `/api/orchestrate` — unified decider for intent classification, profile extraction, and speech generation every turn
 - **UI Components**: shadcn/ui library in `components/ui/`
 
 ## Architecture Overview
