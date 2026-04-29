@@ -11,47 +11,47 @@ import type { JourneyState, JourneyAction, JourneyResult, JourneyEffect, Amenity
 // TODO(phase-7) comment and will be handled by the speech-renderer.
 // ---------------------------------------------------------------------------
 export const DEFAULT_SPEECH = {
-  downloadData: "Of course, the download should happen automatically on your browser. Is there anything else you'd like me to assist with?",
-  loungeConfirm: "Head back to the virtual lounge? You'll leave the hotel for now.",
-  endConfirm: "It was lovely having you. Are you sure you'd like to end your experience?",
-  endFarewell: "Thank you for visiting. Good Bye.",
-  endCancel: "Of course, I'm still here for you.",
-  loungeWelcomeBack: "Welcome back to the lounge. Let me know when you'd like to revisit.",
-  loungeCancel: "Of course, let's continue where we left off. How can I help?",
-  profileReadyWelcome: "Wonderful! Before we head to the hotel, would you like to explore our virtual lounge? We have some exclusive artwork and unique retail offerings on display.",
-  destinationPicked: (hotelName: string) => `Excellent — the ${hotelName}. Explore the lounge first, or head straight to the hotel?`,
-  loungeExploreAck: "Take your time. Let me know when you're ready to head over.",
-  loungeToHotelIntro: "Let me take you to the hotel. You can explore available rooms, check out the amenities, or wander the surrounding area. If you'd like to see it in a different lighting — daylight, sunset, or at night — just say the word. And whenever you'd like to return to the virtual lounge, just let me know. What would you like to see first?",
-  hotelWelcome: "Welcome to the hotel. Rooms, amenities, or the grounds — what would you like to see? I can also switch the lighting to daylight, sunset, or night whenever you'd like. And whenever you're ready to head back, just say 'return to the virtual lounge.'",
-  hotelIntroShort: "Let me take you to the hotel. Rooms, amenities, or the grounds — what would you like to see? I can also change the lighting if you'd like a different mood.",
-  pullUpRooms: "Let me pull up the rooms.",
-  amenitiesAskWhich: "Which one — pool, lobby, or conference room?",
-  showLocation: "Let me show you the surrounding area.",
-  bookPickRoom: "Of course — pick the room you'd like to book.",
-  otherOptionsRooms: "Let me pull up the available rooms.",
+  downloadData: "Your download should start automatically. May I help with anything else?",
+  loungeConfirm: "Return to the virtual lounge? You'll leave the hotel for now.",
+  endConfirm: "It was a pleasure hosting you. Would you like to end your experience now?",
+  endFarewell: "Thank you for visiting. Goodbye.",
+  endCancel: "Certainly. I'm here whenever you need me.",
+  loungeWelcomeBack: "Welcome back to the virtual lounge. Say the word when you'd like to revisit the hotel.",
+  loungeCancel: "Of course. We'll continue from here. How may I assist?",
+  profileReadyWelcome: "Wonderful. Before we head to the hotel, would you like to explore the virtual lounge and its curated art and retail pieces?",
+  destinationPicked: (hotelName: string) => `Excellent choice: ${hotelName}. Would you like to explore the lounge first or go straight to the hotel?`,
+  loungeExploreAck: "Take your time in the lounge. Tell me when you're ready for the hotel.",
+  loungeToHotelIntro: "Welcome to the hotel. You can explore rooms, amenities, or the surrounding area. For ambiance, ask for daylight, sunset, or night, or use the toggle on my right. You can return to the virtual lounge anytime. What would you like to see first?",
+  hotelWelcome: "Welcome to the hotel. Would you like to explore rooms, amenities, or the surrounding area? I can also switch to daylight, sunset, or night. To return, simply say 'return to the virtual lounge.'",
+  hotelIntroShort: "Welcome to the hotel. Would you like rooms, amenities, or the surrounding area? I can also adjust the lighting.",
+  pullUpRooms: "I'll bring up the rooms now.",
+  amenitiesAskWhich: "Which amenity would you like: pool, lobby, or conference room?",
+  showLocation: "I'll show you the surrounding area.",
+  bookPickRoom: "Certainly. Please choose the room you'd like to book.",
+  otherOptionsRooms: "I'll show you the available room options.",
   hotelBackOverview: "Back to the overview. Rooms, amenities, or the area?",
-  unknownResponse: "Unfortunately I can't help with that at this moment. Let me know if I can assist you with anything else regarding your stay.",
-  unitPicked: (roomName: string) => `Nice — the ${roomName}. Would you like to explore this room?`,
-  unitExploreDeclined: "Would you like to book this room, choose another one, or explore other options?",
-  unitDeclineClarify: "Sure — would you like to book this one, see another room, or look at other options?",
-  openingBookingPage: "Opening the booking page now. Anything else I can help with?",
+  unknownResponse: "I can't help with that right now, but I can assist with anything related to your stay.",
+  unitPicked: (roomName: string) => `Excellent choice: ${roomName}. Would you like to explore this room?`,
+  unitExploreDeclined: "Would you like to book this room, view another, or explore other options?",
+  unitDeclineClarify: "Certainly. Would you like to book this room, view another, or explore other options?",
+  openingBookingPage: "Opening the booking page now. May I assist with anything else?",
   tapGreenUnitFirst: "Tap a highlighted green unit first.",
-  steppingInside: "Stepping inside — take a look around. Say the word when you're ready to book.",
-  exteriorView: "The exterior view. Book this one, or see something else?",
-  backToOtherRooms: "Sure, let me show you the other available rooms.",
-  backToHotelOverview: "No problem, taking you back to the hotel overview.",
-  amenityBackToHotel: "Back to the hotel. What would you like to explore next?",
-  amenitySuggestFallback: (suggestedNext: string) => `Sure! Let me take you to the ${suggestedNext}. Just a moment.`,
-  amenityFallbackPrompt: "Would you like to see the rooms, or explore another area of the hotel?",
-  amenityNextNoWorries: "No worries. Would you like to check out the rooms, or see the surrounding area instead?",
+  steppingInside: "Taking you inside now. Have a look around, and tell me when you're ready to book.",
+  exteriorView: "Here's the exterior view. Would you like to book this one or view something else?",
+  backToOtherRooms: "Certainly. I'll show you the other available rooms.",
+  backToHotelOverview: "Of course. Returning to the hotel overview now.",
+  amenityBackToHotel: "Back at the hotel overview. What would you like to explore next?",
+  amenitySuggestFallback: (suggestedNext: string) => `Certainly. I'll take you to the ${suggestedNext} now.`,
+  amenityFallbackPrompt: "Would you like to see rooms, or explore another part of the hotel?",
+  amenityNextNoWorries: "No problem. Would you prefer rooms or the surrounding area next?",
   amenityAskBack: "Shall we head back to the hotel overview?",
-  amenityBookNudge: "Great to hear you'd like to book! Let me show you the rooms first so you can pick your favorite.",
-  amenityPickRooms: "Good call — let me show you the rooms.",
-  lightingAskWhich: "Happy to change the lighting. Would you like to see it in daylight, sunset, or at night?",
+  amenityBookNudge: "Excellent. I'll show you the rooms so you can choose your preferred option.",
+  amenityPickRooms: "Great choice. I'll show you the rooms.",
+  lightingAskWhich: "Certainly. Would you like daylight, sunset, or night?",
   lightingSet: (mode: "daylight" | "sunset" | "night") => {
     if (mode === "daylight") return "Switching to daylight."
     if (mode === "sunset") return "Golden hour it is."
-    return "Nightfall — enjoy."
+    return "Nightfall - enjoy."
   },
 } as const
 
@@ -151,7 +151,7 @@ export function buildAmenityListingSpeech(
   recommendedAmenityName?: string,
 ): { text: string; suggestedName?: string } {
   if (allAmenities.length === 0) {
-    return { text: "This property doesn't have any specific amenity spaces to tour right now. Shall we look at the rooms instead?" }
+    return { text: "There are no amenity tours available right now. Would you like to view the rooms instead?" }
   }
 
   const exploredSet = new Set(visitedAmenities)
@@ -161,7 +161,7 @@ export function buildAmenityListingSpeech(
   // All visited
   if (remaining.length === 0) {
     const visitedText = visited.map((a) => `the ${a.name.toLowerCase()}`).join(", ")
-    return { text: `You've seen ${visitedText}. Revisit one, or look at rooms?` }
+    return { text: `You've seen ${visitedText}. Would you like to revisit one or view rooms?` }
   }
 
   // Some visited — mention visited, offer remaining
@@ -172,7 +172,7 @@ export function buildAmenityListingSpeech(
       ? `the ${remaining[0].name.toLowerCase()}`
       : remaining.map((a) => `the ${a.name.toLowerCase()}`).join(" and ")
     return {
-      text: `We've seen ${visitedText}. Next: ${remainingText}?`,
+      text: `We've seen ${visitedText}. Next, would you like ${remainingText}?`,
       suggestedName,
     }
   }
@@ -187,7 +187,7 @@ export function buildAmenityListingSpeech(
         ? `a ${others[0].name.toLowerCase()}`
         : others.map((a) => `a ${a.name.toLowerCase()}`).join(" and ")
       return {
-        text: `Since you're here ${narrative}, I'd start with the ${recommended.name.toLowerCase()}. Or we have ${othersText}. Your pick?`,
+        text: `Since you're here ${narrative}, I'd recommend the ${recommended.name.toLowerCase()}. We also have ${othersText}. Which would you prefer?`,
         suggestedName: recommended.name,
       }
     }
@@ -200,7 +200,7 @@ export function buildAmenityListingSpeech(
     ? `a ${names[0].toLowerCase()}`
     : names.slice(0, -1).map((n) => `a ${n.toLowerCase()}`).join(", ") + ` and a ${names[names.length - 1].toLowerCase()}`
   return {
-    text: `This property has ${listText}. Which would you like to visit?`,
+    text: `This property offers ${listText}. Which would you like to visit first?`,
     suggestedName,
   }
 }

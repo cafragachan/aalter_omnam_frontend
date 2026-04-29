@@ -7,6 +7,7 @@ import { Mic, MicOff, Lock, Mail, LogIn, User, Phone, Calendar, UserPlus, ArrowL
 import { DebugHud, SandboxSessionPlayer, useDebugLogger } from "@/components/liveavatar/SandboxLiveAvatar"
 import { ModeToggle } from "@/components/liveavatar/ModeToggle"
 import { ChatPanel } from "@/components/chat/ChatPanel"
+import { SunToggle, type SunState } from "@/components/SunToggle"
 import { InputModeProvider, useInputMode } from "@/lib/input-mode/context"
 import { LiveAvatarContextProvider, useLiveAvatarContext } from "@/lib/liveavatar"
 import { ProfileSync } from "@/components/ProfileSync"
@@ -1158,6 +1159,12 @@ function HomePageContent({
   // Data is written incrementally throughout the session, so closing the tab only
   // needs to flush the endedAt timestamp and any pending debounced profile writes.
 
+  // --- Reset sun position when hotel changes ---
+  useEffect(() => {
+    if (!selectedHotel) return
+    ue5.changeSunPosition("daylight")
+  }, [selectedHotel]) // eslint-disable-line react-hooks/exhaustive-deps
+
   // --- Hotel selection handler ---
   const handleSelectHotel = useCallback((slug: string) => {
     const hotel = hotels.find((h) => h.slug === slug)
@@ -1237,6 +1244,11 @@ function HomePageContent({
     ue5.resetToDefault()
   }, [ue5])
 
+  // --- Sun state handler ---
+  const handleSunStateChange = useCallback((value: SunState) => {
+    ue5.changeSunPosition(value)
+  }, [ue5])
+
   const showDestinationsOverlay = journeyStage === "DESTINATION_SELECT"
   const avatarThumbnailWidth = 210
   const avatarThumbnailHeight = Math.round(avatarThumbnailWidth * 1.25)
@@ -1310,6 +1322,9 @@ function HomePageContent({
 
               {/* Right body - buttons */}
               <div className="flex flex-col items-center justify-end gap-3 py-4 px-[15px] min-w-[70px]">
+                {selectedHotel && journeyStage === "HOTEL_EXPLORATION" && (
+                  <SunToggle value={ue5.sunState} onChange={handleSunStateChange} />
+                )}
                 {!isChatMode && <MicToggle />}
                 <ModeToggle />
               </div>

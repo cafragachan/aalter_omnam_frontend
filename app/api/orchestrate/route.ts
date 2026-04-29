@@ -523,7 +523,7 @@ Guest just said "Between 12 and 16" when there are 4 children:
 
 Profile only has partySize + guestComposition; dates, travel purpose, room allocation are all missing:
 - WRONG: \`{ decision: "ready", speech: "Lovely, shall we stop by the virtual lounge first?" }\` (the OTHER required fields are still missing — decision must be "ask_next")
-- RIGHT: \`{ decision: "ask_next", speech: "When are you thinking of traveling?" }\`
+- RIGHT: \`{ decision: "ask_next", speech: "What are your travel dates?" }\`
 
 Guest said "mid-June":
 - WRONG: \`{ profileUpdates: { startDate: "2026-06-15", endDate: "2026-06-20" }, decision: "ask_next", ... }\` (inventing a specific range)
@@ -531,7 +531,7 @@ Guest said "mid-June":
 
 Guest said "8 guests" and "4 are children":
 - WRONG: decision "ready" (travelPurpose, dates, roomAllocation still missing)
-- RIGHT: \`{ profileUpdates: { partySize: 8, guestComposition: { adults: 4, children: 4 } }, decision: "ask_next", speech: "When are you thinking of traveling?" }\` (or ask for ages first, both acceptable)
+- RIGHT: \`{ profileUpdates: { partySize: 8, guestComposition: { adults: 4, children: 4 } }, decision: "ask_next", speech: "What are your travel dates?" }\` (or ask for ages first, both acceptable)
 
 ### Ask-next style (when decision = "ask_next")
 
@@ -741,7 +741,7 @@ Classify the user's intent into exactly one of these categories:
 - **BOOK**: User wants to book, reserve, or proceed with a reservation.
 - **AFFIRMATIVE**: User agrees, says yes, confirms, or accepts a proposal.
 - **NEGATIVE**: User declines, says no, refuses, or rejects a proposal.
-- **TRAVEL_TO_HOTEL**: User wants to proceed to the hotel building itself (NOT a specific room or amenity within it). Typically used when leaving the lounge. Examples: "I'm ready", "let's go", "take me to the hotel", "let's continue". If the user says "take me to the [specific amenity]" (e.g., "take me to the pool"), that is AMENITY_BY_NAME, not TRAVEL_TO_HOTEL. **Hotel-intro speech rule**: whenever your \`navigate_and_speak\` emits TRAVEL_TO_HOTEL, the guest is about to enter the hotel for the first time this session — your speech MUST briefly cover (a) what's available to explore (rooms, amenities, grounds), (b) that they can switch the lighting to daylight, sunset, or night any time, and (c) that they can return to the virtual lounge whenever they want. One warm paragraph — don't bullet-list.
+- **TRAVEL_TO_HOTEL**: User wants to proceed to the hotel building itself (NOT a specific room or amenity within it). Typically used when leaving the lounge. Examples: "I'm ready", "let's go", "take me to the hotel", "let's continue". If the user says "take me to the [specific amenity]" (e.g., "take me to the pool"), that is AMENITY_BY_NAME, not TRAVEL_TO_HOTEL. **Hotel-intro speech rule**: whenever your \`navigate_and_speak\` emits TRAVEL_TO_HOTEL, the guest is about to enter the hotel for the first time this session — your speech MUST briefly cover (a) what's available to explore (rooms, amenities, grounds), (b) that they can switch the lighting to daylight, sunset, or night any time, including by using the toggle on your right, and (c) that they can return to the virtual lounge whenever they want. One warm paragraph — don't bullet-list.
 - **OTHER_OPTIONS**: User wants to see other options, alternatives, or something different.
 - **ROOM_TOGETHER**: User wants guests to share rooms or stay together.
 - **ROOM_SEPARATE**: User wants separate / individual rooms for guests.
@@ -877,12 +877,12 @@ function firstMissingField(s: MergedProfileState): MissingField | null {
 }
 
 const CANNED_SPEECH: Record<MissingField, string> = {
-  dates: "When are you thinking of traveling?",
-  guests: "How many will be joining you?",
-  guest_breakdown: "Will it be all adults, or are there any little ones in your group?",
-  children_ages: "And how old are the little ones?",
+  dates: "What are your travel dates?",
+  guests: "How many guests are traveling?",
+  guest_breakdown: "How many adults and children are in your group?",
+  children_ages: "What are the children's ages?",
   travel_purpose: "What brings you to the area?",
-  room_distribution: "How would you like to split the guests across rooms?",
+  room_distribution: "How would you like to split your guests across rooms?",
 }
 
 function validateProfileTurn(

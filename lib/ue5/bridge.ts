@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useUE5WebSocket, type UE5IncomingMessage, type UnitSelectionMessage } from "@/lib/useUE5WebSocket"
+import type { SunState } from "@/components/SunToggle"
 
 // ---------------------------------------------------------------------------
 // UE5 Bridge — high-level wrapper around the raw WebSocket
@@ -18,6 +19,7 @@ export type UE5BridgeState = {
   showFadeOverlay: boolean
   isFadeOpaque: boolean
   selectedUnit: UnitSelectionMessage | null
+  sunState: SunState
 }
 
 export type UE5BridgeOptions = {
@@ -50,6 +52,7 @@ export function useUE5Bridge(opts: UE5BridgeOptions = {}) {
 
   // --- Unit selection state ---
   const [selectedUnit, setSelectedUnit] = useState<UnitSelectionMessage | null>(null)
+  const [sunState, setSunState] = useState<SunState>("daylight")
 
   const clearFadeTimeouts = useCallback(() => {
     fadeTimeoutsRef.current.forEach((id) => window.clearTimeout(id))
@@ -134,6 +137,11 @@ export function useUE5Bridge(opts: UE5BridgeOptions = {}) {
     sendCommand("communal", amenityId)
   }, [sendCommand])
 
+  const changeSunPosition = useCallback((state: SunState) => {
+    setSunState(state)
+    sendCommand("sunPosition", state)
+  }, [sendCommand])
+
   const startTest = useCallback(() => {
     sendCommand("startTEST", "startTEST")
   }, [sendCommand])
@@ -148,6 +156,7 @@ export function useUE5Bridge(opts: UE5BridgeOptions = {}) {
     showFadeOverlay,
     isFadeOpaque,
     selectedUnit,
+    sunState,
 
     // Commands
     sendCommand,
@@ -158,6 +167,7 @@ export function useUE5Bridge(opts: UE5BridgeOptions = {}) {
     selectRoom,
     viewUnit,
     navigateToAmenity,
+    changeSunPosition,
     startTest,
     clearSelectedUnit,
 

@@ -32,12 +32,12 @@ export type FastPathField =
 
 /** Mirror of the server-side CANNED_SPEECH map. Keep verbatim. */
 export const CLIENT_CANNED_SPEECH: Record<FastPathField, string> = {
-  dates: "When are you thinking of traveling?",
-  guests: "How many will be joining you?",
-  guest_breakdown: "Will it be all adults, or are there any little ones in your group?",
-  children_ages: "And how old are the little ones?",
+  dates: "What are your travel dates?",
+  guests: "How many guests are traveling?",
+  guest_breakdown: "How many adults and children are in your group?",
+  children_ages: "What are the children's ages?",
   travel_purpose: "What brings you to the area?",
-  room_distribution: "How would you like to split the guests across rooms?",
+  room_distribution: "How would you like to split your guests across rooms?",
 }
 
 const FAST_PATH_FIELDS: ReadonlySet<FastPathField> = new Set<FastPathField>([
