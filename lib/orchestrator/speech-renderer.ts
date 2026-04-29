@@ -116,11 +116,13 @@ export function renderSpeech(key: SpeechKey, args?: SpeechArgs): string {
       const visitedAmenities = (args?.visitedAmenities as string[] | undefined) ?? []
       const travelPurpose = args?.travelPurpose as string | undefined
       const recommendedAmenityName = args?.recommendedAmenityName as string | undefined
+      const describedOnlyAmenityNames = args?.describedOnlyAmenityNames as string[] | undefined
       return buildAmenityListingSpeech(
         allAmenities,
         visitedAmenities,
         travelPurpose,
         recommendedAmenityName,
+        describedOnlyAmenityNames,
       ).text
     }
 

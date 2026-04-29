@@ -2,6 +2,10 @@ import { z } from "zod"
 import { SALES_PERSONA, buildGuestIntelligenceBlock } from "@/lib/avatar-context-builder"
 import type { UserDBProfile } from "@/lib/auth-context"
 import type {
+  HotelCatalogAddress,
+  PackedAmenity,
+} from "@/lib/hotel-data"
+import type {
   PersistedPersonality,
   PersistedPreferences,
   PersistedLoyalty,
@@ -132,8 +136,40 @@ interface RequestBody {
    * AMENITY_BY_NAME intent enum (which lists pool/spa/restaurant/gym/etc as
    * classification categories — not as guarantees that the property has
    * them).
+   *
+   * NOTE: Active amenities only. Superseded by `hotelAmenitiesActive` for
+   * richer grounding; kept for backward compatibility.
    */
   hotelAmenityNames?: string[]
+  /**
+   * Hotel-level info for the prompt's hotel-overview block. Renders only on
+   * non-PROFILE_COLLECTION turns so the LLM can answer property questions
+   * ("tell me about this place", "where is it?") with grounded facts.
+   */
+  hotelInfo?: {
+    name: string
+    location: string
+    tagline?: string
+    description?: string
+    highlights?: string[]
+    address?: HotelCatalogAddress
+    tags?: string[]
+    websiteUrl?: string
+  }
+  /**
+   * Active amenities — visitable in the live tour. Each carries the rich
+   * fields the prompt's amenities-block renders (category, shortDescription,
+   * highlights, hours). The full `description` is also included but ONLY
+   * rendered for the focused amenity (mirrors the rooms / selectedRoom
+   * pattern: condensed list always, full block only on focus).
+   */
+  hotelAmenitiesActive?: PackedAmenity[]
+  /**
+   * Amenities that exist at the property but aren't part of the live tour
+   * (no UE5 scene). The prompt instructs the LLM to describe them when
+   * asked but never to invoke a navigation tool on them.
+   */
+  hotelAmenitiesDescribedOnly?: PackedAmenity[]
   partySize?: number
   budgetRange?: string
   guestComposition?: { adults: number; children: number; childrenAges?: number[] }
@@ -313,6 +349,83 @@ function renderReconstructedProfile(r: ReconstructedProfile): string {
     ? `\n- Transcript mentions: ${hints.join(", ")} — verify these against the block above; re-extract from the transcript if anything disagrees.`
     : ""
   return body + hintLine
+}
+
+// ---------------------------------------------------------------------------
+// Amenity prompt-block helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Render one amenity as a multi-line bullet for the condensed list block.
+ * Uses shortDescription + a couple highlights + hours when present. The
+ * long `description` field is intentionally skipped here — that's reserved
+ * for the focused-amenity block to keep prompt token cost bounded.
+ */
+function renderAmenityListItem(a: PackedAmenity): string {
+  const head = a.category ? `${a.name} (${a.category})` : a.name
+  const desc = a.shortDescription ? ` — ${a.shortDescription}` : ""
+  const lines: string[] = [`- ${head}${desc}`]
+  if (a.highlights && a.highlights.length > 0) {
+    const top = a.highlights.slice(0, 2).join("; ")
+    lines.push(`  Highlights: ${top}`)
+  }
+  if (a.hours && a.hours.length > 0) {
+    const hoursStr = a.hours
+      .map((h) => (h.is24Hours ? `${h.label} 24h ${h.days}` : `${h.label} ${h.open}-${h.close} ${h.days}`))
+      .join("; ")
+    lines.push(`  Hours: ${hoursStr}`)
+  }
+  if (a.menuUrl) lines.push(`  Menu link available.`)
+  return lines.join("\n")
+}
+
+/**
+ * Render the full amenity block for the focused-amenity injection — mirrors
+ * `selectedRoom` rendering in style. All non-empty fields go in.
+ */
+function renderAmenityFullDetail(a: PackedAmenity): string {
+  const entries: string[] = []
+  entries.push(`- name: ${a.name}`)
+  entries.push(`- scene: ${a.scene}`)
+  if (a.category) entries.push(`- category: ${a.category}`)
+  if (a.shortDescription) entries.push(`- shortDescription: ${a.shortDescription}`)
+  if (a.description) entries.push(`- description: ${a.description}`)
+  if (a.highlights?.length) entries.push(`- highlights: ${JSON.stringify(a.highlights)}`)
+  if (a.tags?.length) entries.push(`- tags: ${JSON.stringify(a.tags)}`)
+  if (a.features?.length) entries.push(`- features: ${JSON.stringify(a.features)}`)
+  if (a.hours?.length) entries.push(`- hours: ${JSON.stringify(a.hours)}`)
+  if (a.menuUrl) entries.push(`- menuUrl: ${a.menuUrl}`)
+  if (a.externalUrl) entries.push(`- externalUrl: ${a.externalUrl}`)
+  return entries.join("\n")
+}
+
+/**
+ * Detect which amenity (if any) the user's latest message is asking about.
+ * Searches both active and described-only lists by name + aliases. Returns
+ * the first match together with a flag indicating whether it's navigable.
+ *
+ * Detection is intentionally simple — substring match against the lowercased
+ * message. The LLM still owns intent classification; this is just the trigger
+ * to inject the focused amenity's full data block.
+ */
+function detectFocusedAmenity(
+  message: string,
+  active: PackedAmenity[] | undefined,
+  describedOnly: PackedAmenity[] | undefined,
+): { amenity: PackedAmenity; navigable: boolean } | null {
+  if (!message) return null
+  const text = message.toLowerCase()
+  const hit = (a: PackedAmenity): boolean => {
+    if (text.includes(a.name.toLowerCase())) return true
+    if (a.scene && text.includes(a.scene.toLowerCase())) return true
+    if (a.aliases) {
+      for (const alias of a.aliases) if (text.includes(alias.toLowerCase())) return true
+    }
+    return false
+  }
+  for (const a of active ?? []) if (hit(a)) return { amenity: a, navigable: true }
+  for (const a of describedOnly ?? []) if (hit(a)) return { amenity: a, navigable: false }
+  return null
 }
 
 // ---------------------------------------------------------------------------
@@ -580,36 +693,115 @@ ${collectedSummary}`
     regexHintBlock = `\n\nRegex classifier hint (use as a tiebreaker; override only if the conversation makes it clear the hint is wrong): ${body.regexHint}`
   }
 
-  // Hotel-amenities grounding block.
+  // Hotel-overview block — grounds the LLM's answers to "tell me about this
+  // hotel" / "where is it?" / "what makes this place special?". Renders for
+  // every non-PROFILE_COLLECTION turn so it's available across HOTEL_EXPLORATION,
+  // AMENITY_VIEWING, ROOM_SELECTED, VIRTUAL_LOUNGE, and DESTINATION_SELECT.
+  let hotelOverviewBlock = ""
+  if (!isProfileCollection && body.hotelInfo) {
+    const h = body.hotelInfo
+    const lines: string[] = []
+    lines.push(`You are guiding a guest through ${h.name} in ${h.location}.`)
+    if (h.tagline) lines.push(h.tagline)
+    if (h.description) lines.push(h.description)
+    if (h.highlights && h.highlights.length > 0) {
+      lines.push("")
+      lines.push("Highlights:")
+      for (const hl of h.highlights) lines.push(`- ${hl}`)
+    }
+    if (h.address) {
+      const addr = `${h.address.city}, ${h.address.region}, ${h.address.country}`
+      lines.push("")
+      lines.push(`Address: ${addr}.`)
+    }
+    if (h.websiteUrl) lines.push(`Website: ${h.websiteUrl}`)
+    lines.push("")
+    lines.push(
+      "When the guest asks a generic question about the hotel (\"tell me about this hotel\", \"what makes this place special\"), draw from this block. Speak conversationally — pick 1-2 highlights, don't recite the list. Mention the address only when the guest asks \"where is this?\" or similar.",
+    )
+    hotelOverviewBlock = `\n\n## Hotel overview (ground truth)\n\n${lines.join("\n")}`
+  }
+
+  // Hotel-amenities grounding block (two-section).
   //
   // The intent-classification section lists AMENITY_BY_NAME's enum values
   // (pool, spa, restaurant, lobby, conference, gym, bar, lounge, dining) as
-  // *categories* for classification. The LLM was reading that as a menu of
-  // amenities the property offers and freestyled responses like "we have a
-  // pool, spa, dining, and gym" when asked "what amenities do you have?" —
-  // hallucinating offerings the hotel doesn't actually have.
+  // *categories* for classification. Without grounding, the LLM was reading
+  // that as a menu of amenities the property offers and freestyled "we have
+  // a pool, spa, dining, and gym" when asked "what amenities do you have?".
   //
-  // This block anchors speech to the actual amenity list sent from the
-  // client. Only applied to stages where the guest could reasonably ask
-  // about hotel facilities.
+  // The new two-section structure separates amenities the guest can NAVIGATE
+  // to (UE5 scene exists) from amenities that EXIST at the property but
+  // aren't part of the live tour (no scene). The LLM must describe both
+  // when asked but only call navigation tools on the navigable list.
   let hotelAmenitiesBlock = ""
   const isHotelContext =
     body.journeyContext.stage === "HOTEL_EXPLORATION" ||
     body.journeyContext.stage === "AMENITY_VIEWING" ||
     body.journeyContext.stage === "ROOM_SELECTED"
-  if (isHotelContext && body.hotelAmenityNames && body.hotelAmenityNames.length > 0) {
+  const active = body.hotelAmenitiesActive ?? []
+  const describedOnly = body.hotelAmenitiesDescribedOnly ?? []
+  const hasRichAmenityCtx = active.length > 0 || describedOnly.length > 0
+
+  if (isHotelContext && hasRichAmenityCtx) {
+    const sections: string[] = []
+    if (active.length > 0) {
+      sections.push(
+        `### Visitable in the live tour (these CAN be navigated to)\n\n${active.map(renderAmenityListItem).join("\n")}`,
+      )
+    }
+    if (describedOnly.length > 0) {
+      sections.push(
+        `### Described only — NOT part of the live tour (do NOT navigate)\n\n${describedOnly.map(renderAmenityListItem).join("\n")}`,
+      )
+    }
+
+    const navigableNames = active.map((a) => a.name).join(", ") || "(none)"
+    const describedNames = describedOnly.map((a) => a.name).join(", ") || "(none)"
+
+    sections.push(`### Speech rules
+
+When the guest asks ABOUT an amenity in EITHER list, describe it warmly — pick 1-2 highlights, mention category fit (e.g. "the spa is wellness-focused"), keep to 2-3 sentences.
+
+When the guest asks to GO TO / VISIT / SHOW / TOUR an amenity:
+- If it's in the Visitable list (${navigableNames}): emit \`navigate_and_speak\` with intent \`AMENITY_BY_NAME\` and the canonical name. Speak briefly as you advance.
+- If it's in the Described-only list (${describedNames}): emit \`no_action_speak\`, describe the amenity richly using its shortDescription/highlights, and add a short in-character note that the live tour doesn't include this space yet, then offer a Visitable amenity instead. Example: "I can tell you all about the Longevity Spa — though the live tour doesn't reach the spa space just yet. Would you like me to take you to the pool?" Never break the fourth wall (no "the UE5 scene isn't built"). Never claim the amenity doesn't exist — it does, just not in the immersive walk.
+- If the guest asks "what amenities do you have?" — the client-side handler speaks the canonical listing. Don't pre-empt it; keep your speech short and let the client list everything by name.
+
+Never invent an amenity not in either list. Never offer to navigate to an amenity in the Described-only list.`)
+
+    hotelAmenitiesBlock = `\n\n## Hotel amenities (ground truth)\n\n${sections.join("\n\n")}`
+  } else if (isHotelContext && body.hotelAmenityNames && body.hotelAmenityNames.length > 0) {
+    // Legacy fallback: rich lists missing but the legacy names array is
+    // present. Mirrors the pre-Phase-3 grounding behaviour.
     const amenityList = body.hotelAmenityNames.join(", ")
     hotelAmenitiesBlock = `\n\n## Hotel amenities (ground truth)
 
-This property has exactly these amenities: ${amenityList}.
+This property has exactly these amenities available in the live tour: ${amenityList}.
 
-Never mention, recommend, or offer any amenity not in this list. Spa, gym, restaurant, dining, bar, and similar categories from the AMENITY_BY_NAME enum exist as classification categories but are NOT present at this property unless they appear in the list above.
-
-If the guest asks about an amenity that isn't in the list (e.g., "do you have a spa?"), briefly acknowledge it's not available and offer one that IS in the list instead. If the guest asks a generic "what amenities do you have?" question, the client-side handler will speak the canonical list — keep your speech short and concrete, mentioning ONLY items from the list above.`
-  } else if (isHotelContext && (!body.hotelAmenityNames || body.hotelAmenityNames.length === 0)) {
+Never mention, recommend, or offer any amenity not in this list as something the guest can VISIT. If they ask to visit an amenity not in the list (e.g., "take me to the spa"), acknowledge it's not part of the live tour and offer one that IS.`
+  } else if (isHotelContext) {
     hotelAmenitiesBlock = `\n\n## Hotel amenities (ground truth)
 
 This property has no bookable amenity spaces to tour. If the guest asks, acknowledge that and redirect to rooms or the surrounding area. Do NOT invent amenities (no spa, gym, restaurant, etc.).`
+  }
+
+  // Focused-amenity block — when the guest's latest message names a specific
+  // amenity, inject its FULL data so the LLM can describe it richly. Mirrors
+  // the rooms / selectedRoom pattern: condensed list always, full details
+  // only on focus, keeping the prompt's per-turn token cost bounded.
+  let selectedAmenityBlock = ""
+  if (isHotelContext && hasRichAmenityCtx) {
+    const focused = detectFocusedAmenity(body.message, active, describedOnly)
+    if (focused) {
+      const tag = focused.navigable
+        ? "Visitable amenity (navigable)"
+        : "Described-only amenity (NOT navigable — do not call AMENITY_BY_NAME for this one)"
+      selectedAmenityBlock =
+        `\n\n## Focused amenity details (${tag})\n` +
+        `The guest's latest message references this amenity by name. Use the full detail below when answering. Keep speech to 2-3 sentences — pick the most relevant 1-2 highlights, don't dump the whole record.\n\n` +
+        renderAmenityFullDetail(focused.amenity)
+    }
   }
 
   // AMENITY_VIEWING stage-specific guidance.
@@ -795,7 +987,7 @@ Every tool call MUST include a "speech" field — a natural spoken response for 
 
 ## Profile Corrections (all stages)
 
-If during any turn the user corrects or supplements profile data (examples: "we're 6 not 8", "actually mom is joining too", "switch to May 15–20", "call me Lisa not Cesar"), set the optional \`profileUpdates\` field on whichever tool you're calling with the corrected field(s). Do NOT use \`profile_turn\` for mid-exploration corrections — only use \`profileUpdates\` on the tool that fits the user's primary intent (usually \`navigate_and_speak\` or \`no_action_speak\`). Only include fields that changed — omit everything else. Profile writes are idempotent and safe to emit alongside any action.${regexHintBlock}${roomBlock}${selectedRoomBlock}${hotelAmenitiesBlock}${guestBlock}${transcriptReconstructionBlock}${virtualLoungeBlock}${amenityViewingBlock}${profileCollectionBlock}`
+If during any turn the user corrects or supplements profile data (examples: "we're 6 not 8", "actually mom is joining too", "switch to May 15–20", "call me Lisa not Cesar"), set the optional \`profileUpdates\` field on whichever tool you're calling with the corrected field(s). Do NOT use \`profile_turn\` for mid-exploration corrections — only use \`profileUpdates\` on the tool that fits the user's primary intent (usually \`navigate_and_speak\` or \`no_action_speak\`). Only include fields that changed — omit everything else. Profile writes are idempotent and safe to emit alongside any action.${regexHintBlock}${roomBlock}${selectedRoomBlock}${hotelOverviewBlock}${hotelAmenitiesBlock}${selectedAmenityBlock}${guestBlock}${transcriptReconstructionBlock}${virtualLoungeBlock}${amenityViewingBlock}${profileCollectionBlock}`
 }
 
 // ---------------------------------------------------------------------------

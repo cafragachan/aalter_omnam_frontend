@@ -100,6 +100,13 @@ export type JourneyAction =
       allAmenities: AmenityRef[]
       travelPurpose?: string
       recommendedAmenityName?: string
+      /**
+       * Names of amenities that exist at the property but aren't part of
+       * the live tour (no UE5 scene). Surfaced in the listing speech so
+       * the guest hears "we also have a spa, two restaurants, and a gym
+       * I can tell you about" — even though those can't be visited.
+       */
+      describedOnlyAmenityNames?: string[]
     }
   | { type: "AVATAR_PROPOSAL"; proposal: LastProposal; amenityName?: string }
   // Phase 2 of the pre-hotel shortcut: dispatched ~1.2s after the initial

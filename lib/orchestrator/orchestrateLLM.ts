@@ -3,6 +3,10 @@ import type { UserIntent } from "./intents"
 import type { JourneyState, TurnDecision } from "./types"
 import type { UserDBProfile } from "@/lib/auth-context"
 import type {
+  HotelCatalogAddress,
+  PackedAmenity,
+} from "@/lib/hotel-data"
+import type {
   PersistedPersonality,
   PersistedPreferences,
   PersistedLoyalty,
@@ -104,8 +108,41 @@ export interface OrchestrateInput {
    * lists pool/spa/restaurant/gym/etc as CATEGORIES, but any given property
    * has a smaller subset). Drives the "only mention these amenities" guard
    * in the HOTEL_EXPLORATION / AMENITY_VIEWING / ROOM_SELECTED prompt block.
+   *
+   * NOTE: Active amenities only. Superseded by `hotelAmenitiesActive` for
+   * richer grounding; kept for backward compatibility.
    */
   hotelAmenityNames?: string[]
+  /**
+   * Hotel-level info used by the system prompt's hotel-overview block. The
+   * LLM draws on this when the guest asks generic property questions
+   * ("tell me about this place", "where is it?").
+   */
+  hotelInfo?: {
+    name: string
+    location: string
+    tagline?: string
+    description?: string
+    highlights?: string[]
+    address?: HotelCatalogAddress
+    tags?: string[]
+    websiteUrl?: string
+  }
+  /**
+   * Active amenities the guest CAN navigate to (UE5 scenes exist). Each
+   * carries shortDescription + highlights + hours so the LLM can describe
+   * them without hallucinating, and category for grouping. Long descriptions
+   * ride along but are only rendered into the system prompt for the focused
+   * amenity (mirrors the rooms / selectedRoom pattern).
+   */
+  hotelAmenitiesActive?: PackedAmenity[]
+  /**
+   * Amenities that EXIST at the property but aren't part of the live tour
+   * (no UE5 scene). The LLM is instructed to describe them when asked but
+   * NEVER to navigate to them. Examples at Lake Como: the Longevity Spa,
+   * Cetino, Renzo, the gym, the private dock.
+   */
+  hotelAmenitiesDescribedOnly?: PackedAmenity[]
   partySize?: number
   budgetRange?: string
   guestComposition?: { adults: number; children: number } | null
@@ -180,6 +217,9 @@ export async function orchestrateLLM(
         rooms: rest.rooms,
         selectedRoom: rest.selectedRoom,
         hotelAmenityNames: rest.hotelAmenityNames,
+        hotelInfo: rest.hotelInfo,
+        hotelAmenitiesActive: rest.hotelAmenitiesActive,
+        hotelAmenitiesDescribedOnly: rest.hotelAmenitiesDescribedOnly,
         partySize: rest.partySize,
         budgetRange: rest.budgetRange,
         guestComposition: rest.guestComposition,

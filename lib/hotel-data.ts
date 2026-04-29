@@ -1,3 +1,12 @@
+export interface HotelAddress {
+  street: string
+  city: string
+  postalCode: string
+  region: string
+  country: string
+  googleMapsUrl?: string
+}
+
 export interface Hotel {
   id: string
   name: string
@@ -7,6 +16,14 @@ export interface Hotel {
   image: string
   active: boolean
   coordinates: { lat: number; lng: number }
+  /** Short marketing line — one sentence. */
+  tagline?: string
+  address?: HotelAddress
+  /** Bullet list of marquee selling points. Useful for AI grounding and UI hero sections. */
+  highlights?: string[]
+  /** Free-form classification keywords (e.g. "lakeside", "wellness"). */
+  tags?: string[]
+  websiteUrl?: string
 }
 
 export interface RoomArea {
@@ -33,25 +50,68 @@ export interface Room {
   services?: string[]
 }
 
+/**
+ * One window of operation for an amenity. `open`/`close` are "HH:MM" strings;
+ * `days` is free-form ("Daily", "Mon-Fri", "Weekends"). Set `is24Hours: true`
+ * for around-the-clock services.
+ */
+export interface OperatingHours {
+  label: string
+  open: string
+  close: string
+  days: string
+  is24Hours?: boolean
+}
+
+export type AmenityCategory =
+  | "dining"
+  | "bar"
+  | "spa"
+  | "fitness"
+  | "pool"
+  | "meetings"
+  | "waterfront"
+  | "lounge"
+
 export interface Amenity {
   id: string
   name: string
   hotelId: string
   scene: string
   image: string
+  /**
+   * Defaults to `true` when omitted. Inactive amenities are filtered out by
+   * `getAmenitiesByHotelId` so they don't surface in the AmenitiesPanel or
+   * journey machine — useful for staging data before the UE5 scene exists.
+   */
+  active?: boolean
+  category?: AmenityCategory
+  /** Long-form copy — for detail panels and rich AI descriptions. */
+  description?: string
+  /** One- to two-sentence summary for cards and concise AI mentions. */
+  shortDescription?: string
+  hours?: OperatingHours[]
+  features?: string[]
+  highlights?: string[]
+  tags?: string[]
+  /** Public-facing menu PDF or page. */
+  menuUrl?: string
+  /** Standalone microsite for the amenity (e.g. partnered restaurant). */
+  externalUrl?: string
 }
 
-export const hotels: Hotel[] = [
-  {
-    id: "1",
-    name: "EDITION | Lake Como",
-    slug: "edition-lake-como",
-    location: "Lake Como, Italy",
-    description: "Luxury lakeside retreat with stunning mountain views",
-    image: "/images/edition-como.jpg",
-    active: true,
-    coordinates: { lat: 45.9931, lng: 9.2658 },
-  },
+// ---------------------------------------------------------------------------
+// Per-hotel data
+// ---------------------------------------------------------------------------
+//
+// Active hotels live in their own files under `lib/hotels/` and are imported
+// here. Inactive hotels are kept inline as minimal stubs — when one is
+// activated, extract it into `lib/hotels/<slug>.ts` following the lake-como
+// template (hotel + rooms + amenities exports).
+
+import { lakeComoAmenities, lakeComoHotel, lakeComoRooms } from "./hotels/lake-como"
+
+const inactiveHotels: Hotel[] = [
   {
     id: "2",
     name: "W | Rome",
@@ -74,276 +134,11 @@ export const hotels: Hotel[] = [
   },
 ]
 
-export const rooms: Room[] = [
-  {
-    id: "r1",
-    name: "Standard Lake View",
-    occupancy: "2",
-    price: 249,
-    hotelId: "1",
-    image: "/images/room-standard.jpg",
-    book_url: "https://www.editionhotels.com/lake-como/rooms-and-suites/standard-lake-view/",
-    area: {
-      min_sqm: 27,
-      max_sqm: 34,
-      label: "27-34 SQM",
-    },
-    roomType: "King bed",
-    features: [
-      "Air-conditioned rooms",
-      "Nespresso machine",
-      "Clothing steamer",
-      "Iron & ironing board upon request",
-      "Minibar",
-      "In-room safe",
-      "Rollaway Bed not permitted",
-      "Baby cot available upon request",
-    ],
-    view: ["Lake view"],
-    bedding: [
-      "Down comforter pillows",
-      "Custom imported linens",
-    ],
-    bath: [
-      "White marble bathroom with enclosed rain walk-in shower",
-      "Single vanity",
-      "Custom Le Labo amenities",
-      "Hairdryer",
-      "Robes & slippers",
-    ],
-    tech: [
-      "Complimentary high-speed Wi-Fi",
-      "55\" Flat screen SMART HDTV with streaming capabilities",
-      "Bang & Olufsen Beoplay Bluetooth speaker",
-    ],
-    services: [
-      "Twice-daily housekeeping service",
-      "Complimentary bottled water daily",
-      "Digital Press available",
-    ],
-  },
-  {
-    id: "r2",
-    name: "Penthouse",
-    occupancy: "6",
-    price: 599,
-    hotelId: "1",
-    image: "/images/room-suite-double.jpg",
-    book_url: "https://www.editionhotels.com/lake-como/rooms-and-suites/penthouse/",
-    area: {
-      min_sqm: 111,
-      max_sqm: 111,
-      label: "111 SQM",
-    },
-    roomType: "King bed",
-    features: [
-      "Air-conditioned rooms",
-      "Private terrace",
-      "Nespresso machine",
-      "Clothing steamer",
-      "Top floor",
-      "Separate living area with sofa and lounge chairs",
-      "Dining room and fully equipped kitchen",
-      "Floor to ceiling windows",
-      "Fridge",
-      "Iron and ironing board upon request",
-      "Minibar",
-      "In-room safe",
-      "Connecting rooms available",
-      "Rollaway Bed available upon request at extra cost (up to 16 years old)",
-    ],
-    view: ["Lake view", "Mountain view"],
-    bedding: [
-      "Down comforter pillows",
-      "Custom imported linens",
-    ],
-    bath: [
-      "White marble bathroom with enclosed rain walk-in shower",
-      "Standalone bathtub",
-      "Custom Le Labo amenities with exclusive signature EDITION scent",
-      "Single vanity",
-      "Make-up mirror",
-      "Hairdryer",
-      "Robes & slippers",
-    ],
-    tech: [
-      "Complimentary high-speed Wi-Fi",
-      "55\" Flat screen SMART HDTV with streaming capabilities",
-      "Bang & Olufsen Beoplay Bluetooth speaker",
-    ],
-    services: [
-      "Twice-daily housekeeping service",
-      "Complimentary bottled water daily",
-      "Digital Press available",
-    ],
-  },
-  {
-    id: "r3",
-    name: "Loft Suite Lake View",
-    occupancy: "4",
-    price: 399,
-    hotelId: "1",
-    image: "/images/room-suite-triple.jpg",
-    book_url: "https://www.editionhotels.com/lake-como/rooms-and-suites/loft-suite-lake-view-balcony/",
-    area: {
-      min_sqm: 41,
-      max_sqm: 54,
-      label: "41-54 SQM",
-    },
-    roomType: "King bed",
-    features: [
-      "Air-conditioned rooms",
-      "Nespresso machine",
-      "Clothing steamer",
-      "Iron & ironing board upon request",
-      "Minibar",
-      "In-room safe",
-      "Baby cot available upon request",
-      "Rollaway Bed available upon request at extra cost (up to 16 years old)",
-    ],
-    view: ["Lake view"],
-    bedding: [
-      "Down comforter pillows",
-      "Custom imported linens",
-    ],
-    bath: [
-      "White marble bathroom with enclosed rain walk-in shower",
-      "Bathtub",
-      "Single vanity",
-      "Custom Le Labo amenities with exclusive signature EDITION scent",
-      "Hairdryer",
-      "Robes & slippers",
-    ],
-    tech: [
-      "Complimentary high-speed Wi-Fi",
-      "55\" Flat screen SMART HDTV with streaming capabilities",
-      "Bang & Olufsen Beoplay Bluetooth speaker",
-    ],
-    services: [
-      "Twice-daily housekeeping service",
-      "Complimentary bottled water daily",
-      "Digital Press available",
-    ],
-  },
-  {
-    id: "r4",
-    name: "Standard Mountain View",
-    occupancy: "2",
-    price: 199,
-    hotelId: "1",
-    image: "/images/standard_mountain_view.jpg",
-    book_url: "https://www.editionhotels.com/lake-como/rooms-and-suites/standard/",
-    area: {
-      min_sqm: 25,
-      max_sqm: 32,
-      label: "25-32 SQM",
-    },
-    roomType: "King bed",
-    features: [
-      "Air-conditioned rooms",
-      "Nespresso machine",
-      "Clothing steamer",
-      "Iron & ironing board upon request",
-      "Minibar",
-      "In-room safe",
-      "Rollaway Bed not permitted",
-    ],
-    view: ["Mountain view"],
-    bedding: [
-      "Down comforter pillows",
-      "Custom imported linens",
-    ],
-    bath: [
-      "White marble bathroom with enclosed rain walk-in shower",
-      "Single vanity",
-      "Custom Le Labo amenities",
-      "Hairdryer",
-      "Robes & slippers",
-    ],
-    tech: [
-      "Complimentary high-speed Wi-Fi",
-      "55\" Flat screen SMART HDTV with streaming capabilities",
-      "Bang & Olufsen Beoplay Bluetooth speaker",
-    ],
-    services: [
-      "Twice-daily housekeeping service",
-      "Complimentary bottled water daily",
-      "Digital Press available",
-    ],
-  },
-  {
-    id: "r5",
-    name: "Loft Suite Mountain View",
-    occupancy: "4",
-    price: 349,
-    hotelId: "1",
-    image: "/images/loft_mountain_view.jpg",
-    book_url: "https://www.editionhotels.com/lake-como/rooms-and-suites/loft-suite-mountain-view/",
-    area: {
-      min_sqm: 49,
-      max_sqm: 51,
-      label: "49-51 SQM",
-    },
-    roomType: "King bed",
-    features: [
-      "Air-conditioned rooms",
-      "Nespresso machine",
-      "Clothing steamer",
-      "Iron & ironing board upon request",
-      "Minibar",
-      "In-room safe",
-      "Baby cot available upon request",
-      "Rollaway Bed available upon request at extra cost (up to 16 years old)",
-    ],
-    view: ["Mountain view"],
-    bedding: [
-      "Down comforter pillows",
-      "Custom imported linens",
-    ],
-    bath: [
-      "White marble bathroom with enclosed rain walk-in shower",
-      "Bathtub",
-      "Single vanity",
-      "Custom Le Labo amenities with exclusive signature EDITION scent",
-      "Hairdryer",
-      "Robes & slippers",
-    ],
-    tech: [
-      "Complimentary high-speed Wi-Fi",
-      "55\" Flat screen SMART HDTV with streaming capabilities",
-      "Bang & Olufsen Beoplay Bluetooth speaker",
-    ],
-    services: [
-      "Twice-daily housekeeping service",
-      "Complimentary bottled water daily",
-      "Digital Press available",
-    ],
-  },
-]
+export const hotels: Hotel[] = [lakeComoHotel, ...inactiveHotels]
 
-export const amenities: Amenity[] = [
-  {
-    id: "a1",
-    name: "Lobby",
-    hotelId: "1",
-    scene: "lobby",
-    image: "/images/amenity-lobby.jpg",
-  },
-  {
-    id: "a2",
-    name: "Conference Room",
-    hotelId: "1",
-    scene: "conference",
-    image: "/images/amenity-conference.jpg",
-  },
-  {
-    id: "a3",
-    name: "Pool",
-    hotelId: "1",
-    scene: "pool",
-    image: "/images/amenity-conference.jpg",
-  },
-]
+export const rooms: Room[] = [...lakeComoRooms]
+
+export const amenities: Amenity[] = [...lakeComoAmenities]
 
 export function getHotelBySlug(slug: string): Hotel | undefined {
   return hotels.find((h) => h.slug === slug)
@@ -353,8 +148,21 @@ export function getRoomsByHotelId(hotelId: string): Room[] {
   return rooms.filter((r) => r.hotelId === hotelId)
 }
 
-export function getAmenitiesByHotelId(hotelId: string): Amenity[] {
-  return amenities.filter((a) => a.hotelId === hotelId)
+/**
+ * Returns active amenities for a hotel. Entries with `active: false` are
+ * filtered out so they don't surface in the AmenitiesPanel or trigger UE5
+ * navigation for scenes that don't exist yet. Pass `includeInactive: true`
+ * to retrieve every amenity (e.g. for admin views or AI grounding).
+ */
+export function getAmenitiesByHotelId(
+  hotelId: string,
+  options: { includeInactive?: boolean } = {},
+): Amenity[] {
+  return amenities.filter((a) => {
+    if (a.hotelId !== hotelId) return false
+    if (options.includeInactive) return true
+    return a.active !== false
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -371,9 +179,55 @@ export function getAmenitiesByHotelId(hotelId: string): Amenity[] {
 // new data. Fields are additive; unknown slugs return `null` so callers can
 // fall back to the legacy per-hotel lookups without special-casing errors.
 
+/**
+ * Compact address shape carried by the catalog. Drops `street` and
+ * `postalCode` — the LLM never speaks them aloud and they're noise in the
+ * prompt. The full address remains on the source `Hotel` for UI display.
+ */
+export interface HotelCatalogAddress {
+  city: string
+  region: string
+  country: string
+  googleMapsUrl?: string
+}
+
+/**
+ * Per-amenity projection shipped in the catalog. Includes long `description`
+ * so the orchestrate route can inject full details for the focused amenity
+ * (mirrors how `selectedRoom` carries full room data) without a second
+ * request roundtrip. The condensed list block in the prompt only renders
+ * `shortDescription` to keep token cost down — `description` is reserved
+ * for the focused-amenity block.
+ */
+export interface PackedAmenity {
+  id: string
+  name: string
+  /** UE5 scene identifier (matches Amenity.scene). */
+  scene: string
+  category?: AmenityCategory
+  shortDescription?: string
+  description?: string
+  highlights?: string[]
+  tags?: string[]
+  hours?: OperatingHours[]
+  features?: string[]
+  menuUrl?: string
+  externalUrl?: string
+  /** Speech aliases so the LLM can accept synonyms. Active amenities only. */
+  aliases?: string[]
+}
+
 export interface HotelCatalog {
   hotelSlug: string
   hotelName: string
+  /** Display location, e.g. "Lake Como, Italy". Always present (sourced from hotel.location). */
+  hotelLocation: string
+  hotelTagline?: string
+  hotelDescription?: string
+  hotelHighlights?: string[]
+  hotelAddress?: HotelCatalogAddress
+  hotelTags?: string[]
+  hotelWebsiteUrl?: string
   rooms: Array<{
     id: string
     name: string
@@ -390,18 +244,28 @@ export interface HotelCatalog {
     tech?: string[]
     services?: string[]
   }>
-  amenities: Array<{
-    id: string
-    name: string
-    /** UE5 scene identifier (matches Amenity.scene). */
-    scene: string
-    /** Optional speech aliases so the LLM can accept synonyms. */
-    aliases?: string[]
-  }>
+  /**
+   * Amenities the guest can NAVIGATE to in the live tour (scene exists in
+   * UE5). Drives both the tool-schema's `amenityName` enum and the
+   * AmenitiesPanel's card list.
+   */
+  amenities: PackedAmenity[]
+  /**
+   * Amenities at the property that DON'T have a UE5 scene yet — e.g. the
+   * Longevity Spa, Cetino, Renzo, the gym, the private dock at Lake Como.
+   * The LLM can describe these richly when asked, but must NOT navigate to
+   * them. Sourced from amenities with `active: false` on the source data.
+   */
+  amenitiesDescribedOnly: PackedAmenity[]
   tools: {
     /** Canonical navigation intent names the orchestrate tool schema may reference. */
     navigationIntents: string[]
-    /** Canonical amenity names the LLM is allowed to speak / pass as `amenityName`. */
+    /**
+     * Canonical amenity names the LLM is allowed to navigate to (active
+     * amenities only). Described-only amenities are deliberately excluded
+     * — the LLM should mention them in speech but never invoke a navigation
+     * tool with their names.
+     */
     amenityNames: string[]
   }
 }
@@ -434,12 +298,44 @@ const NAVIGATION_INTENTS: string[] = [
  * exists in the `hotels` / `rooms` / `amenities` arrays into the shape the
  * session response and Phase 3's orchestrate tools consume.
  */
+function packAmenity(a: Amenity, opts: { withAliases: boolean }): PackedAmenity {
+  const aliases = opts.withAliases ? AMENITY_NAME_ALIASES[a.scene.toLowerCase()] : undefined
+  return {
+    id: a.id,
+    name: a.name,
+    scene: a.scene,
+    ...(a.category ? { category: a.category } : {}),
+    ...(a.shortDescription ? { shortDescription: a.shortDescription } : {}),
+    ...(a.description ? { description: a.description } : {}),
+    ...(a.highlights ? { highlights: a.highlights } : {}),
+    ...(a.tags ? { tags: a.tags } : {}),
+    ...(a.hours ? { hours: a.hours } : {}),
+    ...(a.features ? { features: a.features } : {}),
+    ...(a.menuUrl ? { menuUrl: a.menuUrl } : {}),
+    ...(a.externalUrl ? { externalUrl: a.externalUrl } : {}),
+    ...(aliases && aliases.length > 0 ? { aliases } : {}),
+  }
+}
+
+function packHotelAddress(addr: HotelAddress | undefined): HotelCatalogAddress | undefined {
+  if (!addr) return undefined
+  return {
+    city: addr.city,
+    region: addr.region,
+    country: addr.country,
+    ...(addr.googleMapsUrl ? { googleMapsUrl: addr.googleMapsUrl } : {}),
+  }
+}
+
 export function getHotelCatalog(slug: string): HotelCatalog | null {
   const hotel = getHotelBySlug(slug)
   if (!hotel) return null
 
   const hotelRooms = getRoomsByHotelId(hotel.id)
-  const hotelAmenities = getAmenitiesByHotelId(hotel.id)
+  // Pull EVERY amenity for this hotel (active + inactive). We partition into
+  // navigable vs. described-only below so the LLM can describe inactive ones
+  // in speech without ever being able to navigate to them.
+  const allHotelAmenities = getAmenitiesByHotelId(hotel.id, { includeInactive: true })
 
   const packedRooms = hotelRooms.map((r) => {
     const parsedOccupancy = parseInt(r.occupancy, 10)
@@ -460,24 +356,34 @@ export function getHotelCatalog(slug: string): HotelCatalog | null {
     }
   })
 
-  const packedAmenities = hotelAmenities.map((a) => {
-    const aliases = AMENITY_NAME_ALIASES[a.scene.toLowerCase()]
-    return {
-      id: a.id,
-      name: a.name,
-      scene: a.scene,
-      ...(aliases && aliases.length > 0 ? { aliases } : {}),
+  const activeAmenities: PackedAmenity[] = []
+  const describedOnlyAmenities: PackedAmenity[] = []
+  for (const a of allHotelAmenities) {
+    if (a.active === false) {
+      describedOnlyAmenities.push(packAmenity(a, { withAliases: false }))
+    } else {
+      activeAmenities.push(packAmenity(a, { withAliases: true }))
     }
-  })
+  }
 
   return {
     hotelSlug: hotel.slug,
     hotelName: hotel.name,
+    hotelLocation: hotel.location,
+    ...(hotel.tagline ? { hotelTagline: hotel.tagline } : {}),
+    ...(hotel.description ? { hotelDescription: hotel.description } : {}),
+    ...(hotel.highlights ? { hotelHighlights: hotel.highlights } : {}),
+    ...(packHotelAddress(hotel.address) ? { hotelAddress: packHotelAddress(hotel.address)! } : {}),
+    ...(hotel.tags ? { hotelTags: hotel.tags } : {}),
+    ...(hotel.websiteUrl ? { hotelWebsiteUrl: hotel.websiteUrl } : {}),
     rooms: packedRooms,
-    amenities: packedAmenities,
+    amenities: activeAmenities,
+    amenitiesDescribedOnly: describedOnlyAmenities,
     tools: {
       navigationIntents: [...NAVIGATION_INTENTS],
-      amenityNames: packedAmenities.map((a) => a.name),
+      // Only ACTIVE amenity names — described-only entries must never appear
+      // here so the LLM tool schema doesn't surface them as nav targets.
+      amenityNames: activeAmenities.map((a) => a.name),
     },
   }
 }

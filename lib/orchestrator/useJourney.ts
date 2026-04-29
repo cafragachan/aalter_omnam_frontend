@@ -584,32 +584,56 @@ export function useJourney(options: UseJourneyOptions) {
   const navigateToAmenityByName = useCallback((amenityName: string) => {
     const liveAmenities = amenitiesRef.current
     const normalized = AMENITY_ALIASES[amenityName.toLowerCase()] ?? amenityName.toLowerCase()
+
+    // 1. Active match → navigate normally.
     const match = liveAmenities.find((a) => {
       const n = a.name.toLowerCase()
       const s = a.scene.toLowerCase()
       return n.includes(normalized) || s.includes(normalized)
     })
 
-    if (!match) {
-      // No match — speak directly (no state change needed)
-      const text = `I don't think we have a ${amenityName} at this property. Would you like to see the rooms, or explore the surrounding area?`
+    if (match) {
+      trackAmenityExplored(match.name)
+      startAmenityTimer(match.name)
+      dispatch({
+        type: "NAVIGATE_TO_AMENITY",
+        amenity: { id: match.id, name: match.name, scene: match.scene },
+        narrative: buildAmenityNarrative(match.name, match.scene),
+        visitedAmenities: visitedAmenityNamesRef.current,
+        allAmenities: liveAmenities.map((a): AmenityRef => ({ id: a.id, name: a.name, scene: a.scene })),
+      })
+      return
+    }
+
+    // 2. Described-only match → the amenity exists at the property but has
+    //    no UE5 scene yet. Speak a redirect using the amenity's
+    //    shortDescription (when available) and offer a visitable
+    //    alternative. Critically: do NOT dispatch any reducer action and do
+    //    NOT emit a UE5 `communal` command — the scene doesn't exist.
+    const describedOnly = catalogRef.current?.amenitiesDescribedOnly ?? []
+    const describedMatch = describedOnly.find((a) => {
+      const n = a.name.toLowerCase()
+      const s = a.scene.toLowerCase()
+      return n.includes(normalized) || s.includes(normalized)
+    })
+    if (describedMatch) {
+      const blurb = describedMatch.shortDescription ?? describedMatch.description ?? ""
+      const visitableAlt = liveAmenities[0]?.name?.toLowerCase()
+      const fallbackOffer = visitableAlt
+        ? `Would you like me to take you to the ${visitableAlt} instead?`
+        : "Would you like to see the rooms or explore the surrounding area instead?"
+      const text = blurb
+        ? `${describedMatch.name} — ${blurb} The live tour doesn't reach that space just yet. ${fallbackOffer}`
+        : `${describedMatch.name} is one of our property's offerings, but it's not part of the live tour just yet. ${fallbackOffer}`
       interrupt()
       void repeat(text).catch(() => undefined)
       return
     }
 
-    // Track this amenity visit + start timer
-    trackAmenityExplored(match.name)
-    startAmenityTimer(match.name)
-
-    // Dispatch rich action — reducer handles UE5 commands, fade, speech, and state transition
-    dispatch({
-      type: "NAVIGATE_TO_AMENITY",
-      amenity: { id: match.id, name: match.name, scene: match.scene },
-      narrative: buildAmenityNarrative(match.name, match.scene),
-      visitedAmenities: visitedAmenityNamesRef.current,
-      allAmenities: liveAmenities.map((a): AmenityRef => ({ id: a.id, name: a.name, scene: a.scene })),
-    })
+    // 3. No match anywhere — speak the legacy "we don't have one" line.
+    const text = `I don't think we have a ${amenityName} at this property. Would you like to see the rooms, or explore the surrounding area?`
+    interrupt()
+    void repeat(text).catch(() => undefined)
   }, [trackAmenityExplored, startAmenityTimer, interrupt, repeat, dispatch])
 
   /** Dispatch LIST_AMENITIES action with pre-computed hotel data */
@@ -617,12 +641,18 @@ export function useJourney(options: UseJourneyOptions) {
     const liveAmenities = amenitiesRef.current
     const liveTravelPurpose = profileRef.current.travelPurpose
     const recommended = getRecommendedAmenity(liveAmenities, liveTravelPurpose)
+    // Pull described-only amenity names from the catalog so the listing
+    // speech can mention them ("we also have a spa, two restaurants, and
+    // a gym I can tell you about") even though they're not visitable.
+    const describedOnlyAmenityNames = (catalogRef.current?.amenitiesDescribedOnly ?? [])
+      .map((a) => a.name)
     dispatch({
       type: "LIST_AMENITIES",
       visitedAmenities: visitedAmenityNamesRef.current,
       allAmenities: liveAmenities.map((a): AmenityRef => ({ id: a.id, name: a.name, scene: a.scene })),
       travelPurpose: liveTravelPurpose,
       recommendedAmenityName: recommended?.name,
+      ...(describedOnlyAmenityNames.length > 0 ? { describedOnlyAmenityNames } : {}),
     })
   }, [dispatch])
 
@@ -1462,6 +1492,24 @@ export function useJourney(options: UseJourneyOptions) {
             services: selectedRoom.services,
           }
         })()
+        // Hotel + amenity context for prompt grounding. The catalog already
+        // separates active (navigable) from described-only (no UE5 scene).
+        // Passing both lists lets the orchestrate prompt render the
+        // visitable / described-only split AND inject full details for the
+        // amenity the user is currently asking about (mirrors selectedRoom).
+        const liveCatalog = catalogRef.current
+        const hotelInfoForCtx = liveCatalog
+          ? {
+              name: liveCatalog.hotelName,
+              location: liveCatalog.hotelLocation,
+              ...(liveCatalog.hotelTagline ? { tagline: liveCatalog.hotelTagline } : {}),
+              ...(liveCatalog.hotelDescription ? { description: liveCatalog.hotelDescription } : {}),
+              ...(liveCatalog.hotelHighlights ? { highlights: liveCatalog.hotelHighlights } : {}),
+              ...(liveCatalog.hotelAddress ? { address: liveCatalog.hotelAddress } : {}),
+              ...(liveCatalog.hotelTags ? { tags: liveCatalog.hotelTags } : {}),
+              ...(liveCatalog.hotelWebsiteUrl ? { websiteUrl: liveCatalog.hotelWebsiteUrl } : {}),
+            }
+          : undefined
         const result = await orchestrateLLM({
           message: latestMessage,
           state: currentState,
@@ -1472,7 +1520,12 @@ export function useJourney(options: UseJourneyOptions) {
           selectedRoom: selectedRoomForContext,
           // Ground the LLM in the actual hotel amenities so it doesn't
           // freestyle "spa/gym/restaurant" from the intent-enum categories.
+          // Legacy field; kept for back-compat alongside the richer
+          // hotelAmenitiesActive list below.
           hotelAmenityNames: amenities.map((a) => a.name),
+          hotelInfo: hotelInfoForCtx,
+          hotelAmenitiesActive: liveCatalog?.amenities,
+          hotelAmenitiesDescribedOnly: liveCatalog?.amenitiesDescribedOnly,
           partySize: (liveProfile.familySize ?? liveDerived.partySize) ?? undefined,
           budgetRange: liveProfile.budgetRange ?? undefined,
           guestComposition: liveProfile.guestComposition ?? liveDerived.guestComposition ?? undefined,
