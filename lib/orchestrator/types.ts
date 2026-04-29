@@ -102,6 +102,11 @@ export type JourneyAction =
       recommendedAmenityName?: string
     }
   | { type: "AVATAR_PROPOSAL"; proposal: LastProposal; amenityName?: string }
+  // Phase 2 of the pre-hotel shortcut: dispatched ~1.2s after the initial
+  // travel so UE5's server-travel finishes before the secondary nav cmd
+  // (gameEstate / communal). Phase 1 already played the upfront speech, so
+  // this handler is silent — it only emits the OPEN_PANEL effect.
+  | { type: "SHORTCUT_FOLLOWUP"; target: "rooms" | "location" }
 
 // ---------------------------------------------------------------------------
 // Effects produced by the reducer — executed by useJourney

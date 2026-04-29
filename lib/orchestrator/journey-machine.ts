@@ -2,7 +2,8 @@
 // Journey State Machine — pure reducer, no React, fully testable
 // ---------------------------------------------------------------------------
 
-import type { JourneyState, JourneyAction, JourneyResult, JourneyEffect, AmenityRef } from "./types"
+import type { JourneyState, JourneyAction, JourneyResult, JourneyEffect, AmenityRef, SpeechKey } from "./types"
+import type { UserIntent } from "./intents"
 
 // ---------------------------------------------------------------------------
 // DEFAULT_SPEECH — Phase 0 extraction of hardcoded SPEAK strings.
@@ -219,6 +220,57 @@ const PILOT_HOTEL = {
 }
 
 // ---------------------------------------------------------------------------
+// Pre-hotel shortcut — let users skip PROFILE_COLLECTION / VIRTUAL_LOUNGE
+// and travel straight to the hotel. Phase 1 (this helper) emits the travel
+// effects + an upfront speech. Phase 2 (SHORTCUT_FOLLOWUP / LIST_AMENITIES /
+// NAVIGATE_TO_AMENITY) is dispatched ~1.2s later from useJourney so UE5
+// has time to finish server-travel before the secondary nav command.
+// ---------------------------------------------------------------------------
+
+export type ShortcutTarget = "rooms" | "amenities" | "amenity_by_name" | "location" | "hotel"
+
+export function intentToShortcutTarget(intent: UserIntent): ShortcutTarget | null {
+  switch (intent.type) {
+    case "ROOMS":
+    case "BOOK":            return "rooms"
+    case "AMENITIES":       return "amenities"
+    case "AMENITY_BY_NAME": return "amenity_by_name"
+    case "LOCATION":        return "location"
+    case "HOTEL_EXPLORE":
+    case "TRAVEL_TO_HOTEL": return "hotel"
+    default:                return null
+  }
+}
+
+function shortcutSpeechKey(
+  target: ShortcutTarget,
+  fromStage: "PROFILE_COLLECTION" | "VIRTUAL_LOUNGE",
+): SpeechKey {
+  if (target === "rooms") return "pullUpRooms"
+  if (target === "location") return "showLocation"
+  // hotel / amenities / amenity_by_name → generic welcome. Phase 2 (LIST_AMENITIES
+  // / NAVIGATE_TO_AMENITY) interrupts with its own speech for the amenity cases.
+  return fromStage === "PROFILE_COLLECTION" ? "loungeToHotelIntro" : "hotelIntroShort"
+}
+
+function buildHotelShortcutResult(
+  target: ShortcutTarget,
+  fromStage: "PROFILE_COLLECTION" | "VIRTUAL_LOUNGE",
+): JourneyResult {
+  const effects: JourneyEffect[] = [
+    { type: "SELECT_HOTEL", ...PILOT_HOTEL },
+    { type: "SET_JOURNEY_STAGE", stage: "HOTEL_EXPLORATION" },
+    { type: "UE5_COMMAND", command: "startTEST", value: "startTEST" },
+    { type: "FADE_TRANSITION" },
+    { type: "SPEAK_INTENT", key: shortcutSpeechKey(target, fromStage) },
+  ]
+  return {
+    nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" },
+    effects,
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Reducer
 // ---------------------------------------------------------------------------
 
@@ -395,6 +447,17 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
   // PROFILE_COLLECTION
   // -----------------------------------------------------------------------
   if (state.stage === "PROFILE_COLLECTION") {
+    // Shortcut — user explicitly asked to see the hotel / rooms / amenities /
+    // location / a specific amenity. Skip profile gathering and travel now.
+    // useJourney chains the panel-open / amenity dispatch on a 1.2s timer.
+    if (action.type === "USER_INTENT") {
+      const target = intentToShortcutTarget(action.intent)
+      if (target) return buildHotelShortcutResult(target, "PROFILE_COLLECTION")
+      // Other intents (AFFIRMATIVE / UNKNOWN / etc.) — silent. Profile
+      // collection is conversational; HeyGen's persona handles the turn.
+      return { nextState: state, effects: [] }
+    }
+
     // FORCE_ADVANCE — user or HeyGen AI wants to move forward even if profile is incomplete
     if (action.type === "FORCE_ADVANCE") {
       if (PILOT_MODE) {
@@ -470,7 +533,12 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           return { nextState: { stage: "VIRTUAL_LOUNGE", subState: "exploring" }, effects }
         }
 
-        // Anything else (NEGATIVE, TRAVEL_TO_HOTEL, UNKNOWN, etc.) → go to the hotel
+        // Specific content intent (rooms / amenities / location / specific
+        // amenity) → travel + remember the target so Phase 2 can navigate.
+        const shortcutTarget = intentToShortcutTarget(intent)
+        if (shortcutTarget) return buildHotelShortcutResult(shortcutTarget, "VIRTUAL_LOUNGE")
+
+        // Anything else (NEGATIVE, UNKNOWN, etc.) → go to the hotel overview
         effects.push({ type: "SET_JOURNEY_STAGE", stage: "HOTEL_EXPLORATION" })
         effects.push({ type: "UE5_COMMAND", command: "startTEST", value: "startTEST" })
         effects.push({ type: "FADE_TRANSITION" })
@@ -490,20 +558,18 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           return { nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" }, effects }
         }
 
-        // Hotel-content intents — user is asking about a specific part of the hotel,
-        // so transition them there directly instead of ignoring the intent.
-        if (
-          intent.type === "ROOMS" || intent.type === "AMENITIES" || intent.type === "AMENITY_BY_NAME" ||
-          intent.type === "LOCATION" || intent.type === "HOTEL_EXPLORE" || intent.type === "BOOK" ||
-          intent.type === "INTERIOR" || intent.type === "EXTERIOR"
-        ) {
-          effects.push({ type: "SET_JOURNEY_STAGE", stage: "HOTEL_EXPLORATION" })
-          effects.push({ type: "UE5_COMMAND", command: "startTEST", value: "startTEST" })
-          effects.push({ type: "FADE_TRANSITION" })
-          effects.push({ type: "SPEAK_INTENT", key: "hotelIntroShort" })
-          return { nextState: { stage: "HOTEL_EXPLORATION", subState: "awaiting_intent" }, effects }
-        }
+        // Hotel-content intents — user is asking about a specific part of the
+        // hotel. Phase 1 travels + speaks; Phase 2 (chained from useJourney
+        // ~1.2s later) opens the panel / lists amenities / navigates to the
+        // named amenity once UE5 has finished server-travel.
+        const shortcutTarget = intentToShortcutTarget(intent)
+        if (shortcutTarget) return buildHotelShortcutResult(shortcutTarget, "VIRTUAL_LOUNGE")
 
+        // INTERIOR / EXTERIOR from the lounge — no selected unit yet, so
+        // there's nothing to view; treat as a generic "go to the hotel".
+        if (intent.type === "INTERIOR" || intent.type === "EXTERIOR") {
+          return buildHotelShortcutResult("hotel", "VIRTUAL_LOUNGE")
+        }
       }
 
       // Any other intent while in the lounge — speak a neutral fallback so
@@ -599,6 +665,14 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
       effects.push({ type: "CLOSE_PANELS" })
       effects.push({ type: "SPEAK_INTENT", key: "unitPicked", args: { roomName: action.roomName } })
       return { nextState: { stage: "ROOM_SELECTED", awaiting: "view_choice", unitSelected: true, lastProposal: "explore_room" }, effects }
+    }
+
+    if (action.type === "SHORTCUT_FOLLOWUP") {
+      // Phase 2 of the pre-hotel shortcut. Phase 1 already played the upfront
+      // speech (pullUpRooms / showLocation), so this is silent — only opens
+      // the panel, which fires the secondary UE5 nav cmd via the bridge.
+      effects.push({ type: "OPEN_PANEL", panel: action.target })
+      return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
     }
 
     if (action.type === "AMENITY_CARD_TAPPED") {

@@ -456,9 +456,23 @@ ${personaBlock}${intelligenceBlock}${transcriptBlock}
 
 A server validator will reject \`ready\` with missing fields and reject age lists whose length doesn't match child count. If you violate these, your response is overridden with a canned reask — do it right the first time.
 
+### Skip-ahead exception (check FIRST every turn)
+
+If the guest's latest turn explicitly asks to skip ahead — e.g. "show me the rooms / hotel / amenities / surrounding area / lobby / spa / pool", "take me to the hotel / rooms", "I want to see X", "let's go straight to the hotel" — emit \`navigate_and_speak\` instead of \`profile_turn\`, with the matching intent:
+
+- "show me the rooms" / "take me to a room" / "I want to book" → \`intent: "ROOMS"\` (or \`"BOOK"\`)
+- "show me the amenities" / "what amenities do you have" → \`intent: "AMENITIES"\`
+- a specific amenity name (pool, spa, restaurant, lobby, conference, gym, bar, lounge, dining) → \`intent: "AMENITY_BY_NAME"\` with \`amenityName\`
+- "show me the surrounding area" / "what's around" / "the location" → \`intent: "LOCATION"\`
+- "show me the hotel" / "let me see the property" / generic "let's go" → \`intent: "HOTEL_EXPLORE"\` (or \`"TRAVEL_TO_HOTEL"\`)
+
+Speech for the skip-ahead should briefly acknowledge and lead in (e.g. "Of course — I'll bring up the rooms now."). Do NOT ask another profile question. The client will travel to the hotel and surface the requested view.
+
+Otherwise (the default for this stage), use \`profile_turn\` as described below.
+
 ### Your job each turn
 
-Return exactly one \`profile_turn\` tool call. The transcript above is the source of truth — extract every profile field the guest has revealed across ALL their turns, not just the latest one. The "Current profile state" block below may be stale, partial, or outright wrong; always trust the transcript first.
+Return exactly one \`profile_turn\` tool call (or \`navigate_and_speak\` per the skip-ahead rule above). The transcript above is the source of truth — extract every profile field the guest has revealed across ALL their turns, not just the latest one. The "Current profile state" block below may be stale, partial, or outright wrong; always trust the transcript first.
 
 \`profile_turn\` has four fields, produced in this order:
 
@@ -557,12 +571,12 @@ Guest said "8 guests" and "4 are children":
 ${collectedSummary}`
   }
 
-  // Phase 3: surface the client-side regex-classifier hint for non-PROFILE_COLLECTION
-  // stages. The LLM is free to override but should prefer the hint on clear matches.
-  // PROFILE_COLLECTION uses the profile_turn tool which has no navigation enum, so
-  // the hint is meaningless there — skip it.
+  // Phase 3: surface the client-side regex-classifier hint when present. The
+  // LLM is free to override but should prefer the hint on clear matches. In
+  // PROFILE_COLLECTION the hint is also a strong signal that the guest may be
+  // asking to skip ahead (see the skip-ahead exception block).
   let regexHintBlock = ""
-  if (!isProfileCollection && body.regexHint && body.regexHint !== "UNKNOWN") {
+  if (body.regexHint && body.regexHint !== "UNKNOWN") {
     regexHintBlock = `\n\nRegex classifier hint (use as a tiebreaker; override only if the conversation makes it clear the hint is wrong): ${body.regexHint}`
   }
 
@@ -1303,16 +1317,16 @@ export async function POST(request: Request) {
       body,
     )
     const systemPrompt = buildSystemPrompt(body, reconstructedProfile)
-    // PROFILE_COLLECTION uses a single profile_turn tool that owns extraction,
-    // decision, and speech — no navigate tools are offered here. Other stages
-    // get navigate_and_speak + no_action_speak. Room-plan changes are handled
-    // by the dedicated client-side planner (/api/room-planner), not this route.
+    // PROFILE_COLLECTION's primary tool is profile_turn (extraction + ask_next /
+    // clarify / ready). navigate_and_speak is also exposed so the model can
+    // honor explicit skip-ahead requests ("show me the rooms / amenities /
+    // hotel / surrounding area"); the prompt's "Skip-ahead exception" block
+    // governs when to pick which. Room-plan changes are handled by the
+    // dedicated client-side planner (/api/room-planner), not this route.
     const tools = isProfileCollection
-      ? [PROFILE_TURN_TOOL]
+      ? [PROFILE_TURN_TOOL, ...buildTools()]
       : buildTools()
-    const toolChoice = isProfileCollection
-      ? ({ type: "function" as const, function: { name: "profile_turn" } })
-      : "auto"
+    const toolChoice = "auto" as const
 
     // Build journey context block for user message
     const jc = body.journeyContext

@@ -11,7 +11,7 @@ import { MessageSender } from "@/lib/liveavatar/types"
 import { useGuestIntelligence } from "@/lib/guest-intelligence"
 import { classifyIntent, type UserIntent } from "./intents"
 import { orchestrateLLM } from "./orchestrateLLM"
-import { buildAmenityNarrative, profileCollectionAwaiting } from "./journey-machine"
+import { buildAmenityNarrative, intentToShortcutTarget, profileCollectionAwaiting } from "./journey-machine"
 import { evaluateFastPath, CLIENT_CANNED_SPEECH, type ProfileAwaiting } from "./profileFastPath"
 import { useIdleDetection } from "./idle-detection"
 import type { JourneyState, JourneyAction, JourneyEffect, AmenityRef } from "./types"
@@ -33,6 +33,11 @@ const AMENITY_ALIASES: Record<string, string> = {
   reception: "lobby",
   entrance: "lobby",
 }
+
+// Delay between Phase 1 (USER_INTENT shortcut → startTEST + travel) and Phase 2
+// (panel-open / amenity nav). Gives UE5's server-travel time to settle so the
+// follow-up nav command (gameEstate / communal) lands on the loaded level.
+const UE5_POST_TRAVEL_DELAY_MS = 3500
 
 // ---------------------------------------------------------------------------
 // Speech-authority rule (=on dispatch).
@@ -208,6 +213,16 @@ export function useJourney(options: UseJourneyOptions) {
   const profileDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const currentRoomIdRef = useRef<string | null>(null)
 
+  // Pre-hotel shortcut: pending Phase 2 timer. Cleared on unmount and on any
+  // new shortcut so a rapid second utterance doesn't double-fire.
+  const shortcutFollowupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const cancelShortcutFollowup = useCallback(() => {
+    if (shortcutFollowupTimerRef.current) {
+      clearTimeout(shortcutFollowupTimerRef.current)
+      shortcutFollowupTimerRef.current = null
+    }
+  }, [])
+
   // --- Pre-generated speech ref (Phase 4: orchestrate fills this before processIntent) ---
   const preGeneratedSpeechRef = useRef<string | null>(null)
 
@@ -281,10 +296,20 @@ export function useJourney(options: UseJourneyOptions) {
   const profileRef = useRef(profile)
   const derivedProfileRef = useRef(derivedProfile)
   const isExtractionPendingRef = useRef(isExtractionPending)
+  // Live refs for amenities + visited amenity names so dispatchListAmenities
+  // and navigateToAmenityByName see fresh data even when their callers
+  // (the pre-hotel shortcut's Phase-2 setTimeout) captured an older closure.
+  // The shortcut from PROFILE_COLLECTION schedules Phase 2 BEFORE the
+  // SELECT_HOTEL effect's render lands, so the closure-captured `amenities`
+  // is the empty pre-hotel array. Refs sidestep that race.
+  const amenitiesRef = useRef(amenities)
+  const visitedAmenityNamesRef = useRef<string[]>([])
   useEffect(() => {
     profileRef.current = profile
     derivedProfileRef.current = derivedProfile
     isExtractionPendingRef.current = isExtractionPending
+    amenitiesRef.current = amenities
+    visitedAmenityNamesRef.current = guestIntelligence.data.amenitiesExplored.map((a) => a.name)
   })
 
   // --- Admin: download all collected user data as JSON ---
@@ -548,20 +573,18 @@ export function useJourney(options: UseJourneyOptions) {
   const getInternalState = useCallback(() => stateRef.current, [])
 
   // --- Amenity data helpers (compute data for rich actions dispatched to reducer) ---
-
-  /** Build the lightweight AmenityRef[] the reducer needs from the full Amenity[] */
-  const amenityRefs: AmenityRef[] = amenities.map((a) => ({ id: a.id, name: a.name, scene: a.scene }))
-
-  /** Get visited amenity names from GuestIntelligence */
-  const getVisitedAmenityNames = useCallback(
-    () => guestIntelligence.data.amenitiesExplored.map((a) => a.name),
-    [guestIntelligence.data.amenitiesExplored],
-  )
+  //
+  // Both helpers read amenities + travel-purpose + visited-names via refs,
+  // not closure-captured props. This keeps their function identity stable
+  // AND — critically — lets a stale-closure caller (the pre-hotel shortcut's
+  // Phase-2 setTimeout, scheduled BEFORE SELECT_HOTEL's render lands) still
+  // see the fresh post-render data at fire time.
 
   // --- Voice-driven amenity navigation (dispatches rich action to reducer) ---
   const navigateToAmenityByName = useCallback((amenityName: string) => {
+    const liveAmenities = amenitiesRef.current
     const normalized = AMENITY_ALIASES[amenityName.toLowerCase()] ?? amenityName.toLowerCase()
-    const match = amenities.find((a) => {
+    const match = liveAmenities.find((a) => {
       const n = a.name.toLowerCase()
       const s = a.scene.toLowerCase()
       return n.includes(normalized) || s.includes(normalized)
@@ -584,22 +607,24 @@ export function useJourney(options: UseJourneyOptions) {
       type: "NAVIGATE_TO_AMENITY",
       amenity: { id: match.id, name: match.name, scene: match.scene },
       narrative: buildAmenityNarrative(match.name, match.scene),
-      visitedAmenities: getVisitedAmenityNames(),
-      allAmenities: amenityRefs,
+      visitedAmenities: visitedAmenityNamesRef.current,
+      allAmenities: liveAmenities.map((a): AmenityRef => ({ id: a.id, name: a.name, scene: a.scene })),
     })
-  }, [amenities, amenityRefs, trackAmenityExplored, startAmenityTimer, getVisitedAmenityNames, interrupt, repeat, dispatch])
+  }, [trackAmenityExplored, startAmenityTimer, interrupt, repeat, dispatch])
 
   /** Dispatch LIST_AMENITIES action with pre-computed hotel data */
   const dispatchListAmenities = useCallback(() => {
-    const recommended = getRecommendedAmenity(amenities, profile.travelPurpose)
+    const liveAmenities = amenitiesRef.current
+    const liveTravelPurpose = profileRef.current.travelPurpose
+    const recommended = getRecommendedAmenity(liveAmenities, liveTravelPurpose)
     dispatch({
       type: "LIST_AMENITIES",
-      visitedAmenities: getVisitedAmenityNames(),
-      allAmenities: amenityRefs,
-      travelPurpose: profile.travelPurpose,
+      visitedAmenities: visitedAmenityNamesRef.current,
+      allAmenities: liveAmenities.map((a): AmenityRef => ({ id: a.id, name: a.name, scene: a.scene })),
+      travelPurpose: liveTravelPurpose,
       recommendedAmenityName: recommended?.name,
     })
-  }, [amenities, amenityRefs, profile.travelPurpose, getVisitedAmenityNames, dispatch])
+  }, [dispatch])
 
   // --- Idle detection (re-engagement) ---
   const handleIdle = useCallback(() => {
@@ -680,6 +705,66 @@ export function useJourney(options: UseJourneyOptions) {
     currentState: JourneyState,
     stage: JourneyState["stage"],
   ) => {
+    // --- Pre-hotel shortcut interception ---
+    // From PROFILE_COLLECTION or VIRTUAL_LOUNGE, a content intent (rooms /
+    // amenities / a specific amenity / location / hotel) shortcuts straight
+    // to HOTEL_EXPLORATION. Phase 1 (the reducer) emits SELECT_HOTEL +
+    // startTEST + fade + upfront speech. Phase 2 (here, on a 1.2s timer)
+    // fires the secondary nav so UE5's server-travel has time to land.
+    if (stage === "PROFILE_COLLECTION" || stage === "VIRTUAL_LOUNGE") {
+      const shortcutTarget = intentToShortcutTarget(intent)
+      // VIRTUAL_LOUNGE.asking treats AFFIRMATIVE as "explore the lounge" —
+      // never a hotel shortcut. Same for VIRTUAL_LOUNGE.exploring's
+      // TRAVEL_TO_HOTEL/AFFIRMATIVE/NEGATIVE branch which speaks hotelWelcome.
+      // Let those fall through to the regular dispatch below.
+      const isLoungeAskingAffirmative = stage === "VIRTUAL_LOUNGE" &&
+        currentState.stage === "VIRTUAL_LOUNGE" && currentState.subState === "asking" &&
+        intent.type === "AFFIRMATIVE"
+      const isLoungeExploringTravel = stage === "VIRTUAL_LOUNGE" &&
+        currentState.stage === "VIRTUAL_LOUNGE" && currentState.subState === "exploring" &&
+        (intent.type === "TRAVEL_TO_HOTEL" || intent.type === "AFFIRMATIVE" || intent.type === "NEGATIVE")
+
+      if (shortcutTarget && !isLoungeAskingAffirmative && !isLoungeExploringTravel) {
+        cancelShortcutFollowup()
+        dispatch({ type: "USER_INTENT", intent })
+
+        // For target === "hotel", just travel + welcome, no Phase 2.
+        if (shortcutTarget === "hotel") return
+
+        // For amenities, schedule the LIST_AMENITIES dispatch — the rich
+        // listing speech (curated by travel purpose) interrupts Phase 1's
+        // intro at ~1.2s. No UE5 cmd fires here; the user picks an amenity
+        // afterward, and AMENITY_CARD_TAPPED / NAVIGATE_TO_AMENITY handles
+        // the `communal` cmd at that point (well after server-travel).
+        if (shortcutTarget === "amenities") {
+          shortcutFollowupTimerRef.current = setTimeout(() => {
+            shortcutFollowupTimerRef.current = null
+            dispatchListAmenities()
+          }, UE5_POST_TRAVEL_DELAY_MS)
+          return
+        }
+
+        if (shortcutTarget === "amenity_by_name" && intent.type === "AMENITY_BY_NAME") {
+          const amenityName = intent.amenityName
+          shortcutFollowupTimerRef.current = setTimeout(() => {
+            shortcutFollowupTimerRef.current = null
+            navigateToAmenityByName(amenityName)
+          }, UE5_POST_TRAVEL_DELAY_MS)
+          return
+        }
+
+        // rooms / location: silent panel open via SHORTCUT_FOLLOWUP. The
+        // bridge translates OPEN_PANEL → gameEstate UE5 cmd.
+        if (shortcutTarget === "rooms" || shortcutTarget === "location") {
+          shortcutFollowupTimerRef.current = setTimeout(() => {
+            shortcutFollowupTimerRef.current = null
+            dispatch({ type: "SHORTCUT_FOLLOWUP", target: shortcutTarget })
+          }, UE5_POST_TRAVEL_DELAY_MS)
+          return
+        }
+      }
+    }
+
     // --- Exploration timer management ---
     if (stage === "ROOM_SELECTED" && (intent.type === "INTERIOR" || intent.type === "EXTERIOR")) {
       if (currentRoomIdRef.current) {
@@ -739,7 +824,10 @@ export function useJourney(options: UseJourneyOptions) {
     // user-messages effect via maybeKickRoomPlanner) is the sole authority on
     // the displayed plan when the rooms panel is open.
     dispatch({ type: "USER_INTENT", intent })
-  }, [dispatch, dispatchListAmenities, navigateToAmenityByName, startRoomTimer, stopExplorationTimer, isRoomsPanelVisibleRef])
+  }, [dispatch, dispatchListAmenities, navigateToAmenityByName, startRoomTimer, stopExplorationTimer, isRoomsPanelVisibleRef, cancelShortcutFollowup])
+
+  // Cancel any pending shortcut Phase-2 timer on unmount.
+  useEffect(() => () => cancelShortcutFollowup(), [cancelShortcutFollowup])
 
   // --- React to new user messages (intent classification + question tracking) ---
   useEffect(() => {
@@ -1030,6 +1118,10 @@ export function useJourney(options: UseJourneyOptions) {
             personality: returningUserData?.personality ?? null,
             preferences: returningUserData?.preferences ?? null,
             loyalty: returningUserData?.loyalty ?? null,
+            // Skip-ahead signal: in PC the LLM can pick navigate_and_speak
+            // for explicit "show me the rooms / amenities / hotel" requests.
+            // Passing the regex tag biases the model toward the right intent.
+            regexHint: profileRegexIntent.type,
             conversationHistory,
             signal: controller.signal,
           })
@@ -1188,35 +1280,76 @@ export function useJourney(options: UseJourneyOptions) {
             return
           }
 
-          // --- Legacy tool fallbacks (should not occur with the new prompt,
-          // but kept defensively in case the model picks a different tool) ---
+          // --- navigate_and_speak in PROFILE_COLLECTION ---
+          //
+          // The PC prompt now exposes navigate_and_speak alongside profile_turn
+          // so the LLM can honor explicit skip-ahead requests ("show me the
+          // rooms / amenities / hotel / surrounding area"). Two paths:
+          //
+          //   1) Bare AFFIRMATIVE — legacy "I'm done, move on" → FORCE_ADVANCE
+          //      (lands in VIRTUAL_LOUNGE:asking with `profileReadyWelcome`).
+          //   2) Skip-ahead intent — route through processIntent so the
+          //      pre-hotel shortcut runs (Phase 1 travel + Phase 2 panel
+          //      open / amenity nav, all wired in journey-machine.ts +
+          //      processIntent).
 
-          if (
-            result.tool === "navigate_and_speak" &&
-            (result.intent.type === "TRAVEL_TO_HOTEL" || result.intent.type === "AFFIRMATIVE")
-          ) {
-            logTurn({
-              stage: "PROFILE_COLLECTION",
-              latestMessage: profileTurnMessageSlice,
-              regexIntent: profileRegexIntent.type,
-              llmIntent: result.intent.type,
-              action: { type: "FORCE_ADVANCE" },
-              speech: result.speech,
-              latencyMs: profileLatencyMs,
-              pathway: "orchestrate",
-            })
-            prevAwaitingRef.current = freshAwaiting
-            // Phase 2.5: if fast-path already asked another question, do not
-            // advance — the user still owes us an answer.
-            if (fastPathAlreadySpoke) return
-            if (cancelled) return
-            // why: same rationale as the profile_turn ready path — FORCE_ADVANCE
-            // from PROFILE_COLLECTION lands in VIRTUAL_LOUNGE:asking whose reducer
-            // speaks `profileReadyWelcome`. Overriding with LLM speech about "the
-            // hotel" misleads the guest about what comes next.
-            preGeneratedSpeechRef.current = null
-            dispatch({ type: "FORCE_ADVANCE" })
-            return
+          if (result.tool === "navigate_and_speak") {
+            const llmIntent = result.intent
+            const isShortcutIntent =
+              llmIntent.type === "ROOMS" || llmIntent.type === "AMENITIES" ||
+              llmIntent.type === "AMENITY_BY_NAME" || llmIntent.type === "LOCATION" ||
+              llmIntent.type === "HOTEL_EXPLORE" || llmIntent.type === "TRAVEL_TO_HOTEL" ||
+              llmIntent.type === "BOOK"
+
+            if (llmIntent.type === "AFFIRMATIVE") {
+              // Bare "yes" during PC → "I'm done, move on" → FORCE_ADVANCE.
+              // (TRAVEL_TO_HOTEL is treated as a shortcut below so it travels
+              // straight to the hotel instead of stopping in the lounge.)
+              logTurn({
+                stage: "PROFILE_COLLECTION",
+                latestMessage: profileTurnMessageSlice,
+                regexIntent: profileRegexIntent.type,
+                llmIntent: llmIntent.type,
+                action: { type: "FORCE_ADVANCE" },
+                speech: result.speech,
+                latencyMs: profileLatencyMs,
+                pathway: "orchestrate",
+              })
+              prevAwaitingRef.current = freshAwaiting
+              if (fastPathAlreadySpoke) return
+              if (cancelled) return
+              // why: FORCE_ADVANCE lands in VIRTUAL_LOUNGE:asking whose
+              // reducer speaks `profileReadyWelcome`. Override LLM speech so
+              // the guest hears the canonical lounge prompt.
+              preGeneratedSpeechRef.current = null
+              dispatch({ type: "FORCE_ADVANCE" })
+              return
+            }
+
+            if (isShortcutIntent) {
+              logTurn({
+                stage: "PROFILE_COLLECTION",
+                latestMessage: profileTurnMessageSlice,
+                regexIntent: profileRegexIntent.type,
+                llmIntent: llmIntent.type,
+                action: { type: "USER_INTENT", intent: llmIntent.type },
+                speech: result.speech,
+                latencyMs: profileLatencyMs,
+                pathway: "orchestrate",
+              })
+              prevAwaitingRef.current = freshAwaiting
+              if (fastPathAlreadySpoke) return
+              if (cancelled) return
+              // Use the LLM's warm acknowledgement ("Of course, taking you to
+              // the rooms now") as the Phase-1 transition speech. The reducer's
+              // SPEAK_INTENT effect drains preGeneratedSpeechRef.
+              preGeneratedSpeechRef.current = result.speech
+              processIntent(llmIntent, latestMessage, stateRef.current, "PROFILE_COLLECTION")
+              return
+            }
+
+            // Any other navigate_and_speak intent during PC (UNKNOWN, lighting,
+            // etc.) — speak the LLM's response without a state change.
           }
 
           logTurn({
@@ -1644,11 +1777,11 @@ export function useJourney(options: UseJourneyOptions) {
         name: payload.name,
         scene: payload.scene,
         amenityId: payload.amenityId,
-        visitedAmenities: getVisitedAmenityNames(),
-        allAmenities: amenityRefs,
+        visitedAmenities: visitedAmenityNamesRef.current,
+        allAmenities: amenitiesRef.current.map((a): AmenityRef => ({ id: a.id, name: a.name, scene: a.scene })),
       })
     },
-    [dispatch, stopExplorationTimer, trackAmenityExplored, startAmenityTimer, getVisitedAmenityNames, amenityRefs],
+    [dispatch, stopExplorationTimer, trackAmenityExplored, startAmenityTimer],
   )
 
   const onNavigateBack = useCallback(() => {
