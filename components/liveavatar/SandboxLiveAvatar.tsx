@@ -1,7 +1,7 @@
 ﻿"use client"
 
 import { useEffect, useRef, useState, type ReactNode } from "react"
-import { AgentEventsEnum, SessionState } from "@heygen/liveavatar-web-sdk"
+import { SessionState } from "@heygen/liveavatar-web-sdk"
 import { ChevronDown } from "lucide-react"
 import { LiveAvatarContextProvider, useLiveAvatarContext, useSession, useUserProfile } from "@/lib/liveavatar"
 import { useAvatarActions } from "@/lib/liveavatar/useAvatarActions"
@@ -42,107 +42,6 @@ export const useDebugLogger = () => {
       })),
     })
   }, [profile, derivedProfile, userMessages, isExtracting, journeyStage])
-}
-
-/**
- * One-shot diagnostic for HeyGen `repeat()` queueing semantics.
- *
- * Sends two distinct utterances back-to-back with a configurable gap, then
- * subscribes to AVATAR_SPEAK_STARTED / AVATAR_SPEAK_ENDED / AVATAR_TRANSCRIPTION
- * for ~12s and dumps everything as `[QUEUE-PROBE]` log lines with timestamps
- * relative to send-time-0. Read the console (and listen) to interpret:
- *
- *   • Both utterances spoken in sequence  → HeyGen QUEUES. Streaming plan stands.
- *   • Only the second utterance audible    → HeyGen INTERRUPTS on each new
- *                                            repeat(). Phase 2 must buffer.
- *   • Garbled overlap                      → bad case; must buffer + delay.
- *
- * The two test sentences are deliberately distinguishable ("Hello there.",
- * "How are you today?") so you can ear-confirm what played.
- *
- * Renders only in dev (gated by the parent on `streamMode === "local"`).
- */
-export const TtsQueueingProbe = () => {
-  const { sessionRef, isStreamReady } = useLiveAvatarContext()
-  const [running, setRunning] = useState(false)
-
-  const runProbe = (gapMs: number) => {
-    const session = sessionRef.current
-    if (!session || running) return
-    setRunning(true)
-
-    const tag = `[QUEUE-PROBE gap=${gapMs}ms]`
-    const t0 = performance.now()
-    const rel = () => Math.round(performance.now() - t0)
-
-    const onStart = () => console.log(tag, "AVATAR_SPEAK_STARTED", { tMs: rel() })
-    const onEnd = () => console.log(tag, "AVATAR_SPEAK_ENDED", { tMs: rel() })
-    const onTx = ({ text }: { text: string }) =>
-      console.log(tag, "AVATAR_TRANSCRIPTION", { tMs: rel(), text })
-
-    session.on(AgentEventsEnum.AVATAR_SPEAK_STARTED, onStart)
-    session.on(AgentEventsEnum.AVATAR_SPEAK_ENDED, onEnd)
-    session.on(AgentEventsEnum.AVATAR_TRANSCRIPTION, onTx)
-
-    // Clean slate so any in-flight pre-warm or stray speech doesn't pollute.
-    session.interrupt()
-
-    console.log(tag, "BEGIN", { gapMs })
-    console.log(tag, "send #1", { tMs: rel(), text: "Hello there." })
-    session.repeat("Hello there.")
-
-    setTimeout(() => {
-      console.log(tag, "send #2", { tMs: rel(), text: "How are you today?" })
-      session.repeat("How are you today?")
-    }, gapMs)
-
-    setTimeout(() => {
-      session.removeListener(AgentEventsEnum.AVATAR_SPEAK_STARTED, onStart)
-      session.removeListener(AgentEventsEnum.AVATAR_SPEAK_ENDED, onEnd)
-      session.removeListener(AgentEventsEnum.AVATAR_TRANSCRIPTION, onTx)
-      console.log(tag, "COMPLETE — interpret in console")
-      setRunning(false)
-    }, 12_000)
-  }
-
-  return (
-    <div className="bg-white/12 text-white text-xs p-3 rounded-xl space-y-2 max-w-sm pointer-events-auto border border-white/15 backdrop-blur-md shadow-lg">
-      <div className="font-semibold">HeyGen `repeat()` queueing probe</div>
-      <div className="text-white/70 leading-snug">
-        Sends two utterances back-to-back. Watch console for <code>[QUEUE-PROBE]</code>;
-        listen for whether you hear one or both.
-      </div>
-      <div className="flex gap-2">
-        <button
-          type="button"
-          onClick={() => runProbe(200)}
-          disabled={!isStreamReady || running}
-          className="px-2 py-1 rounded bg-white/15 hover:bg-white/25 disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          200ms gap
-        </button>
-        <button
-          type="button"
-          onClick={() => runProbe(50)}
-          disabled={!isStreamReady || running}
-          className="px-2 py-1 rounded bg-white/15 hover:bg-white/25 disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          50ms gap
-        </button>
-        <button
-          type="button"
-          onClick={() => runProbe(800)}
-          disabled={!isStreamReady || running}
-          className="px-2 py-1 rounded bg-white/15 hover:bg-white/25 disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          800ms gap
-        </button>
-      </div>
-      <div className="text-white/60">
-        {running ? "Running… check DevTools console." : isStreamReady ? "Ready." : "Stream not ready."}
-      </div>
-    </div>
-  )
 }
 
 export const DebugHud = () => {

@@ -4,7 +4,7 @@ import type React from "react"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Mic, MicOff, Lock, Mail, LogIn, User, Phone, Calendar, UserPlus, ArrowLeft, Globe } from "lucide-react"
-import { DebugHud, SandboxSessionPlayer, TtsQueueingProbe, useDebugLogger } from "@/components/liveavatar/SandboxLiveAvatar"
+import { DebugHud, SandboxSessionPlayer, useDebugLogger } from "@/components/liveavatar/SandboxLiveAvatar"
 import { ModeToggle } from "@/components/liveavatar/ModeToggle"
 import { ChatPanel } from "@/components/chat/ChatPanel"
 import { SunToggle, type SunState } from "@/components/SunToggle"
@@ -1367,7 +1367,6 @@ function HomePageContent({
         {streamMode === "local" && (
           <div className="fixed top-4 right-4 z-30 space-y-3 pointer-events-none">
             <DebugHud />
-            <TtsQueueingProbe />
           </div>
         )}
       </div>

@@ -1250,6 +1250,20 @@ interface OpenAITool {
   }
 }
 
+type AnthropicTool = {
+  name: string
+  description: string
+  input_schema: Record<string, unknown>
+}
+
+function toAnthropicTool(tool: OpenAITool): AnthropicTool {
+  return {
+    name: tool.function.name,
+    description: tool.function.description,
+    input_schema: tool.function.parameters,
+  }
+}
+
 const PROFILE_TURN_TOOL: OpenAITool = {
   type: "function" as const,
   function: {
@@ -1518,6 +1532,8 @@ function buildTurnDecision(args: {
 
 export async function POST(request: Request) {
   const openaiKey = process.env.NEXT_PUBLIC_OPENAI_API_KEY
+  const anthropicKey =
+    process.env.ANTHROPIC_API_KEY ?? process.env.NEXT_PUBLIC_ANTHROPIC_API_KEY
 
   if (!openaiKey) {
     return new Response(
@@ -1545,6 +1561,13 @@ export async function POST(request: Request) {
     }
 
     const isProfileCollection = body.journeyContext.stage === "PROFILE_COLLECTION"
+    if (isProfileCollection && !anthropicKey) {
+      return new Response(
+        JSON.stringify({ error: "Anthropic orchestration not configured", code: "ANTHROPIC_NOT_CONFIGURED" }),
+        { status: 501, headers: { "Content-Type": "application/json" } },
+      )
+    }
+
     // Phase 4: reconstruct profile from client body + transcript before
     // building the prompt. Logged at the bottom of the handler so we can
     // diagnose when transcript disagrees with client body.
@@ -1580,6 +1603,148 @@ export async function POST(request: Request) {
     const timeout = setTimeout(() => controller.abort(), 15000)
 
     try {
+      if (isProfileCollection) {
+        const response = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: {
+            "x-api-key": anthropicKey!,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: "claude-haiku-4-5",
+            max_tokens: 800,
+            temperature: 0.2,
+            system: systemPrompt,
+            messages: [
+              { role: "user", content: `User message: "${body.message}"${journeyBlock}` },
+            ],
+            tools: tools.map(toAnthropicTool),
+            tool_choice: { type: "any" },
+          }),
+          signal: controller.signal,
+        })
+
+        clearTimeout(timeout)
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}))
+          console.error("Anthropic API error:", errorData)
+          return new Response(
+            JSON.stringify({ error: "Failed to orchestrate" }),
+            { status: 503, headers: { "Content-Type": "application/json" } },
+          )
+        }
+
+        const data = await response.json()
+        const toolCall = data.content?.find((block: { type?: string }) => block.type === "tool_use")
+        const functionName = toolCall?.name
+        const args = toolCall?.input
+
+        if (!functionName || args === undefined) {
+          return new Response(
+            JSON.stringify({ error: "No tool call in AI response" }),
+            { status: 503, headers: { "Content-Type": "application/json" } },
+          )
+        }
+
+        const schema = TOOL_SCHEMAS[functionName]
+        if (!schema) {
+          return new Response(
+            JSON.stringify({ error: `Unknown tool: ${functionName}` }),
+            { status: 503, headers: { "Content-Type": "application/json" } },
+          )
+        }
+
+        const validated = schema.safeParse(args)
+
+        if (!validated.success) {
+          console.error("Schema validation failed:", validated.error)
+          return new Response(
+            JSON.stringify({ error: "Invalid orchestration structure" }),
+            { status: 503, headers: { "Content-Type": "application/json" } },
+          )
+        }
+
+        let result = validated.data as Record<string, unknown>
+        let validatorOverride: ProfileValidatorOverride | null = null
+
+        if (functionName === "profile_turn") {
+          const check = validateProfileTurn(result as unknown as ProfileTurnT, body)
+          result = check.result as unknown as Record<string, unknown>
+          validatorOverride = check.overridden
+        }
+
+        const responseBody: Record<string, unknown> = { tool: functionName }
+        const isReadyHandoff =
+          (functionName === "profile_turn" && result.decision === "ready") ||
+          (functionName === "navigate_and_speak" && result.intent === "TRAVEL_TO_HOTEL")
+        const shouldStripPreamble = !isReadyHandoff
+        const cleanSpeech = (s: unknown) =>
+          shouldStripPreamble && typeof s === "string" ? stripPreamble(s) : s
+
+        const passThroughProfileUpdates = (): void => {
+          if (
+            result.profileUpdates &&
+            typeof result.profileUpdates === "object" &&
+            Object.keys(result.profileUpdates).length > 0
+          ) {
+            responseBody.profileUpdates = result.profileUpdates
+          }
+        }
+
+        if (functionName === "navigate_and_speak") {
+          responseBody.intent = result.intent
+          if (result.amenityName) responseBody.amenityName = result.amenityName
+          if (result.lightingMode) responseBody.lightingMode = result.lightingMode
+          responseBody.speech = cleanSpeech(result.speech)
+          passThroughProfileUpdates()
+        } else if (functionName === "profile_turn") {
+          responseBody.reasoning = result.reasoning
+          responseBody.profileUpdates = result.profileUpdates ?? {}
+          responseBody.decision = result.decision
+          responseBody.speech = cleanSpeech(result.speech)
+        } else {
+          responseBody.speech = cleanSpeech(result.speech)
+          passThroughProfileUpdates()
+        }
+
+        const finalSpeechText =
+          typeof responseBody.speech === "string" ? responseBody.speech : ""
+        const decision = buildTurnDecision({
+          functionName,
+          result,
+          speech: finalSpeechText,
+          validatorOverride,
+        })
+        responseBody.decision_envelope = decision
+
+        console.log("[ORCHESTRATE]", JSON.stringify({
+          stage: body.journeyContext.stage,
+          awaiting: body.profileAwaiting,
+          provider: "anthropic",
+          model: "claude-haiku-4-5",
+          tool: functionName,
+          toolCalled: functionName,
+          latencyMs: Date.now() - requestStart,
+          reasoning: result.reasoning,
+          decision: result.decision,
+          profileUpdates: result.profileUpdates,
+          validatorOverride,
+          rawSpeech: result.speech,
+          stripped: shouldStripPreamble,
+          outSpeech: responseBody.speech,
+          decisionAction: (decision as { action?: { type?: string } | null })?.action?.type ?? null,
+          reconstructedProfile,
+          historyLen: body.conversationHistory?.length ?? 0,
+        }))
+
+        return new Response(JSON.stringify(responseBody), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        })
+      }
+
       const response = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
         headers: {
@@ -1597,7 +1762,7 @@ export async function POST(request: Request) {
           // ask_next/ready with empty profileUpdates; that's why PC was on
           // gpt-4o. gpt-5.4-mini is a newer-generation model and should
           // handle the structured extraction reliably.
-          model: isProfileCollection ? "gpt-5.4-mini" : "gpt-5.4-nano",
+          model: "gpt-5.4-nano",
           messages: [
             { role: "system", content: systemPrompt },
             { role: "user", content: `User message: "${body.message}"${journeyBlock}` },
