@@ -21,7 +21,7 @@ export type TurnEntry = {
   action: unknown
   speech: string | null
   latencyMs: number
-  pathway: "regex-shortcircuit" | "orchestrate" | "fallback" | "fast-path"
+  pathway: "regex-shortcircuit" | "orchestrate" | "fallback" | "fast-path" | "deterministic"
 }
 
 export type EffectEntry = {

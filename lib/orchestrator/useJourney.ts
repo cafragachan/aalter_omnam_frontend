@@ -12,7 +12,8 @@ import { useGuestIntelligence } from "@/lib/guest-intelligence"
 import { classifyIntent, type UserIntent } from "./intents"
 import { orchestrateLLM } from "./orchestrateLLM"
 import { buildAmenityNarrative, intentToShortcutTarget, profileCollectionAwaiting } from "./journey-machine"
-import { evaluateFastPath, CLIENT_CANNED_SPEECH, type ProfileAwaiting } from "./profileFastPath"
+import type { ProfileAwaiting } from "./profileFastPath"
+import { evaluateDeterministicProfileTurn } from "./profileDeterministic"
 import { useIdleDetection } from "./idle-detection"
 import type { JourneyState, JourneyAction, JourneyEffect, AmenityRef } from "./types"
 import { renderSpeech } from "./speech-renderer"
@@ -134,12 +135,11 @@ type UseJourneyOptions = {
    */
   catalog?: HotelCatalog | null
   /**
-   * Phase 2.5: when true, PROFILE_COLLECTION turns that advance the
-   * regex-derived awaiting field to a fast-path-eligible value speak the
-   * matching canned question immediately (via interrupt()+repeat()), while
-   * the LLM call still runs in the background to validate extraction.
-   * Default: true. Set to false (or NEXT_PUBLIC_PROFILE_FAST_PATH=false) for
-   * instant rollback to the pure LLM path.
+   * When true, PROFILE_COLLECTION runs a deterministic parser/confidence gate
+   * before escalating to the LLM. High-confidence deterministic turns speak
+   * locally and do not start a background LLM call, preserving one speech
+   * authority per user turn. Default: true. Set to false (or
+   * NEXT_PUBLIC_PROFILE_FAST_PATH=false) for rollback to the pure LLM path.
    */
   useProfileFastPath?: boolean
   /**
@@ -321,9 +321,6 @@ export function useJourney(options: UseJourneyOptions) {
   // turn can tell whether regex extraction made progress this turn.
   // Initial "dates_and_guests" matches INITIAL_JOURNEY_STATE.awaiting.
   const prevAwaitingRef = useRef<ProfileAwaiting>("dates_and_guests")
-  // Flag set when fast-path fired this turn. The orchestrate response handler
-  // reads this, applies profileUpdates silently, and suppresses its speech.
-  const fastPathFiredThisTurnRef = useRef(false)
   // Diagnostic: total user turns observed (feeds the fast-path turnCount check).
   const profileTurnCountRef = useRef(0)
 
@@ -1041,103 +1038,10 @@ export function useJourney(options: UseJourneyOptions) {
     const stage = stateRef.current.stage
 
     // PROFILE_COLLECTION: debounce so chunked VAD utterances settle into one
-    // orchestrate call, then route everything through the LLM. Advance via
-    // preGeneratedSpeechRef substitution so the reducer's hardcoded SPEAK
-    // becomes the contextual transition speech.
+    // turn, then choose exactly one speech authority: deterministic parser
+    // for high-confidence profile answers, otherwise the LLM.
     if (stage === "PROFILE_COLLECTION") {
-      // --- Phase 2.5: fast-path ---------------------------------------------
-      // Before scheduling the 700ms debounce, check whether the regex extractor
-      // already advanced the awaiting state this turn. If it did, speak the
-      // canned next-question IMMEDIATELY (interrupt + repeat). The LLM call
-      // still runs in the background to refine extraction and log disagreements.
-      //
-      // Snapshots used:
-      //   • prevAwaiting — the `awaiting` value BEFORE the current user
-      //     utterance merged into derivedProfile. Kept in prevAwaitingRef,
-      //     which is updated at the end of the fast-path evaluation (or at
-      //     the end of the debounced callback) to the computed freshAwaiting.
-      //   • freshAwaiting — re-derived here from the live refs so the regex's
-      //     synchronous extraction of the just-arrived user message is visible.
       profileTurnCountRef.current += 1
-      const fastPathTurnCount = profileTurnCountRef.current
-      fastPathFiredThisTurnRef.current = false
-
-      if (useProfileFastPath) {
-        const liveProfileNow = profileRef.current
-        const liveDerivedNow = derivedProfileRef.current
-        const fastMergedProfile = {
-          partySize: liveProfileNow.familySize ?? liveDerivedNow.partySize,
-          startDate: liveDerivedNow.startDate ?? liveProfileNow.startDate,
-          endDate: liveDerivedNow.endDate ?? liveProfileNow.endDate,
-          travelPurpose: liveProfileNow.travelPurpose ?? liveDerivedNow.travelPurpose,
-          interests: liveDerivedNow.interests,
-          guestComposition: liveProfileNow.guestComposition ?? liveDerivedNow.guestComposition,
-          roomAllocation: liveProfileNow.roomAllocation ?? liveDerivedNow.roomAllocation,
-        }
-        const fastFreshAwaiting = profileCollectionAwaiting(fastMergedProfile)
-        const fastPathDecisionStart = Date.now()
-        const fastPathDecision = evaluateFastPath({
-          prevAwaiting: prevAwaitingRef.current,
-          freshAwaiting: fastFreshAwaiting,
-          latestMessage,
-          turnCount: fastPathTurnCount,
-        })
-
-        if (fastPathDecision.eligible) {
-          // Invariant: fastPathDecision.cannedSpeech === CLIENT_CANNED_SPEECH[freshAwaiting].
-          // Reading CLIENT_CANNED_SPEECH here both documents the contract and keeps
-          // the import load-bearing so accidental removal breaks the build.
-          const expectedCanned = CLIENT_CANNED_SPEECH[fastPathDecision.nextAwaiting]
-          if (expectedCanned !== fastPathDecision.cannedSpeech) {
-            // eslint-disable-next-line no-console
-            console.warn("[FAST_PATH_INVARIANT]", { expectedCanned, actual: fastPathDecision.cannedSpeech })
-          }
-
-          // Kill any orchestrate call still in flight from a prior turn. Its
-          // response would otherwise land ~6s later and speak over the canned
-          // question we're about to utter.
-          abortStaleProfileOrchestrate("fast-path")
-
-          // Speak the canned question immediately.
-          interrupt()
-          repeat(fastPathDecision.cannedSpeech).catch(() => undefined)
-
-          // Apply whatever the regex already captured. updateProfile is a
-          // Partial merge — idempotent with the later LLM writes.
-          const regexUpdates: Partial<import("@/lib/context").UserProfile> = {}
-          if (liveDerivedNow.startDate) regexUpdates.startDate = liveDerivedNow.startDate
-          if (liveDerivedNow.endDate) regexUpdates.endDate = liveDerivedNow.endDate
-          if (liveDerivedNow.partySize != null && !liveProfileNow.familySize) {
-            regexUpdates.familySize = liveDerivedNow.partySize
-          }
-          if (liveDerivedNow.guestComposition && !liveProfileNow.guestComposition) {
-            regexUpdates.guestComposition = liveDerivedNow.guestComposition
-          }
-          if (liveDerivedNow.travelPurpose && !liveProfileNow.travelPurpose) {
-            regexUpdates.travelPurpose = liveDerivedNow.travelPurpose
-          }
-          if (liveDerivedNow.roomAllocation && !liveProfileNow.roomAllocation) {
-            regexUpdates.roomAllocation = liveDerivedNow.roomAllocation
-          }
-          if (Object.keys(regexUpdates).length > 0) updateProfile(regexUpdates)
-
-          fastPathFiredThisTurnRef.current = true
-          prevAwaitingRef.current = fastFreshAwaiting
-
-          logTurn({
-            stage: "PROFILE_COLLECTION",
-            latestMessage: latestMessage.slice(-80),
-            regexIntent: null,
-            llmIntent: null,
-            action: { type: "PROFILE_TURN_RESULT", decision: "ask_next", awaiting: fastFreshAwaiting },
-            speech: fastPathDecision.cannedSpeech,
-            latencyMs: Date.now() - fastPathDecisionStart,
-            pathway: "fast-path",
-          })
-          // Intentionally fall through — still schedule the background
-          // orchestrate so profileUpdates from the LLM land idempotently.
-        }
-      }
 
       if (profileMsgDebounceRef.current) clearTimeout(profileMsgDebounceRef.current)
       profileMsgDebounceRef.current = setTimeout(() => {
@@ -1162,18 +1066,67 @@ export function useJourney(options: UseJourneyOptions) {
           roomAllocation: liveProfile.roomAllocation ?? liveDerivedProfile.roomAllocation,
         }
         const freshAwaiting = profileCollectionAwaiting(mergedProfile)
-        // Snapshot whether the fast-path already spoke this turn (see above).
-        // Kept in a local because the ref is per-turn and will be reset by the
-        // next user utterance before this callback's await resolves.
-        const fastPathAlreadySpoke = fastPathFiredThisTurnRef.current
 
-        // PROFILE_COLLECTION transcript window. The LLM is the only writer in
-        // this stage and an earlier slice(-10) caused it to forget fields the
-        // guest gave on the first turn. 40 messages comfortably covers a
+        if (useProfileFastPath) {
+          const deterministicStart = Date.now()
+          const deterministic = evaluateDeterministicProfileTurn({
+            latestMessage,
+            awaiting: freshAwaiting,
+            profile: {
+              familySize: mergedProfile.partySize ?? undefined,
+              startDate: mergedProfile.startDate,
+              endDate: mergedProfile.endDate,
+              travelPurpose: mergedProfile.travelPurpose,
+              guestComposition: mergedProfile.guestComposition,
+              roomAllocation: mergedProfile.roomAllocation,
+            },
+          })
+
+          if (deterministic.handled) {
+            if (profileMsgDebounceRef.current) {
+              profileMsgDebounceRef.current = null
+            }
+            abortStaleProfileOrchestrate("new-turn")
+            if (Object.keys(deterministic.updates).length > 0) {
+              updateProfile(deterministic.updates)
+            }
+            prevAwaitingRef.current = deterministic.awaiting
+            logTurn({
+              stage: "PROFILE_COLLECTION",
+              latestMessage: latestMessage.slice(-80),
+              regexIntent: null,
+              llmIntent: null,
+              action: {
+                type: "PROFILE_TURN_RESULT",
+                decision: deterministic.decision,
+                awaiting: deterministic.awaiting,
+                confidence: deterministic.confidence,
+                reasons: deterministic.reasons,
+              },
+              speech: deterministic.speech,
+              latencyMs: Date.now() - deterministicStart,
+              pathway: "deterministic",
+            })
+
+            if (deterministic.decision === "ready") {
+              preGeneratedSpeechRef.current = deterministic.speech
+              dispatch({ type: "FORCE_ADVANCE" })
+              return
+            }
+
+            interrupt()
+            repeat(deterministic.speech).catch(() => undefined)
+            return
+          }
+        }
+
+        // PROFILE_COLLECTION transcript window for escalated turns. An earlier
+        // slice(-10) caused the LLM to forget fields the
+        // guest gave on the first turn. 24 messages comfortably covers a
         // typical onboarding (5–8 user turns × 2 + headroom) while saving
         // significant TTFT vs. the prior slice(-80).
         const conversationHistory = allMessages
-          .slice(-40)
+          .slice(-24)
           .map((m) => ({
             role: m.sender === MessageSender.AVATAR ? ("avatar" as const) : ("user" as const),
             text: m.message,
@@ -1186,9 +1139,8 @@ export function useJourney(options: UseJourneyOptions) {
         }
 
         // Real fetch-level cancellation. Abort whatever call is in flight from
-        // a prior turn (fast-path's abort already handled the
-        // `fastPathAlreadySpoke` case, but a non-fast-path turn that arrives
-        // while an earlier orchestrate is still pending must also cancel it).
+        // a prior turn. A non-deterministic turn that arrives while an earlier
+        // orchestrate is still pending must cancel the stale request.
         abortStaleProfileOrchestrate("new-turn")
         const controller = new AbortController()
         profileOrchestrateAbortRef.current = controller
@@ -1281,10 +1233,9 @@ export function useJourney(options: UseJourneyOptions) {
             if (cancelled) return
             const fallbackIntent = classifyIntent(latestMessage)
             if (
-              !fastPathAlreadySpoke &&
-              (freshAwaiting === "ready" ||
+              freshAwaiting === "ready" ||
                 fallbackIntent.type === "TRAVEL_TO_HOTEL" ||
-                fallbackIntent.type === "AFFIRMATIVE")
+                fallbackIntent.type === "AFFIRMATIVE"
             ) {
               dispatch({ type: "FORCE_ADVANCE" })
             }
@@ -1302,17 +1253,6 @@ export function useJourney(options: UseJourneyOptions) {
               latencyMs: profileLatencyMs,
               pathway: "orchestrate",
             })
-            // Phase 2.5: if fast-path already spoke this turn and the LLM now
-            // returns "clarify", log a disagreement for later review. v1 is
-            // log-only — we do NOT correct the avatar.
-            if (fastPathAlreadySpoke && result.decision === "clarify") {
-              // eslint-disable-next-line no-console
-              console.log("[FAST_PATH_DISAGREE]", {
-                fastPathAwaiting: freshAwaiting,
-                llmDecision: result.decision,
-                llmSpeech: result.speech,
-              })
-            }
             // Apply LLM-extracted fields to the profile. The LLM is the source
             // of truth during PROFILE_COLLECTION. Apply happens UNCONDITIONALLY
             // — even if a newer user turn started an overlapping orchestrate
@@ -1358,16 +1298,6 @@ export function useJourney(options: UseJourneyOptions) {
               },
             }))
             if (Object.keys(updates).length > 0) updateProfile(updates)
-
-            // Phase 2.5: fast-path already spoke, so suppress LLM speech.
-            // profileUpdates were applied just above (idempotent). If the LLM
-            // still thinks we should advance (decision === "ready") while the
-            // fast-path just asked another question, trust the fast-path: we
-            // already promised the user we wanted another detail.
-            if (fastPathAlreadySpoke) {
-              prevAwaitingRef.current = freshAwaiting
-              return
-            }
 
             // Speech IS cancellable — if a newer turn is in flight, don't
             // step on it with stale dialogue.
@@ -1431,7 +1361,6 @@ export function useJourney(options: UseJourneyOptions) {
                 pathway: "orchestrate",
               })
               prevAwaitingRef.current = freshAwaiting
-              if (fastPathAlreadySpoke) return
               if (cancelled) return
               // why: FORCE_ADVANCE lands in VIRTUAL_LOUNGE:asking whose
               // reducer speaks `profileReadyWelcome`. Override LLM speech so
@@ -1453,7 +1382,6 @@ export function useJourney(options: UseJourneyOptions) {
                 pathway: "orchestrate",
               })
               prevAwaitingRef.current = freshAwaiting
-              if (fastPathAlreadySpoke) return
               if (cancelled) return
               // Use the LLM's warm acknowledgement ("Of course, taking you to
               // the rooms now") as the Phase-1 transition speech. The reducer's
@@ -1478,7 +1406,6 @@ export function useJourney(options: UseJourneyOptions) {
             pathway: "orchestrate",
           })
           prevAwaitingRef.current = freshAwaiting
-          if (fastPathAlreadySpoke) return
           if (cancelled) return
           interrupt()
           repeat(result.speech).catch(() => undefined)

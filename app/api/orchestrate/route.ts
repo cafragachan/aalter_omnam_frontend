@@ -77,11 +77,9 @@ const NoActionSpeakSchema = z.object({
 })
 
 const ProfileTurnSchema = z.object({
-  // reasoning comes first so the model is forced to think before emitting
-  // structured decisions (chain-of-thought). We log it but don't route on it.
-  // Prompted to stay under ~250 chars, but this is diagnostic only. Do not
-  // fail the whole orchestration turn if a model occasionally runs long.
-  reasoning: z.string().min(1).max(1000),
+  // Optional diagnostic only. Keeping it optional lets the profile path emit
+  // fewer tokens before the speech field, which improves time-to-first-audio.
+  reasoning: z.string().min(1).max(1000).optional(),
   profileUpdates: ProfileUpdatesSchema.optional().default({}),
   decision: z.enum(["ask_next", "clarify", "ready"]),
   speech: z.string().min(1).max(500),
@@ -430,8 +428,107 @@ function detectFocusedAmenity(
 // System prompt builder
 // ---------------------------------------------------------------------------
 
+function buildProfileCollectionPrompt(body: RequestBody): string {
+  const today = new Date().toISOString().slice(0, 10)
+  const currentYear = today.slice(0, 4)
+
+  const collectedLines: string[] = []
+  if (body.startDate && body.endDate) {
+    collectedLines.push(`- Dates: ${body.startDate} to ${body.endDate}`)
+  } else if (body.startDate) {
+    collectedLines.push(`- Start date: ${body.startDate}; end date missing`)
+  } else if (body.endDate) {
+    collectedLines.push(`- End date: ${body.endDate}; start date missing`)
+  }
+
+  const compTotal = body.guestComposition
+    ? (body.guestComposition.adults ?? 0) + (body.guestComposition.children ?? 0)
+    : 0
+  const effectivePartySize = compTotal > 0 ? compTotal : body.partySize
+  if (effectivePartySize) {
+    collectedLines.push(`- Party size: ${effectivePartySize}`)
+  }
+  if (body.guestComposition) {
+    const ages = body.guestComposition.childrenAges?.length
+      ? `; ages ${body.guestComposition.childrenAges.join(", ")}`
+      : ""
+    collectedLines.push(
+      `- Guest composition: ${body.guestComposition.adults} adults, ${body.guestComposition.children} children${ages}`,
+    )
+  }
+  if (body.travelPurpose) collectedLines.push(`- Travel purpose: ${body.travelPurpose}`)
+  if (body.roomAllocation?.length) {
+    collectedLines.push(`- Room distribution: ${body.roomAllocation.join(" + ")}`)
+  }
+  if (body.guestFirstName) collectedLines.push(`- Guest name: ${body.guestFirstName}`)
+
+  const collectedSummary = collectedLines.length
+    ? collectedLines.join("\n")
+    : "- (nothing collected yet)"
+
+  const transcript = (body.conversationHistory ?? [])
+    .slice(-24)
+    .map((m) => `${m.role === "avatar" ? "Avatar" : "Guest"}: ${m.text}`)
+    .join("\n")
+
+  const regexHint =
+    body.regexHint && body.regexHint !== "UNKNOWN"
+      ? `\n\nRegex skip-ahead hint: ${body.regexHint}`
+      : ""
+
+  return `You are Ava, a concise AI hotel concierge. Handle PROFILE_COLLECTION with the smallest correct tool call.
+
+Call exactly one tool:
+- profile_turn for normal profile collection.
+- navigate_and_speak only if the latest guest message explicitly asks to skip ahead to rooms, amenities, a named amenity, location, the hotel, or booking.
+
+Today is ${today}. Assume year ${currentYear} for clear month/day dates unless the guest states another year.
+
+Required profile fields, in order:
+1. startDate + endDate
+2. partySize
+3. guestComposition { adults, children, childrenAges? }
+4. childrenAges only when children > 0, exactly one age per child
+5. travelPurpose
+6. roomAllocation only when partySize > 1; counts must sum to partySize
+
+Current profile state:
+${collectedSummary}
+
+Conversation:
+${transcript || "(none)"}
+
+Rules:
+- The transcript is the source of truth. Re-extract fields from it, but never invent missing values.
+- Vague dates like "mid-June" or "next week" need clarification. Clear ranges like "May 10 to 15" become ${currentYear}-05-10 to ${currentYear}-05-15.
+- "8 adults" means partySize 8 and guestComposition { adults: 8, children: 0 }. Always include children: 0 for adults-only groups.
+- "8 guests" alone gives partySize only; ask for adults/children next.
+- Bare numbers after the avatar asked for children's ages are ages.
+- If an age count does not match the child count, decision is clarify.
+- Room split examples: "all together" -> [partySize]; "separate rooms" -> [1,1,...]; "two rooms, four and two" -> [4,2].
+- Ask one thing per turn. For ask_next, start directly with the question; no "Got it", "Great", "Perfect", "Wonderful", "Lovely", "Noted", or similar preamble.
+- If every required field is present, decision is ready and speech should briefly summarize 2-4 details, then ask whether to visit the virtual lounge first or go straight to the hotel.
+
+Use these exact ask_next questions when they match the next missing field:
+- Dates missing: "What are your travel dates?"
+- Guests missing: "How many guests are traveling?"
+- Guest breakdown missing: "How many adults and children are in your group?"
+- Children ages missing: "What are the children's ages?"
+- Travel purpose missing: "What brings you to the area?"
+- Room distribution missing: "How would you like to split your guests across rooms?"
+
+Skip-ahead mapping:
+- rooms, suites, accommodation, booking -> intent ROOMS or BOOK
+- amenities/facilities -> AMENITIES
+- pool/spa/restaurant/lobby/conference/gym/bar/lounge/dining -> AMENITY_BY_NAME with amenityName
+- surroundings/location/area -> LOCATION
+- hotel/property/tour/continue/go ahead -> HOTEL_EXPLORE or TRAVEL_TO_HOTEL
+For skip-ahead speech, acknowledge briefly and lead in. Do not ask another profile question.${regexHint}`
+}
+
 function buildSystemPrompt(body: RequestBody, reconstructed: ReconstructedProfile): string {
   const isProfileCollection = body.journeyContext.stage === "PROFILE_COLLECTION"
+  if (isProfileCollection) return buildProfileCollectionPrompt(body)
   const hasRooms = body.rooms && body.rooms.length > 0
 
   // --- Room catalog block (only when rooms are provided) ---
@@ -1269,32 +1366,31 @@ const PROFILE_TURN_TOOL: OpenAITool = {
   function: {
     name: "profile_turn",
     description:
-      "Single source of truth for a PROFILE_COLLECTION turn. Extract fields from the transcript, decide what to do next, and produce speech.",
+      "Extract profile fields from the transcript, decide the next profile step, and produce short speech.",
     parameters: {
       type: "object",
       properties: {
         reasoning: {
           type: "string",
           description:
-            "Brief internal monologue (1-2 short sentences, max ~250 chars). What's missing and why your decision/speech is correct. Write this FIRST, before any other field. Not spoken aloud.",
+            "Optional brief diagnostic. Omit unless needed.",
         },
         profileUpdates: {
           type: "object",
-          description: "Fields you can confidently set from the transcript. Omit any field you can't determine.",
+          description: "Only fields confidently stated by the guest.",
           properties: {
-            startDate: { type: "string", description: "Travel start date, YYYY-MM-DD" },
-            endDate: { type: "string", description: "Travel end date, YYYY-MM-DD" },
-            partySize: { type: "number", description: "Total guest count" },
+            startDate: { type: "string" },
+            endDate: { type: "string" },
+            partySize: { type: "number" },
             guestComposition: {
               type: "object",
-              description: "Partial updates allowed. Send only the fields you're changing this turn (e.g., just childrenAges when ages come in after adults/children were already captured). Server merges with prior state.",
+              description: "Partial updates allowed; server merges with prior state.",
               properties: {
                 adults: { type: "number" },
                 children: { type: "number" },
                 childrenAges: {
                   type: "array",
                   items: { type: "number" },
-                  description: "One age per child; length must match children count in merged state",
                 },
               },
             },
@@ -1302,7 +1398,6 @@ const PROFILE_TURN_TOOL: OpenAITool = {
             roomAllocation: {
               type: "array",
               items: { type: "number" },
-              description: "Guest counts per room; must sum to partySize",
             },
           },
         },
@@ -1317,9 +1412,51 @@ const PROFILE_TURN_TOOL: OpenAITool = {
           description: "Exact words Ava will say. 1-2 sentences. No preamble unless decision=ready.",
         },
       },
-      required: ["reasoning", "decision", "speech"],
+      required: ["decision", "speech"],
     },
   },
+}
+
+const PROFILE_COLLECTION_SKIP_INTENTS = [
+  "ROOMS",
+  "AMENITIES",
+  "AMENITY_BY_NAME",
+  "LOCATION",
+  "HOTEL_EXPLORE",
+  "TRAVEL_TO_HOTEL",
+  "BOOK",
+  "AFFIRMATIVE",
+] as const
+
+function buildProfileCollectionTools(): OpenAITool[] {
+  return [
+    PROFILE_TURN_TOOL,
+    {
+      type: "function" as const,
+      function: {
+        name: "navigate_and_speak",
+        description: "Use only for explicit skip-ahead requests during profile collection.",
+        parameters: {
+          type: "object",
+          properties: {
+            intent: {
+              type: "string",
+              enum: PROFILE_COLLECTION_SKIP_INTENTS,
+            },
+            amenityName: {
+              type: "string",
+              description: "Canonical name when intent is AMENITY_BY_NAME.",
+            },
+            speech: {
+              type: "string",
+              description: "Brief spoken acknowledgement.",
+            },
+          },
+          required: ["intent", "speech"],
+        },
+      },
+    },
+  ]
 }
 
 function buildTools() {
@@ -1535,13 +1672,6 @@ export async function POST(request: Request) {
   const anthropicKey =
     process.env.ANTHROPIC_API_KEY ?? process.env.NEXT_PUBLIC_ANTHROPIC_API_KEY
 
-  if (!openaiKey) {
-    return new Response(
-      JSON.stringify({ error: "Orchestration not configured", code: "NOT_CONFIGURED" }),
-      { status: 501, headers: { "Content-Type": "application/json" } },
-    )
-  }
-
   const requestStart = Date.now()
   try {
     const body = (await request.json()) as RequestBody
@@ -1567,6 +1697,12 @@ export async function POST(request: Request) {
         { status: 501, headers: { "Content-Type": "application/json" } },
       )
     }
+    if (!isProfileCollection && !openaiKey) {
+      return new Response(
+        JSON.stringify({ error: "Orchestration not configured", code: "NOT_CONFIGURED" }),
+        { status: 501, headers: { "Content-Type": "application/json" } },
+      )
+    }
 
     // Phase 4: reconstruct profile from client body + transcript before
     // building the prompt. Logged at the bottom of the handler so we can
@@ -1583,7 +1719,7 @@ export async function POST(request: Request) {
     // governs when to pick which. Room-plan changes are handled by the
     // dedicated client-side planner (/api/room-planner), not this route.
     const tools = isProfileCollection
-      ? [PROFILE_TURN_TOOL, ...buildTools()]
+      ? buildProfileCollectionTools()
       : buildTools()
     const toolChoice = "auto" as const
 
@@ -1613,7 +1749,7 @@ export async function POST(request: Request) {
           },
           body: JSON.stringify({
             model: "claude-haiku-4-5",
-            max_tokens: 800,
+            max_tokens: 360,
             temperature: 0.2,
             system: systemPrompt,
             messages: [
