@@ -2,33 +2,43 @@
 // Per-session latency log file.
 //
 // Receives a `LatencyEntry` from the client (via `flushLatencyToFile` in
-// `lib/debug.ts`) and rewrites `logs/session-<startTime>-<sessionIdShort>.log`
-// each turn so the file always opens to a running summary at the top
-// followed by every turn block. Production no-ops: Vercel/serverless
-// filesystems are ephemeral and read-only, and this whole system exists for
-// local dev observability.
+// `lib/debug.ts`) and persists `session-<startTime>-<sessionIdShort>.log`.
+// Two backends:
+//   • Local dev (NODE_ENV !== "production"): writes to ./logs on disk.
+//   • Vercel (NODE_ENV === "production"): writes a PUBLIC blob via the
+//     @vercel/blob SDK. Public URLs are unguessable but anyone with the
+//     URL can read — fine for dev observability, do NOT widen.
 //
-// Layout per file:
+// Layout per file (identical across backends):
 //   ┌─ SESSION header (start time, sessionId)
 //   ├─ RUNNING SUMMARY (per-segment averages + max, rebuilt each turn)
 //   └─ TURN blocks, oldest → newest
 //
 // In-memory cache: `Map<sessionId, CachedSession>` keyed off the client's
-// stable sessionId. Survives the dev-server lifecycle but not module
-// hot-reloads. On cache miss + an existing file (i.e. server restarted
-// mid-session), we degrade to plain append-only — the prior turns and their
-// summary stay intact, and a small footer note explains why the summary at
-// the top is now stale.
+// stable sessionId. In dev it survives the dev-server lifecycle. On Vercel
+// it survives within a single lambda instance — instance churn between
+// turns of the same session is handled by downloading the existing blob,
+// appending the new turn, and re-uploading (no summary recompute since we
+// don't ship structured data alongside the formatted text).
 //
-// Retention: prunes to the newest 10 `session-*.log` files on each new
-// session start.
+// Discoverability:
+//   • POST returns the persisted URL/path in JSON so the client can echo it.
+//   • In prod, the URL is also `console.log`'d on first write so it shows
+//     up in Vercel runtime logs.
+//   • GET returns the newest 10 sessions as a JSON list so a debug UI (or
+//     `curl /api/log-latency`) can find them.
+//
+// Retention: prunes to the newest 10 `session-*.log` entries on each new
+// session start (in dev: file mtime; in prod: blob `uploadedAt`).
 // ---------------------------------------------------------------------------
 
 import { promises as fs } from "node:fs"
 import path from "node:path"
 import { NextResponse } from "next/server"
+import { put as blobPut, list as blobList, del as blobDel } from "@vercel/blob"
 import type { LatencyEntry } from "@/lib/debug"
 
+const IS_PROD = process.env.NODE_ENV === "production"
 const LOG_DIR = path.join(process.cwd(), "logs")
 const MAX_SESSION_FILES = 10
 const FILE_PREFIX = "session-"
@@ -39,23 +49,22 @@ const BAR_MS_PER_CHAR = 50
 const BAR_MAX_CHARS = 40
 
 type CachedSession = {
-  filePath: string
+  /** Pathname (also used as blob name in prod) — `session-<stamp>-<shortId>.log`. */
+  pathname: string
+  /** Public URL of the blob in prod; null in dev (file lives on local disk). */
+  blobUrl: string | null
   startedMs: number
   entries: LatencyEntry[]
 }
 
 /**
- * Per-sessionId cache of all entries we've seen this dev-server lifecycle.
- * Powers the rewrite-the-whole-file approach. Lives at module scope so it
- * survives across requests but is reset on dev-server restart.
+ * Per-sessionId cache of all entries we've seen. In dev it survives the
+ * dev-server lifecycle; in prod it survives the lambda instance. Module
+ * scope so it's shared across requests.
  */
 const SESSION_CACHE = new Map<string, CachedSession>()
 
 export async function POST(request: Request) {
-  if (process.env.NODE_ENV === "production") {
-    return new NextResponse(null, { status: 204 })
-  }
-
   let entry: LatencyEntry
   try {
     entry = (await request.json()) as LatencyEntry
@@ -68,45 +77,84 @@ export async function POST(request: Request) {
   }
 
   try {
-    await fs.mkdir(LOG_DIR, { recursive: true })
-    const sessionId = entry.sessionId ?? "unknown"
-    const cached = await getOrInitCachedSession(sessionId, entry)
-
-    if (cached === null) {
-      // Server restarted mid-session — file already on disk, cache empty.
-      // Degrade to plain append so we don't clobber prior turns or
-      // partially-rebuild a misleading summary.
-      const filePath = await resolveSessionFilePath(entry)
-      const block = formatTurnBlock(entry)
-      const footer =
-        "  (note: dev-server restarted mid-session — running summary above does not include this turn)\n"
-      await fs.appendFile(filePath, block + footer, "utf8")
-      return new NextResponse(null, { status: 204 })
-    }
-
-    cached.entries.push(entry)
-    const content = formatFullSessionFile(cached)
-    await fs.writeFile(cached.filePath, content, "utf8")
+    const result = IS_PROD ? await writeProd(entry) : await writeDev(entry)
+    return NextResponse.json(result)
   } catch (err) {
     // Never break the user-facing flow — log and swallow.
     // eslint-disable-next-line no-console
     console.error("[log-latency] write failed", err)
     return new NextResponse(null, { status: 500 })
   }
+}
 
-  return new NextResponse(null, { status: 204 })
+/**
+ * GET /api/log-latency
+ * Returns the newest 10 session log files as JSON `{ sessions: [{ url, pathname, uploadedAt }] }`
+ * so a debug UI (or curl) can find recent runs without trawling Vercel logs.
+ */
+export async function GET() {
+  try {
+    if (IS_PROD) {
+      const blobs = await blobList({ prefix: FILE_PREFIX })
+      const logs = blobs.blobs
+        .filter((b) => b.pathname.endsWith(FILE_SUFFIX))
+        .sort((a, b) => +new Date(b.uploadedAt) - +new Date(a.uploadedAt))
+        .slice(0, MAX_SESSION_FILES)
+        .map((b) => ({
+          url: b.url,
+          pathname: b.pathname,
+          uploadedAt: b.uploadedAt,
+          size: b.size,
+        }))
+      return NextResponse.json({ sessions: logs })
+    }
+
+    await fs.mkdir(LOG_DIR, { recursive: true })
+    const files = await fs.readdir(LOG_DIR)
+    const sessionFiles = files.filter((f) => f.startsWith(FILE_PREFIX) && f.endsWith(FILE_SUFFIX))
+    const withMtime = await Promise.all(
+      sessionFiles.map(async (f) => {
+        const stat = await fs.stat(path.join(LOG_DIR, f))
+        return { pathname: f, uploadedAt: new Date(stat.mtimeMs).toISOString(), size: stat.size }
+      }),
+    )
+    withMtime.sort((a, b) => +new Date(b.uploadedAt) - +new Date(a.uploadedAt))
+    return NextResponse.json({ sessions: withMtime.slice(0, MAX_SESSION_FILES) })
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("[log-latency] list failed", err)
+    return NextResponse.json({ sessions: [] }, { status: 500 })
+  }
 }
 
 // ---------------------------------------------------------------------------
-// Cache + file resolution
+// Dev backend: filesystem
 // ---------------------------------------------------------------------------
 
-/**
- * Look up the cached session, or create one for a fresh sessionId. Returns
- * `null` to signal "this session existed before our cache did" (dev-server
- * restart mid-session) so the caller can degrade to append-only mode.
- */
-async function getOrInitCachedSession(
+async function writeDev(entry: LatencyEntry): Promise<{ ok: true; pathname: string }> {
+  await fs.mkdir(LOG_DIR, { recursive: true })
+  const sessionId = entry.sessionId ?? "unknown"
+  const cached = await getOrInitCachedSessionDev(sessionId, entry)
+
+  if (cached === null) {
+    // Server restarted mid-session — file already on disk, cache empty.
+    // Degrade to plain append so we don't clobber prior turns or
+    // partially-rebuild a misleading summary.
+    const pathname = await resolveSessionPathnameDev(entry)
+    const block = formatTurnBlock(entry)
+    const footer =
+      "  (note: dev-server restarted mid-session — running summary above does not include this turn)\n"
+    await fs.appendFile(path.join(LOG_DIR, pathname), block + footer, "utf8")
+    return { ok: true, pathname }
+  }
+
+  cached.entries.push(entry)
+  const content = formatFullSessionFile(cached)
+  await fs.writeFile(path.join(LOG_DIR, cached.pathname), content, "utf8")
+  return { ok: true, pathname: cached.pathname }
+}
+
+async function getOrInitCachedSessionDev(
   sessionId: string,
   entry: LatencyEntry,
 ): Promise<CachedSession | null> {
@@ -114,33 +162,28 @@ async function getOrInitCachedSession(
   if (existing) return existing
 
   const shortId = sessionId.slice(0, 8)
-  const onDisk = await findExistingSessionFile(shortId)
-  if (onDisk) {
-    // File exists but we don't have the entries — cannot rebuild summary.
-    return null
-  }
+  const onDisk = await findExistingSessionFileDev(shortId)
+  if (onDisk) return null
 
   const startedMs = entry.ts ?? Date.now()
   const stamp = formatStampForFilename(startedMs)
-  const filePath = path.join(LOG_DIR, `${FILE_PREFIX}${stamp}-${shortId}${FILE_SUFFIX}`)
-  const cached: CachedSession = { filePath, startedMs, entries: [] }
+  const pathname = `${FILE_PREFIX}${stamp}-${shortId}${FILE_SUFFIX}`
+  const cached: CachedSession = { pathname, blobUrl: null, startedMs, entries: [] }
   SESSION_CACHE.set(sessionId, cached)
-  // Pruning runs once per new session — keeps disk usage bounded across many
-  // sessions without doing the readdir+stat dance on every single turn.
-  await pruneOldSessions()
+  await pruneOldSessionsDev()
   return cached
 }
 
-async function resolveSessionFilePath(entry: LatencyEntry): Promise<string> {
+async function resolveSessionPathnameDev(entry: LatencyEntry): Promise<string> {
   const sessionId = entry.sessionId ?? "unknown"
   const shortId = sessionId.slice(0, 8)
-  const existing = await findExistingSessionFile(shortId)
-  if (existing) return path.join(LOG_DIR, existing)
+  const existing = await findExistingSessionFileDev(shortId)
+  if (existing) return existing
   const stamp = formatStampForFilename(entry.ts ?? Date.now())
-  return path.join(LOG_DIR, `${FILE_PREFIX}${stamp}-${shortId}${FILE_SUFFIX}`)
+  return `${FILE_PREFIX}${stamp}-${shortId}${FILE_SUFFIX}`
 }
 
-async function findExistingSessionFile(shortId: string): Promise<string | null> {
+async function findExistingSessionFileDev(shortId: string): Promise<string | null> {
   try {
     const files = await fs.readdir(LOG_DIR)
     return (
@@ -152,7 +195,7 @@ async function findExistingSessionFile(shortId: string): Promise<string | null> 
   }
 }
 
-async function pruneOldSessions(): Promise<void> {
+async function pruneOldSessionsDev(): Promise<void> {
   try {
     const files = await fs.readdir(LOG_DIR)
     const sessionFiles = files.filter(
@@ -171,6 +214,136 @@ async function pruneOldSessions(): Promise<void> {
     await Promise.all(
       toDelete.map((f) => fs.unlink(path.join(LOG_DIR, f.name)).catch(() => undefined)),
     )
+  } catch {
+    // Pruning is best-effort.
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Prod backend: Vercel Blob
+// ---------------------------------------------------------------------------
+
+async function writeProd(
+  entry: LatencyEntry,
+): Promise<{ ok: true; url: string; pathname: string }> {
+  const sessionId = entry.sessionId ?? "unknown"
+  const cached = await getOrInitCachedSessionProd(sessionId, entry)
+
+  if (cached === null) {
+    // Lambda instance churn — the blob exists from a previous instance but
+    // we don't have its entries in memory. Download, append, re-upload,
+    // and add a footer note. No summary recompute since we don't ship a
+    // structured sidecar.
+    const shortId = sessionId.slice(0, 8)
+    const existing = await findExistingSessionBlob(shortId)
+    if (!existing) {
+      // Race: blob disappeared between findExistingSessionBlob calls.
+      // Fall through to fresh-session creation.
+      return startFreshProdSession(sessionId, entry)
+    }
+    const prior = await fetch(existing.url).then((r) => r.text()).catch(() => "")
+    const block = formatTurnBlock(entry)
+    const footer =
+      "  (note: lambda instance changed mid-session — running summary above does not include this turn)\n"
+    const content = prior + block + footer
+    const result = await blobPut(existing.pathname, content, {
+      access: "public",
+      addRandomSuffix: false,
+      allowOverwrite: true,
+      contentType: "text/plain; charset=utf-8",
+    })
+    return { ok: true, url: result.url, pathname: existing.pathname }
+  }
+
+  cached.entries.push(entry)
+  const content = formatFullSessionFile(cached)
+  const result = await blobPut(cached.pathname, content, {
+    access: "public",
+    addRandomSuffix: false,
+    allowOverwrite: true,
+    contentType: "text/plain; charset=utf-8",
+  })
+  // Record the URL the first time we write so we can return it on retry
+  // and so the lambda-churn path can find it via list().
+  if (!cached.blobUrl) {
+    cached.blobUrl = result.url
+    // eslint-disable-next-line no-console
+    console.log(`[log-latency] session log: ${result.url}`)
+  }
+  return { ok: true, url: result.url, pathname: cached.pathname }
+}
+
+async function startFreshProdSession(
+  sessionId: string,
+  entry: LatencyEntry,
+): Promise<{ ok: true; url: string; pathname: string }> {
+  const shortId = sessionId.slice(0, 8)
+  const startedMs = entry.ts ?? Date.now()
+  const stamp = formatStampForFilename(startedMs)
+  const pathname = `${FILE_PREFIX}${stamp}-${shortId}${FILE_SUFFIX}`
+  const cached: CachedSession = { pathname, blobUrl: null, startedMs, entries: [entry] }
+  SESSION_CACHE.set(sessionId, cached)
+  await pruneOldSessionsBlob()
+  const content = formatFullSessionFile(cached)
+  const result = await blobPut(pathname, content, {
+    access: "public",
+    addRandomSuffix: false,
+    allowOverwrite: true,
+    contentType: "text/plain; charset=utf-8",
+  })
+  cached.blobUrl = result.url
+  // eslint-disable-next-line no-console
+  console.log(`[log-latency] session log: ${result.url}`)
+  return { ok: true, url: result.url, pathname }
+}
+
+async function getOrInitCachedSessionProd(
+  sessionId: string,
+  entry: LatencyEntry,
+): Promise<CachedSession | null> {
+  const existing = SESSION_CACHE.get(sessionId)
+  if (existing) return existing
+
+  const shortId = sessionId.slice(0, 8)
+  const blob = await findExistingSessionBlob(shortId)
+  if (blob) {
+    // Lambda churn: known sessionId, blob exists, no in-memory entries.
+    // Caller falls back to download-and-append.
+    return null
+  }
+
+  // Fresh session in this lambda instance and on the blob store.
+  const startedMs = entry.ts ?? Date.now()
+  const stamp = formatStampForFilename(startedMs)
+  const pathname = `${FILE_PREFIX}${stamp}-${shortId}${FILE_SUFFIX}`
+  const cached: CachedSession = { pathname, blobUrl: null, startedMs, entries: [] }
+  SESSION_CACHE.set(sessionId, cached)
+  await pruneOldSessionsBlob()
+  return cached
+}
+
+async function findExistingSessionBlob(
+  shortId: string,
+): Promise<{ url: string; pathname: string } | null> {
+  try {
+    const blobs = await blobList({ prefix: FILE_PREFIX })
+    const match = blobs.blobs.find((b) =>
+      b.pathname.startsWith(FILE_PREFIX) && b.pathname.endsWith(`-${shortId}${FILE_SUFFIX}`),
+    )
+    return match ? { url: match.url, pathname: match.pathname } : null
+  } catch {
+    return null
+  }
+}
+
+async function pruneOldSessionsBlob(): Promise<void> {
+  try {
+    const blobs = await blobList({ prefix: FILE_PREFIX })
+    const logs = blobs.blobs.filter((b) => b.pathname.endsWith(FILE_SUFFIX))
+    if (logs.length <= MAX_SESSION_FILES) return
+    logs.sort((a, b) => +new Date(b.uploadedAt) - +new Date(a.uploadedAt))
+    const toDelete = logs.slice(MAX_SESSION_FILES)
+    await Promise.all(toDelete.map((b) => blobDel(b.url).catch(() => undefined)))
   } catch {
     // Pruning is best-effort.
   }
@@ -238,11 +411,6 @@ function segmentLabel(key: SegmentKey): string {
   }
 }
 
-/**
- * Extract per-segment durations for one entry. Returns `null` for any
- * segment whose timestamps weren't both present so the summary's average
- * doesn't include zero-padding for missing data.
- */
 function extractSegments(entry: LatencyEntry): Record<SegmentKey, number | null> {
   const w = entry.walltimes
   const s = entry.serverTimings
@@ -311,9 +479,6 @@ function formatSessionSummary(cached: CachedSession): string {
     lines.push(formatSummaryRow(totalRow.label, totalRow.avg, totalRow.max, totalRow.count, entries.length, labelWidth))
   }
 
-  // Highlight the slowest segment on average — the obvious place to look
-  // first when the headline number is high. Excludes "total" which would
-  // always win.
   const slowestNonTotal = presentRows.filter((r) => r.key !== "total").sort((a, b) => b.avg - a.avg)[0]
   if (slowestNonTotal) {
     lines.push("")
@@ -403,9 +568,6 @@ function computeSegments(entry: LatencyEntry): Segment[] {
   const provider = entry.serverTimings?.provider
   const model = entry.serverTimings?.model
   const llmLabel = `LLM call${provider ? ` (${provider}${model ? " " + model : ""})` : ""}`
-  // Order mirrors the wall-clock pipeline so a reader can scan top-to-bottom
-  // and see where time is going. Drop nulls so partial turns still produce a
-  // useful — if shorter — block.
   const ordered: Segment[] = [
     { label: "STT finalization (HeyGen)", ms: segs.stt },
     { label: "Intent classify (regex)", ms: segs.intent },

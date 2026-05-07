@@ -191,17 +191,16 @@ function summarizeLatencies(entries: LatencyEntry[]): LatencyStageSummary[] {
 }
 
 /**
- * Fire-and-forget POST to `/api/log-latency` so the dev server can append a
- * human-readable line to `logs/session-*.log`. Gated on dev: production
- * skips the network call (the server route also no-ops in production, but
- * we save the round-trip).
+ * Fire-and-forget POST to `/api/log-latency` so the per-session log file is
+ * persisted somewhere readable. In dev the server writes to `logs/*.log`;
+ * in prod it writes to a public Vercel Blob whose URL is logged to runtime
+ * logs and listed by `GET /api/log-latency`.
  *
  * `keepalive` lets the request survive a tab close so the final turn of a
  * session still gets persisted.
  */
 export function flushLatencyToFile(entry: LatencyEntry): void {
   if (typeof window === "undefined") return
-  if (process.env.NODE_ENV === "production") return
   try {
     void fetch("/api/log-latency", {
       method: "POST",

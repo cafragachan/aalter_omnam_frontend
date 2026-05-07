@@ -1,21 +1,47 @@
 # Latency logs
 
 Per-session, human-readable timing logs for the user → avatar voice loop.
-One file per HeyGen session, written by `app/api/log-latency/route.ts`. The
-directory is gitignored except this README and `.gitkeep`.
+One file per HeyGen session, written by `app/api/log-latency/route.ts`.
+
+Two backends, same file format:
+
+- **Local dev** (`NODE_ENV !== "production"`) → `./logs/session-*.log` on disk. This directory is gitignored except this README and `.gitkeep`.
+- **Vercel production** → public Vercel Blob (`BLOB_READ_WRITE_TOKEN` env var, attached automatically when the Blob store is connected to the project). Each session is one blob with a public, unguessable URL.
 
 ## When they're written
 
-Only in dev (`NODE_ENV !== "production"`). Each user→avatar turn fires one
-POST from `flushLatencyToFile()` in [`lib/debug.ts`](../lib/debug.ts) the
-moment the avatar starts speaking. The server caches all entries for the
-session in memory and **rewrites the whole file each turn** so the running
-summary at the top is always up to date. Production builds skip both the
-network call and the route handler.
+Each user→avatar turn fires one POST from `flushLatencyToFile()` in
+[`lib/debug.ts`](../lib/debug.ts) the moment the avatar starts speaking.
+The server caches all entries for the session in memory and **rewrites the
+whole file each turn** so the running summary at the top is always up to
+date.
 
-If the dev server restarts mid-session the in-memory cache is gone, so
-subsequent turns are appended in plain mode (with a one-line note flagging
-that the running summary above is now stale).
+## Finding logs in production
+
+Three ways to get a session log URL on Vercel:
+
+1. **`vercel logs`** (or the dashboard's runtime logs view) — every fresh
+   session writes one `[log-latency] session log: https://…blob.vercel-storage.com/session-…log`
+   line on its first turn.
+2. **`GET /api/log-latency`** — returns JSON `{ sessions: [{ url, pathname, uploadedAt, size }] }`
+   for the newest 10 sessions, sorted newest first.
+3. **Browser DevTools → Network tab** — every POST response from the client
+   contains `{ ok: true, url, pathname }`.
+
+Open any URL in a browser to see the formatted log as plain text.
+
+## Edge cases
+
+If the in-memory cache is gone but the file/blob already exists (dev-server
+restart, or Vercel lambda instance churn mid-session), subsequent turns are
+appended in plain mode with a one-line note flagging that the running
+summary above is now stale.
+
+## Privacy note
+
+Vercel Blob URLs are unguessable but **publicly readable by anyone with the
+URL**. These logs contain user transcripts and avatar responses — treat any
+URL you share like a credential.
 
 ## File naming
 
