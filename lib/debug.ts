@@ -37,6 +37,48 @@ export type EffectEntry = {
   speechSource?: "llm" | "rendered"
 }
 
+/**
+ * Per-segment server-side timestamps (Date.now ms) captured inside
+ * `/api/orchestrate`. Returned to the client in the response body and
+ * stitched onto the LatencyEntry so the on-disk log can attribute time to
+ * pre-LLM, LLM, and post-LLM segments. All fields nullable so the formatter
+ * can degrade gracefully if a future server change drops one.
+ */
+export type ServerTimings = {
+  requestReceived: number | null
+  llmCallStart: number | null
+  llmCallEnd: number | null
+  responseSent: number | null
+  /** "anthropic" | "openai" — useful header context for the human-readable log. */
+  provider?: string
+  /** Model id actually called (e.g. "claude-haiku-4-5", "gpt-5.4-nano"). */
+  model?: string
+}
+
+/**
+ * Wall-clock (Date.now ms) timestamps for each pipeline checkpoint observed
+ * on the client. Nullable to support chat mode (no STT/TTS events) and
+ * partial turns (e.g. orchestrate aborted before response landed).
+ */
+export type ClientWalltimes = {
+  /** HeyGen USER_SPEAK_ENDED — moment the user stopped talking. */
+  userSpeakEnded: number | null
+  /** HeyGen USER_TRANSCRIPTION — moment the final transcript landed. */
+  userTranscription: number | null
+  /** Right after `classifyIntent()` finished on the client. */
+  intentClassified: number | null
+  /** Just before client `fetch("/api/orchestrate")`. */
+  orchestrateRequestSent: number | null
+  /** Right after `await fetch().json()` resolved on the client. */
+  orchestrateResponseReceived: number | null
+  /** Just before we called HeyGen `session.repeat(text)`. */
+  repeatCalled: number | null
+  /** HeyGen AVATAR_SPEAK_STARTED — first audio frame from the avatar. */
+  avatarSpeakStarted: number | null
+  /** HeyGen AVATAR_SPEAK_ENDED — last audio frame. */
+  avatarSpeakEnded: number | null
+}
+
 export type LatencyEntry = {
   ts: number
   stage: string
@@ -54,6 +96,17 @@ export type LatencyEntry = {
   fetchEndMs: number | null
   orchestrateMs: number | null
   postOrchestrateToAudioMs: number | null
+  // ---- Fields added for the per-session human-readable log file ----
+  /** UUID v4 generated client-side at "t0" and threaded through orchestrate. */
+  turnId?: string
+  /** UUID v4 minted once per LiveAvatarContextProvider mount. Names the log file. */
+  sessionId?: string
+  /** Which dispatch path produced this turn (orchestrate / fast-path / fallback / chat / ...). */
+  pathway?: string
+  /** Avatar's spoken response, truncated by the formatter. */
+  speech?: string | null
+  walltimes?: ClientWalltimes
+  serverTimings?: ServerTimings | null
 }
 
 export type LatencyStageSummary = {
@@ -137,6 +190,30 @@ function summarizeLatencies(entries: LatencyEntry[]): LatencyStageSummary[] {
   }))
 }
 
+/**
+ * Fire-and-forget POST to `/api/log-latency` so the dev server can append a
+ * human-readable line to `logs/session-*.log`. Gated on dev: production
+ * skips the network call (the server route also no-ops in production, but
+ * we save the round-trip).
+ *
+ * `keepalive` lets the request survive a tab close so the final turn of a
+ * session still gets persisted.
+ */
+export function flushLatencyToFile(entry: LatencyEntry): void {
+  if (typeof window === "undefined") return
+  if (process.env.NODE_ENV === "production") return
+  try {
+    void fetch("/api/log-latency", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(entry),
+      keepalive: true,
+    }).catch(() => undefined)
+  } catch {
+    // Logging must never break the user-facing flow.
+  }
+}
+
 /** Record one user-speech -> avatar-audio latency sample. Emits a rolling 20-sample summary. */
 export function logLatency(entry: Omit<LatencyEntry, "ts">): void {
   const full: LatencyEntry = { ts: Date.now(), ...entry }
@@ -145,6 +222,9 @@ export function logLatency(entry: Omit<LatencyEntry, "ts">): void {
 
   // eslint-disable-next-line no-console
   console.log("[TURN-LATENCY]", JSON.stringify(full))
+
+  // Persist to the per-session `logs/*.log` file. No-ops in prod / SSR.
+  flushLatencyToFile(full)
 
   if (LATENCY_BUFFER.length === MAX_LATENCIES && LATENCY_SAMPLE_COUNT % MAX_LATENCIES === 0) {
     // eslint-disable-next-line no-console

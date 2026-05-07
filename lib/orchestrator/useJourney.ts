@@ -5,7 +5,7 @@ import { useUserProfileContext } from "@/lib/context"
 import { useOmnamStore } from "@/lib/omnam-store"
 import { useAuth } from "@/lib/auth-context"
 import { useUserProfile as useHeyGenUserProfile } from "@/lib/liveavatar"
-import { useAvatarActions as useHeyGenAvatarActions } from "@/lib/liveavatar/useAvatarActions"
+import { useAvatarActions as useHeyGenAvatarActions, lastRepeatCalledAtMsRef } from "@/lib/liveavatar/useAvatarActions"
 import { useLiveAvatarContext as useHeyGenLiveAvatarContext } from "@/lib/liveavatar/context"
 import { MessageSender } from "@/lib/liveavatar/types"
 import { useGuestIntelligence } from "@/lib/guest-intelligence"
@@ -14,6 +14,7 @@ import { orchestrateLLM } from "./orchestrateLLM"
 import { buildAmenityNarrative, intentToShortcutTarget, profileCollectionAwaiting } from "./journey-machine"
 import type { ProfileAwaiting } from "./profileFastPath"
 import { evaluateDeterministicProfileTurn } from "./profileDeterministic"
+import { evaluateDeterministicExplorationTurn } from "./explorationDeterministic"
 import { useIdleDetection } from "./idle-detection"
 import type { JourneyState, JourneyAction, JourneyEffect, AmenityRef } from "./types"
 import { renderSpeech } from "./speech-renderer"
@@ -186,7 +187,14 @@ export function useJourney(options: UseJourneyOptions) {
   const { profile, journeyStage, setJourneyStage, updateProfile } = useUserProfileContext()
   const { userProfile: authIdentity, returningUserData } = useAuth()
   const { profile: derivedProfile, isExtractionPending, userMessages } = useHeyGenUserProfile()
-  const { messages: allMessages, isAvatarTalking, lastUserSpeakEndedAtRef } = useHeyGenLiveAvatarContext()
+  const {
+    messages: allMessages,
+    isAvatarTalking,
+    lastUserSpeakEndedAtRef,
+    lastUserSpeakEndedAtMsRef,
+    lastAvatarSpeakStartedAtMsRef,
+    sessionIdRef,
+  } = useHeyGenLiveAvatarContext()
   const { repeat, interrupt, stopListening } = useHeyGenAvatarActions("FULL")
   const guestIntelligence = useGuestIntelligence()
   const { trackQuestion, trackRoomExplored, trackAmenityExplored, trackRequirement, startRoomTimer, startAmenityTimer, stopExplorationTimer, setBookingOutcome } = guestIntelligence
@@ -234,6 +242,13 @@ export function useJourney(options: UseJourneyOptions) {
   // start, t3 = fetch end, t5 = AVATAR_SPEAK_STARTED. The gap t3→t5 includes
   // the repeat() WebSocket send + HeyGen TTS warmup; if that's the dominant
   // slice, no client-side refactor will help.
+  //
+  // NOTE the dual clock: `t0/t1/t2/t3` are `performance.now()` (monotonic,
+  // good for in-process deltas). The `*Ms` fields below are `Date.now()`
+  // wall-clock so they can be diffed against server-side timestamps the
+  // orchestrate response echoes back. Both are needed: monotonic for the
+  // existing rolling-summary console log, wall-clock for the per-session
+  // log file in `logs/`.
   type TurnTiming = {
     t0: number
     t1?: number
@@ -242,31 +257,103 @@ export function useJourney(options: UseJourneyOptions) {
     userSpeakEndedAt?: number
     message: string
     stage: string
+    // ---- Fields powering the human-readable per-session log file ----
+    /** UUID v4 minted at t0; threaded through orchestrate to correlate server timing. */
+    turnId: string
+    /** Date.now ms at user transcription land. */
+    userTranscriptionAtMs: number
+    /** Date.now ms at HeyGen USER_SPEAK_ENDED (snapshot from context). */
+    userSpeakEndedAtMs?: number
+    /** Date.now ms right after `classifyIntent()` returned. */
+    intentClassifiedAtMs?: number
+    /** Date.now ms right before client `fetch("/api/orchestrate")`. */
+    orchestrateRequestSentMs?: number
+    /** Date.now ms after `await res.json()` resolved. */
+    orchestrateResponseReceivedMs?: number
+    /** Server-side per-segment timings echoed in the orchestrate response. */
+    serverTimings?: import("@/lib/debug").ServerTimings | null
+    /** Avatar's spoken response text for the log header. */
+    speech?: string | null
+    /** Which dispatch path produced this turn. */
+    pathway?: string
   }
   const turnTimingRef = useRef<TurnTiming | null>(null)
+  // Marker for the previous turn's USER_TRANSCRIPTION wall-clock time. Used
+  // to guard against HeyGen's late-firing USER_SPEAK_ENDED — the SDK
+  // sometimes emits the speak-ended event AFTER the transcription, which
+  // repopulates the speakEnded ref AFTER our `t0` cleared it. The next
+  // turn's `t0` would then read that stale value and compute an STT segment
+  // spanning multiple turns. Discarding any speakEnded value <= the
+  // previous transcription cleanly catches the late-fire case.
+  const previousTranscriptionMsRef = useRef<number>(0)
+  // Same idea for the perf.now-based ref used by the existing TURN-LATENCY
+  // console summary. Captured at the same moment as the wall-clock version
+  // so both filters use a consistent boundary.
+  const previousTranscriptionPerfRef = useRef<number>(0)
   const markTurnTiming = useCallback(
     (mark: "t0" | "t1" | "t2" | "t3", info?: { message?: string; stage?: string; userSpeakEndedAt?: number | null }) => {
       const now = performance.now()
       if (mark === "t0") {
-        const userSpeakEndedAt =
+        const nowMs = Date.now()
+        // Wall-clock guard: drop late-firing USER_SPEAK_ENDED that landed
+        // after the previous turn's transcription (it's for the prior turn,
+        // not this one).
+        let userSpeakEndedAtMs: number | undefined = lastUserSpeakEndedAtMsRef.current ?? undefined
+        if (
+          userSpeakEndedAtMs !== undefined &&
+          userSpeakEndedAtMs <= previousTranscriptionMsRef.current
+        ) {
+          userSpeakEndedAtMs = undefined
+        }
+        // Perf-clock guard mirrors the same logic for the existing console
+        // latency summary so its STT numbers stop showing cross-turn drift.
+        let userSpeakEndedAt: number | undefined =
           typeof info?.userSpeakEndedAt === "number" &&
           info.userSpeakEndedAt <= now &&
           now - info.userSpeakEndedAt < 30_000
             ? info.userSpeakEndedAt
             : undefined
+        if (
+          userSpeakEndedAt !== undefined &&
+          userSpeakEndedAt <= previousTranscriptionPerfRef.current
+        ) {
+          userSpeakEndedAt = undefined
+        }
+        const turnId =
+          typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+            ? crypto.randomUUID()
+            : `t_${nowMs.toString(36)}_${Math.random().toString(36).slice(2, 10)}`
         turnTimingRef.current = {
           t0: now,
           userSpeakEndedAt,
           message: info?.message ?? "",
           stage: info?.stage ?? "",
+          turnId,
+          userTranscriptionAtMs: nowMs,
+          userSpeakEndedAtMs,
         }
+        // Update the boundary markers BEFORE clearing the speak-ended refs
+        // so the next turn's guard knows where this turn ended.
+        previousTranscriptionMsRef.current = nowMs
+        previousTranscriptionPerfRef.current = now
+        // Clear the speak-ended refs after consumption so the NEXT turn doesn't
+        // inherit this turn's value when HeyGen doesn't fire USER_SPEAK_ENDED
+        // before USER_TRANSCRIPTION. The stale-fire case above is the second
+        // belt-and-suspenders guard — late events repopulate the ref but the
+        // boundary check then drops them.
+        lastUserSpeakEndedAtRef.current = null
+        lastUserSpeakEndedAtMsRef.current = null
         return
       }
       const t = turnTimingRef.current
       if (!t) return
       t[mark] = now
+      // Mirror the perf-clock marks into wall-clock fields so the per-session
+      // log file (which runs in Date.now ms across processes) can use them.
+      if (mark === "t2") t.orchestrateRequestSentMs = Date.now()
+      else if (mark === "t3") t.orchestrateResponseReceivedMs = Date.now()
     },
-    [],
+    [lastUserSpeakEndedAtMsRef],
   )
 
   // --- PROFILE_COLLECTION debounce + cancellation refs ---
@@ -910,6 +997,7 @@ export function useJourney(options: UseJourneyOptions) {
     const t = turnTimingRef.current
     if (!t) return
     const t5 = performance.now()
+    const avatarSpeakStartedAtMs = lastAvatarSpeakStartedAtMsRef.current ?? Date.now()
     const round = (n: number | undefined) =>
       n === undefined ? null : Math.round(n - t.t0)
     logLatency({
@@ -929,9 +1017,28 @@ export function useJourney(options: UseJourneyOptions) {
           : null,
       postOrchestrateToAudioMs:
         t.t3 !== undefined ? Math.round(t5 - t.t3) : null,
+      // ---- Fields powering the per-session log file ----
+      turnId: t.turnId,
+      sessionId: sessionIdRef.current,
+      pathway: t.pathway,
+      speech: t.speech ?? null,
+      walltimes: {
+        userSpeakEnded: t.userSpeakEndedAtMs ?? null,
+        userTranscription: t.userTranscriptionAtMs,
+        intentClassified: t.intentClassifiedAtMs ?? null,
+        orchestrateRequestSent: t.orchestrateRequestSentMs ?? null,
+        orchestrateResponseReceived: t.orchestrateResponseReceivedMs ?? null,
+        repeatCalled: lastRepeatCalledAtMsRef.current,
+        avatarSpeakStarted: avatarSpeakStartedAtMs,
+        // Avatar speech is still in progress at this moment — captured later
+        // by an effect on the AVATAR_SPEAK_ENDED ref, but we leave it null
+        // here to avoid blocking the per-turn flush on speech completion.
+        avatarSpeakEnded: null,
+      },
+      serverTimings: t.serverTimings ?? null,
     })
     turnTimingRef.current = null
-  }, [isAvatarTalking])
+  }, [isAvatarTalking, lastAvatarSpeakStartedAtMsRef, sessionIdRef])
 
   // --- React to new user messages (intent classification + question tracking) ---
   useEffect(() => {
@@ -981,6 +1088,11 @@ export function useJourney(options: UseJourneyOptions) {
 
     // --- Global intents — check before stage-specific routing ---
     const earlyIntent = classifyIntent(latestMessage)
+    // Latency log: stamp the moment we know the user's classified intent.
+    // This bounds the "client preflight" segment for the per-session log file.
+    if (turnTimingRef.current) {
+      turnTimingRef.current.intentClassifiedAtMs = Date.now()
+    }
     if (earlyIntent.type === "END_EXPERIENCE" || earlyIntent.type === "RETURN_TO_LOUNGE") {
       logTurn({
         stage: stateRef.current.stage,
@@ -1190,8 +1302,18 @@ export function useJourney(options: UseJourneyOptions) {
             regexHint: profileRegexIntent.type,
             conversationHistory,
             signal: controller.signal,
+            turnId: turnTimingRef.current?.turnId,
           })
           markTurnTiming("t3")
+          // Stitch server timings + chosen speech onto the timing ref so the
+          // AVATAR_SPEAK_STARTED effect can write a complete log line.
+          if (turnTimingRef.current && result?.telemetry) {
+            turnTimingRef.current.serverTimings = result.telemetry.serverTimings
+          }
+          if (turnTimingRef.current && result) {
+            turnTimingRef.current.speech = result.speech
+            turnTimingRef.current.pathway = "orchestrate"
+          }
           const profileLatencyMs = Date.now() - profileOrchestrateStart
           // Do NOT cancel here — profile state writes are idempotent and must
           // always land. Cancellation only applies to speech/dispatch below.
@@ -1434,10 +1556,10 @@ export function useJourney(options: UseJourneyOptions) {
 
     // --- Consolidated orchestrate branch ---
     //
-    // EVERY turn goes through orchestrate and dispatch comes from
-    // decision_envelope.action (with regex as fallback when the envelope is
-    // missing/malformed). The regex result is forwarded as `regexHint` in the
-    // request body.
+    // Ambiguous or content-heavy turns go through orchestrate and dispatch
+    // comes from decision_envelope.action (with regex as fallback when the
+    // envelope is missing/malformed). Clear exploration commands can be
+    // handled deterministically before the LLM call.
     //
     // VAD-coalescing hardening (2026-04 cascade fix):
     //   • debounce 600ms — rapid HeyGen VAD fragments ("yeah sure, can I see
@@ -1475,6 +1597,34 @@ export function useJourney(options: UseJourneyOptions) {
       // Reset idle detection on turn-start so the 12s reengage can't
       // fire over a response that's about to land.
       resetIdleTimer()
+      const deterministic = evaluateDeterministicExplorationTurn({
+        latestMessage,
+        state: currentState,
+      })
+      if (deterministic.handled) {
+        if (unifiedTurnAbortRef.current === controller) {
+          unifiedTurnAbortRef.current = null
+        }
+        logTurn({
+          stage,
+          latestMessage: turnMessageSlice,
+          regexIntent: regexIntent.type,
+          llmIntent: null,
+          action: {
+            type: "USER_INTENT",
+            intent: deterministic.intent.type,
+            confidence: deterministic.confidence,
+            reasons: deterministic.reasons,
+          },
+          speech: null,
+          latencyMs: 0,
+          pathway: "deterministic",
+        })
+        preGeneratedSpeechRef.current = null
+        processIntent(deterministic.intent, latestMessage, currentState, stage)
+        maybeKickRoomPlanner(deterministic.intent.type, latestMessage)
+        return
+      }
       const orchestrateStart = Date.now()
       ;(async () => {
         // Snapshot the freshest profile/derivedProfile at call time so we don't
@@ -1546,8 +1696,16 @@ export function useJourney(options: UseJourneyOptions) {
           regexHint: regexIntent.type,
           conversationHistory,
           signal: controller.signal,
+          turnId: turnTimingRef.current?.turnId,
         })
         markTurnTiming("t3")
+        if (turnTimingRef.current && result?.telemetry) {
+          turnTimingRef.current.serverTimings = result.telemetry.serverTimings
+        }
+        if (turnTimingRef.current && result) {
+          turnTimingRef.current.speech = result.speech
+          turnTimingRef.current.pathway = "orchestrate"
+        }
         const latencyMs = Date.now() - orchestrateStart
         if (controller.signal.aborted) return
         // Reset idle detection on turn-land so the reengage countdown

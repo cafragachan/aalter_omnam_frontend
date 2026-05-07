@@ -189,6 +189,13 @@ interface RequestBody {
    * navigation intents).
    */
   regexHint?: string
+  /**
+   * UUID v4 minted on the client at "user message lands" so the server can
+   * stamp it on its `[ORCHESTRATE]` log line and echo it back in the
+   * response. Powers the per-session log file in `logs/` — without it the
+   * client and server timing blocks for the same turn can't be correlated.
+   */
+  turnId?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -1738,8 +1745,15 @@ export async function POST(request: Request) {
     // over fail-fast.
     const timeout = setTimeout(() => controller.abort(), 15000)
 
+    // Per-segment server timings stitched into the response so the per-session
+    // latency log file can attribute time to pre-LLM, LLM, and post-LLM. All
+    // Date.now ms; null fields are set just below as we cross each boundary.
+    let llmCallStart: number | null = null
+    let llmCallEnd: number | null = null
+
     try {
       if (isProfileCollection) {
+        llmCallStart = Date.now()
         const response = await fetch("https://api.anthropic.com/v1/messages", {
           method: "POST",
           headers: {
@@ -1762,6 +1776,7 @@ export async function POST(request: Request) {
         })
 
         clearTimeout(timeout)
+        llmCallEnd = Date.now()
 
         if (!response.ok) {
           const errorData = await response.json().catch(() => ({}))
@@ -1855,14 +1870,29 @@ export async function POST(request: Request) {
         })
         responseBody.decision_envelope = decision
 
+        const responseSent = Date.now()
+        // Latency log: per-segment server timings echoed to the client so the
+        // per-session log file can split network vs server vs LLM time.
+        responseBody.serverTimings = {
+          requestReceived: requestStart,
+          llmCallStart,
+          llmCallEnd,
+          responseSent,
+          provider: "anthropic",
+          model: "claude-haiku-4-5",
+        }
+        if (body.turnId) responseBody.turnId = body.turnId
+
         console.log("[ORCHESTRATE]", JSON.stringify({
+          turnId: body.turnId ?? null,
           stage: body.journeyContext.stage,
           awaiting: body.profileAwaiting,
           provider: "anthropic",
           model: "claude-haiku-4-5",
           tool: functionName,
           toolCalled: functionName,
-          latencyMs: Date.now() - requestStart,
+          latencyMs: responseSent - requestStart,
+          llmMs: llmCallStart !== null && llmCallEnd !== null ? llmCallEnd - llmCallStart : null,
           reasoning: result.reasoning,
           decision: result.decision,
           profileUpdates: result.profileUpdates,
@@ -1881,6 +1911,7 @@ export async function POST(request: Request) {
         })
       }
 
+      llmCallStart = Date.now()
       const response = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
         headers: {
@@ -1911,6 +1942,7 @@ export async function POST(request: Request) {
       })
 
       clearTimeout(timeout)
+      llmCallEnd = Date.now()
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}))
@@ -2029,12 +2061,27 @@ export async function POST(request: Request) {
       // envelope under a separate key to avoid clobbering that field.
       responseBody.decision_envelope = decision
 
+      const responseSent = Date.now()
+      // Latency log: per-segment server timings echoed to the client so the
+      // per-session log file can split network vs server vs LLM time.
+      responseBody.serverTimings = {
+        requestReceived: requestStart,
+        llmCallStart,
+        llmCallEnd,
+        responseSent,
+        provider: "openai",
+        model: "gpt-5.4-nano",
+      }
+      if (body.turnId) responseBody.turnId = body.turnId
+
       console.log("[ORCHESTRATE]", JSON.stringify({
+        turnId: body.turnId ?? null,
         stage: body.journeyContext.stage,
         awaiting: body.profileAwaiting,
         tool: functionName,
         toolCalled: functionName,
-        latencyMs: Date.now() - requestStart,
+        latencyMs: responseSent - requestStart,
+        llmMs: llmCallStart !== null && llmCallEnd !== null ? llmCallEnd - llmCallStart : null,
         reasoning: result.reasoning,
         decision: result.decision,
         profileUpdates: result.profileUpdates,

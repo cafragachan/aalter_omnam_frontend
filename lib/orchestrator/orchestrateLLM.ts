@@ -11,6 +11,24 @@ import type {
   PersistedPreferences,
   PersistedLoyalty,
 } from "@/lib/firebase/types"
+import type { ServerTimings } from "@/lib/debug"
+
+/**
+ * Per-call timing telemetry stitched onto every successful OrchestrateResult.
+ * Powers the human-readable per-session log file in `logs/`. Wall-clock
+ * (Date.now ms) on both sides of the wire so client/server segments can be
+ * subtracted directly to derive `networkInMs` / `networkOutMs`.
+ */
+export type OrchestrateTelemetry = {
+  /** UUID v4 minted by the caller and threaded through to the server. */
+  turnId: string
+  /** Date.now ms just before client `fetch("/api/orchestrate")`. */
+  clientFetchStartMs: number
+  /** Date.now ms after `await res.json()` resolved on the client. */
+  clientFetchEndMs: number
+  /** Server-side per-segment timestamps echoed back in the response. */
+  serverTimings: ServerTimings | null
+}
 
 // ---------------------------------------------------------------------------
 // Zod schema for the Phase 1 TurnDecision envelope. Validation is advisory:
@@ -73,7 +91,7 @@ export type OrchestrateResult = (
       decision: ProfileTurnDecision
       speech: string
     }
-) & { decision_envelope?: TurnDecision }
+) & { decision_envelope?: TurnDecision; telemetry?: OrchestrateTelemetry }
 
 // ---------------------------------------------------------------------------
 // OrchestrateInput — the context shape sent to the API route
@@ -171,6 +189,12 @@ export interface OrchestrateInput {
    * When the signal aborts, this function returns null without logging.
    */
   signal?: AbortSignal
+  /**
+   * Caller-supplied UUID for this turn. Threaded through to the server so
+   * the per-session log file can correlate client and server timing for
+   * the same turn. Required for the latency log to render correctly.
+   */
+  turnId?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -185,7 +209,7 @@ export interface OrchestrateInput {
 export async function orchestrateLLM(
   input: OrchestrateInput,
 ): Promise<OrchestrateResult | null> {
-  const { message, state, signal, ...rest } = input
+  const { message, state, signal, turnId, ...rest } = input
 
   const journeyContext: Record<string, string | undefined> = {
     stage: state.stage,
@@ -203,6 +227,11 @@ export async function orchestrateLLM(
   if ("suggestedNext" in state && state.suggestedNext) {
     journeyContext.suggestedNext = state.suggestedNext
   }
+
+  // Latency log: capture wall-clock at fetch boundary points. Used by the
+  // per-session log file in `logs/` to attribute time to the client→server
+  // hop, the server, and the server→client hop.
+  const clientFetchStartMs = Date.now()
 
   try {
     const res = await fetch("/api/orchestrate", {
@@ -233,6 +262,7 @@ export async function orchestrateLLM(
         loyalty: rest.loyalty,
         conversationHistory: rest.conversationHistory,
         regexHint: rest.regexHint,
+        turnId,
       }),
       signal,
     })
@@ -251,7 +281,18 @@ export async function orchestrateLLM(
       // Phase 1 envelope. Optional on the wire — server always emits it,
       // but we treat missing/invalid as soft-warn, not fatal.
       decision_envelope?: unknown
+      serverTimings?: ServerTimings
+      turnId?: string
     }
+    const clientFetchEndMs = Date.now()
+    const telemetry: OrchestrateTelemetry | undefined = turnId
+      ? {
+          turnId: data.turnId ?? turnId,
+          clientFetchStartMs,
+          clientFetchEndMs,
+          serverTimings: data.serverTimings ?? null,
+        }
+      : undefined
 
     if (!data.tool || !data.speech) return null
 
@@ -277,16 +318,25 @@ export async function orchestrateLLM(
       })
     }
 
+    const withMeta = <T extends object>(base: T): T & {
+      decision_envelope?: TurnDecision
+      telemetry?: OrchestrateTelemetry
+    } => {
+      const out: T & { decision_envelope?: TurnDecision; telemetry?: OrchestrateTelemetry } = { ...base }
+      if (envelope) out.decision_envelope = envelope
+      if (telemetry) out.telemetry = telemetry
+      return out
+    }
+
     if (data.tool === "profile_turn") {
       if (!data.decision) return null
-      const base = {
+      return withMeta({
         tool: "profile_turn" as const,
         reasoning: data.reasoning,
         profileUpdates: data.profileUpdates ?? {},
         decision: data.decision,
         speech: data.speech,
-      }
-      return envelope ? { ...base, decision_envelope: envelope } : base
+      })
     }
 
     if (data.tool === "navigate_and_speak") {
@@ -299,13 +349,11 @@ export async function orchestrateLLM(
       } else {
         intent = { type: data.intent } as UserIntent
       }
-      const base = { tool: "navigate_and_speak" as const, intent, speech: data.speech }
-      return envelope ? { ...base, decision_envelope: envelope } : base
+      return withMeta({ tool: "navigate_and_speak" as const, intent, speech: data.speech })
     }
 
     if (data.tool === "no_action_speak") {
-      const base = { tool: "no_action_speak" as const, speech: data.speech }
-      return envelope ? { ...base, decision_envelope: envelope } : base
+      return withMeta({ tool: "no_action_speak" as const, speech: data.speech })
     }
 
     return null

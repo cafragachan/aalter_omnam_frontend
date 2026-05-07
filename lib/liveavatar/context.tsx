@@ -23,6 +23,17 @@ type LiveAvatarContextProps = {
   isAvatarTalking: boolean
   /** performance.now() timestamp for the latest HeyGen USER_SPEAK_ENDED event. */
   lastUserSpeakEndedAtRef: RefObject<number | null>
+  // ---- Wall-clock (Date.now ms) refs powering the per-session latency log file ----
+  /** Date.now ms at HeyGen USER_SPEAK_ENDED. Cleared per turn after consumption. */
+  lastUserSpeakEndedAtMsRef: RefObject<number | null>
+  /** Date.now ms at HeyGen USER_TRANSCRIPTION (final transcript landed). */
+  lastUserTranscriptionAtMsRef: RefObject<number | null>
+  /** Date.now ms at HeyGen AVATAR_SPEAK_STARTED (first audio frame). */
+  lastAvatarSpeakStartedAtMsRef: RefObject<number | null>
+  /** Date.now ms at HeyGen AVATAR_SPEAK_ENDED (last audio frame). */
+  lastAvatarSpeakEndedAtMsRef: RefObject<number | null>
+  /** UUID v4 minted once per provider mount. Names the per-session log file. */
+  sessionIdRef: RefObject<string>
   messages: LiveAvatarSessionMessage[]
   /**
    * Manually append a message to the transcript. Used by chat mode to inject
@@ -75,6 +86,21 @@ export function LiveAvatarContextProvider({
     sessionRef.current?.voiceChat.state ?? VoiceChatState.INACTIVE,
   )
   const lastUserSpeakEndedAtRef = useRef<number | null>(null)
+  // Wall-clock companions for the latency-log pipeline. See context type for
+  // semantics — these all use `Date.now()` so they can be diffed against
+  // server-side `requestReceived`/`responseSent` timestamps without timezone
+  // or perf-origin gymnastics.
+  const lastUserSpeakEndedAtMsRef = useRef<number | null>(null)
+  const lastUserTranscriptionAtMsRef = useRef<number | null>(null)
+  const lastAvatarSpeakStartedAtMsRef = useRef<number | null>(null)
+  const lastAvatarSpeakEndedAtMsRef = useRef<number | null>(null)
+  // Lazy-init so SSR doesn't crash on missing `crypto`. Stable across renders
+  // because `useRef` only runs the initializer on first render.
+  const sessionIdRef = useRef<string>(
+    typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `s_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`,
+  )
   const [isUserTalking, setIsUserTalking] = useState(false)
   const [isAvatarTalking, setIsAvatarTalking] = useState(false)
   const [messages, setMessages] = useState<LiveAvatarSessionMessage[]>(
@@ -127,13 +153,32 @@ export function LiveAvatarContextProvider({
     const session = sessionRef.current
     if (!session) return
 
-    const handleUserStart = () => setIsUserTalking(true)
+    const handleUserStart = () => {
+      // Latency log: a new utterance is starting, so any USER_SPEAK_ENDED
+      // value still in the refs is from a previous utterance — drop it. We
+      // observed HeyGen sometimes fires USER_SPEAK_ENDED 1-2s AFTER the
+      // matching USER_TRANSCRIPTION, which would otherwise leak the prior
+      // turn's speak-end timestamp into the next turn's STT calculation
+      // when the next utterance has no USER_SPEAK_ENDED of its own.
+      // Clearing on START is the right boundary: the user must start a new
+      // utterance before they can end it.
+      lastUserSpeakEndedAtRef.current = null
+      lastUserSpeakEndedAtMsRef.current = null
+      setIsUserTalking(true)
+    }
     const handleUserEnd = () => {
       lastUserSpeakEndedAtRef.current = performance.now()
+      lastUserSpeakEndedAtMsRef.current = Date.now()
       setIsUserTalking(false)
     }
-    const handleAvatarStart = () => setIsAvatarTalking(true)
-    const handleAvatarEnd = () => setIsAvatarTalking(false)
+    const handleAvatarStart = () => {
+      lastAvatarSpeakStartedAtMsRef.current = Date.now()
+      setIsAvatarTalking(true)
+    }
+    const handleAvatarEnd = () => {
+      lastAvatarSpeakEndedAtMsRef.current = Date.now()
+      setIsAvatarTalking(false)
+    }
 
     session.on(AgentEventsEnum.USER_SPEAK_STARTED, handleUserStart)
     session.on(AgentEventsEnum.USER_SPEAK_ENDED, handleUserEnd)
@@ -153,6 +198,7 @@ export function LiveAvatarContextProvider({
     if (!session) return
 
     const handleUserTranscription = ({ text }: { text: string }) => {
+      lastUserTranscriptionAtMsRef.current = Date.now()
       console.log("[USER_TX]", JSON.stringify(text))
       setMessages((prev) => [
         ...prev,
@@ -195,10 +241,15 @@ export function LiveAvatarContextProvider({
       isUserTalking,
       isAvatarTalking,
       lastUserSpeakEndedAtRef,
+      lastUserSpeakEndedAtMsRef,
+      lastUserTranscriptionAtMsRef,
+      lastAvatarSpeakStartedAtMsRef,
+      lastAvatarSpeakEndedAtMsRef,
+      sessionIdRef,
       messages,
       appendMessage,
     }),
-    [appendMessage, connectionQuality, isAvatarTalking, isMuted, isStreamReady, isUserTalking, lastUserSpeakEndedAtRef, messages, sessionState, voiceChatState],
+    [appendMessage, connectionQuality, isAvatarTalking, isMuted, isStreamReady, isUserTalking, lastUserSpeakEndedAtRef, lastUserSpeakEndedAtMsRef, lastUserTranscriptionAtMsRef, lastAvatarSpeakStartedAtMsRef, lastAvatarSpeakEndedAtMsRef, sessionIdRef, messages, sessionState, voiceChatState],
   )
 
   return <LiveAvatarContext.Provider value={value}>{children}</LiveAvatarContext.Provider>

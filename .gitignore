@@ -25,3 +25,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# latency logs (dev-only, written by /api/log-latency)
+/logs/*.log

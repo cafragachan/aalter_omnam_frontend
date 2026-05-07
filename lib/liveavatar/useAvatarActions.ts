@@ -5,6 +5,14 @@ import { useLiveAvatarContext } from "./context"
 import { MessageSender } from "./types"
 import { InputModeContext } from "@/lib/input-mode/context"
 
+/**
+ * Module-scope ref so the latency-log builder in useJourney can read the
+ * exact moment we handed text off downstream (HeyGen TTS or chat-mode
+ * append). Lives outside the React tree so a single hook caller per turn
+ * doesn't need to thread this through props/context.
+ */
+export const lastRepeatCalledAtMsRef: { current: number | null } = { current: null }
+
 export const useAvatarActions = (mode: "FULL" | "CUSTOM" = "FULL") => {
   const { sessionRef, appendMessage } = useLiveAvatarContext()
   // Read the InputMode context directly (not via the throwing hook) so that
@@ -22,6 +30,11 @@ export const useAvatarActions = (mode: "FULL" | "CUSTOM" = "FULL") => {
     async (message: string) => {
       if (!sessionRef.current) return
 
+      // Latency log: mark the exact moment we handed text off downstream.
+      // Read by the LatencyEntry builder in useJourney once the avatar starts
+      // speaking. Captured here (not at call sites) so chat-mode + voice-mode
+      // both stamp the same instant.
+      lastRepeatCalledAtMsRef.current = Date.now()
       console.log("[REPEAT→HeyGen]", JSON.stringify(message))
 
       // Chat mode: don't call HeyGen TTS. Just append the avatar turn to the

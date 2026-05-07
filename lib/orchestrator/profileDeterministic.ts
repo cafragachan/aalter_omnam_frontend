@@ -215,40 +215,126 @@ function parseGuestBreakdown(text: string, partySize?: number): Parsed {
   return { updates: {}, confidence: 0.2, reasons: ["breakdown_not_parsed"] }
 }
 
+// Bucket vocabulary → representative age. Ages don't need to be exact for the
+// room planner — we only need infant-vs-grown-up resolution.
+const BUCKET_AGE: Record<string, number> = {
+  newborn: 0, newborns: 0,
+  infant: 1, infants: 1,
+  baby: 1, babies: 1,
+  toddler: 3, toddlers: 3,
+  preschooler: 4, preschoolers: 4,
+  teen: 15, teens: 15,
+  teenager: 15, teenagers: 15,
+}
+
+function broadcast(
+  age: number,
+  children: number,
+  composition: UserProfile["guestComposition"] | undefined,
+  reason: string,
+  confidence: number,
+): Parsed {
+  return {
+    updates: {
+      guestComposition: {
+        adults: composition?.adults ?? 0,
+        children,
+        childrenAges: Array<number>(children).fill(age),
+      },
+    },
+    confidence,
+    reasons: [reason],
+  }
+}
+
 function parseChildrenAges(text: string, composition?: UserProfile["guestComposition"]): Parsed {
   const children = composition?.children
   if (!children || children <= 0) return { updates: {}, confidence: 0.2, reasons: ["no_children_context"] }
   const lower = text.toLowerCase()
-  if (/\b(between|from|range)\b.*\b(to|and|-)\b/i.test(lower)) {
-    return {
-      updates: {},
-      clarifyingSpeech: "Could you tell me each child's age individually, rather than a range?",
-      confidence: 0.95,
-      reasons: ["age_range_ambiguous"],
+
+  // 1. Approximate qualifiers — "under 10", "around 5", "about 8", "roughly 12".
+  //    Checked first so "under 10" with 1 child doesn't get treated as exact age 10.
+  const approxMatch = lower.match(
+    /\b(under|below|over|above|around|about|roughly|approximately|nearly)\s+(\d{1,2})\b/i,
+  )
+  if (approxMatch) {
+    const qualifier = approxMatch[1].toLowerCase()
+    const n = Number(approxMatch[2])
+    if (n >= 0 && n < 18) {
+      let rep = n
+      if (qualifier === "under" || qualifier === "below") rep = Math.max(0, n - 2)
+      else if (qualifier === "over" || qualifier === "above") rep = Math.min(17, n + 2)
+      return broadcast(rep, children, composition, "approximate_age_broadcast", 0.9)
     }
   }
 
-  const ages = Array.from(lower.matchAll(/\b(\d{1,2})\b/g))
+  // 2. Range — "between 5 and 8", "from 5 to 8", "5 to 8". Broadcast midpoint.
+  //    Plain "X and Y" is intentionally NOT a range (it's the natural way to list
+  //    two distinct ages, e.g. "5 and 8" with 2 kids).
+  const rangeMatch =
+    lower.match(/\bbetween\s+(\d{1,2})\s+and\s+(\d{1,2})\b/i)
+    ?? lower.match(/\bfrom\s+(\d{1,2})\s+to\s+(\d{1,2})\b/i)
+    ?? lower.match(/\b(\d{1,2})\s+to\s+(\d{1,2})\b/)
+  if (rangeMatch) {
+    const lo = Number(rangeMatch[1])
+    const hi = Number(rangeMatch[2])
+    if (lo >= 0 && hi < 18 && lo <= hi) {
+      const mid = Math.round((lo + hi) / 2)
+      return broadcast(mid, children, composition, "age_range_midpoint", 0.88)
+    }
+  }
+
+  const digitAges = Array.from(lower.matchAll(/\b(\d{1,2})\b/g))
     .map((m) => Number(m[1]))
     .filter((n) => n >= 0 && n < 18)
-  if (ages.length === children) {
+
+  // 3. Single digit + broadcast quantifier — "both 2 years old", "all 5", "each 4".
+  if (digitAges.length === 1 && /\b(both|all|each|every)\b/i.test(lower)) {
+    return broadcast(digitAges[0], children, composition, "broadcast_single_age", 0.93)
+  }
+
+  // 4. Exact-count digits — "5 and 8" for 2 kids, "2, 4, 6, 8" for 4 kids.
+  if (digitAges.length === children) {
     return {
       updates: {
         guestComposition: {
           adults: composition?.adults ?? 0,
           children,
-          childrenAges: ages,
+          childrenAges: digitAges,
         },
       },
       confidence: 0.96,
       reasons: ["children_ages"],
     }
   }
-  if (ages.length > 0) {
+
+  // 5. Bucket vocabulary — "they are toddlers", "all infants". Only when there
+  //    are no stray digits (mixing digits + buckets is too ambiguous to resolve
+  //    deterministically — fall through to clarify or the LLM).
+  if (digitAges.length === 0) {
+    const matchedAges = new Set<number>()
+    for (const [bucket, age] of Object.entries(BUCKET_AGE)) {
+      if (new RegExp(`\\b${bucket}\\b`).test(lower)) matchedAges.add(age)
+    }
+    if (matchedAges.size === 1) {
+      return broadcast([...matchedAges][0], children, composition, "bucket_broadcast", 0.9)
+    }
+    if (matchedAges.size > 1) {
+      return {
+        updates: {},
+        clarifyingSpeech: "Got it — could you give me a rough age for each child?",
+        confidence: 0.9,
+        reasons: ["mixed_buckets"],
+      }
+    }
+  }
+
+  // 6. Count mismatch — same wording as before.
+  if (digitAges.length > 0) {
     const speech =
-      ages.length < children
-        ? `I caught only ${ages.length} of the ${children} ages - could you share all ${children}?`
-        : `I caught ${ages.length} ages but there are ${children} children - could you tell me each child's age?`
+      digitAges.length < children
+        ? `I caught only ${digitAges.length} of the ${children} ages - could you share all ${children}?`
+        : `I caught ${digitAges.length} ages but there are ${children} children - could you tell me each child's age?`
     return { updates: {}, clarifyingSpeech: speech, confidence: 0.94, reasons: ["age_count_mismatch"] }
   }
 
