@@ -52,6 +52,13 @@ export const lakeComoHotel: Hotel = {
   websiteUrl: "https://www.editionhotels.com/lake-como/",
 }
 
+// UE5's Cesium georeference origin for the Lake Como digital twin. POI markers
+// spawned via AOSMInterestPointsManager are positioned relative to this point,
+// so distances and Places-API location-bias queries must use it as the anchor.
+// This is intentionally not the same as `lakeComoHotel.coordinates` (which is
+// the marketing record for the hotel itself, ~1.2 km away).
+export const LAKE_COMO_OSM_ANCHOR = { lat: 45.991825, lng: 9.238277 } as const
+
 // ─── Rooms ────────────────────────────────────────────────────────────────────
 
 export const lakeComoRooms: Room[] = [

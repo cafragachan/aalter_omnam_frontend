@@ -146,6 +146,13 @@ export function useUE5Bridge(opts: UE5BridgeOptions = {}) {
     sendCommand("startTEST", "startTEST")
   }, [sendCommand])
 
+  // POI markers for the OSM scene. UE5's AOSMInterestPointsManager.Initialise
+  // expects a JSON STRING (not an object), so callers must JSON.stringify the
+  // `{ points: [...] }` payload before passing it in.
+  const sendOSMData = useCallback((pointsJson: string) => {
+    sendCommand("osm_data", pointsJson)
+  }, [sendCommand])
+
   const clearSelectedUnit = useCallback(() => {
     setSelectedUnit(null)
   }, [])
@@ -169,6 +176,7 @@ export function useUE5Bridge(opts: UE5BridgeOptions = {}) {
     navigateToAmenity,
     changeSunPosition,
     startTest,
+    sendOSMData,
     clearSelectedUnit,
 
     // Transitions

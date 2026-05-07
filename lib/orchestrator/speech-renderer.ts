@@ -87,6 +87,16 @@ export function renderSpeech(key: SpeechKey, args?: SpeechArgs): string {
     case "lightingAskWhich":
       return DEFAULT_SPEECH.lightingAskWhich
 
+    case "showInterestPointsLoading":
+      return DEFAULT_SPEECH.showInterestPointsLoading(String(args?.category ?? ""))
+    case "showInterestPointsResult":
+      return DEFAULT_SPEECH.showInterestPointsResult(
+        String(args?.category ?? ""),
+        Number(args?.count ?? 0),
+      )
+    case "showInterestPointsEmpty":
+      return DEFAULT_SPEECH.showInterestPointsEmpty(String(args?.category ?? ""))
+
     // ---- Templated keys ------------------------------------------------
     case "destinationPicked":
       return DEFAULT_SPEECH.destinationPicked(String(args?.hotelName ?? ""))

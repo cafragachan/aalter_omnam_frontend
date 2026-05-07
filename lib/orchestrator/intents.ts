@@ -29,6 +29,7 @@ export type UserIntent =
   | { type: "END_EXPERIENCE" }
   | { type: "LIGHTING_CHANGE" }
   | { type: "LIGHTING_SET"; mode: "daylight" | "sunset" | "night" }
+  | { type: "LOCATE_INTEREST_POINTS"; category: string }
   | { type: "UNKNOWN" }
 
 // END_EXPERIENCE — multi-strategy detection:

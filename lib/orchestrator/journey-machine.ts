@@ -54,6 +54,14 @@ export const DEFAULT_SPEECH = {
     if (mode === "sunset") return "Golden hour it is."
     return "Nightfall - enjoy."
   },
+  showInterestPointsLoading: (category: string) =>
+    `Let me find ${category || "the best spots"} near the property.`,
+  showInterestPointsResult: (category: string, count: number) =>
+    count === 1
+      ? `I've placed one ${category} marker on the map.`
+      : `I've placed ${count} ${category || "places"} on the map — take a look.`,
+  showInterestPointsEmpty: (category: string) =>
+    `I couldn't find any ${category || "places"} nearby. Want to try a different category?`,
 } as const
 
 // ---------------------------------------------------------------------------
@@ -633,6 +641,17 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           effects.push({ type: "OPEN_PANEL", panel: "location" })
           return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
 
+        case "LOCATE_INTEREST_POINTS":
+          effects.push({
+            type: "SPEAK_INTENT",
+            key: "showInterestPointsLoading",
+            args: { category: intent.category },
+          })
+          effects.push({ type: "OPEN_PANEL", panel: "location" })
+          effects.push({ type: "UE5_COMMAND", command: "gameEstate", value: "location" })
+          effects.push({ type: "FETCH_POIS", category: intent.category })
+          return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
+
         case "BOOK":
           effects.push({ type: "SPEAK_INTENT", key: "bookPickRoom" })
           effects.push({ type: "OPEN_PANEL", panel: "rooms" })
@@ -802,6 +821,19 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           effects.push({ type: "OPEN_PANEL", panel: "location" })
           return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
 
+        case "LOCATE_INTEREST_POINTS":
+          effects.push({
+            type: "SPEAK_INTENT",
+            key: "showInterestPointsLoading",
+            args: { category: intent.category },
+          })
+          effects.push({ type: "RESET_TO_DEFAULT" })
+          effects.push({ type: "FADE_TRANSITION" })
+          effects.push({ type: "OPEN_PANEL", panel: "location" })
+          effects.push({ type: "UE5_COMMAND", command: "gameEstate", value: "location" })
+          effects.push({ type: "FETCH_POIS", category: intent.category })
+          return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
+
         case "UNKNOWN":
           effects.push({ type: "SPEAK_INTENT", key: "unknownResponse" })
           return { nextState: state, effects }
@@ -879,6 +911,17 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
         case "LOCATION":
           effects.push({ type: "SPEAK_INTENT", key: "showLocation" })
           effects.push({ type: "OPEN_PANEL", panel: "location" })
+          return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
+
+        case "LOCATE_INTEREST_POINTS":
+          effects.push({
+            type: "SPEAK_INTENT",
+            key: "showInterestPointsLoading",
+            args: { category: intent.category },
+          })
+          effects.push({ type: "OPEN_PANEL", panel: "location" })
+          effects.push({ type: "UE5_COMMAND", command: "gameEstate", value: "location" })
+          effects.push({ type: "FETCH_POIS", category: intent.category })
           return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
 
         case "UNKNOWN":

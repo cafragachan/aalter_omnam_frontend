@@ -235,6 +235,12 @@ export function useJourney(options: UseJourneyOptions) {
   // --- Pre-generated speech ref (Phase 4: orchestrate fills this before processIntent) ---
   const preGeneratedSpeechRef = useRef<string | null>(null)
 
+  // POI fetch — abort the in-flight request if a newer FETCH_POIS effect fires
+  // before the previous one resolves (e.g. guest changes their mind from
+  // "kitesurfing" to "restaurants"). Stale responses would otherwise overwrite
+  // the OSM markers and speak the wrong "I found N {category}" line.
+  const poiFetchAbortRef = useRef<AbortController | null>(null)
+
   // --- Per-turn latency instrumentation ---
   // One row logged per user→avatar turn as `[TURN-LATENCY]` so we can see
   // where time is going (debounce wait vs orchestrate vs HeyGen TTS).
@@ -678,6 +684,67 @@ export function useJourney(options: UseJourneyOptions) {
         case "HIDE_UE5_STREAM":
           options.onHideUE5Stream()
           break
+        case "FETCH_POIS": {
+          // Cancel any prior in-flight POI fetch so its response can't overwrite
+          // a newer one's markers / speech.
+          poiFetchAbortRef.current?.abort()
+          const controller = new AbortController()
+          poiFetchAbortRef.current = controller
+          const category = effect.category
+          ;(async () => {
+            try {
+              const res = await fetch("/api/locate-interest-points", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ category, maxResults: 10 }),
+                signal: controller.signal,
+              })
+              if (!res.ok) {
+                console.warn("[FETCH-POIS] non-200 response", { status: res.status, category })
+                return
+              }
+              const data = (await res.json()) as {
+                points?: unknown[]
+                meta?: Record<string, unknown>
+              }
+              const points = Array.isArray(data.points) ? data.points : []
+              // eslint-disable-next-line no-console
+              console.log("[FETCH-POIS] result", {
+                category,
+                count: points.length,
+                meta: data.meta,
+                points,
+              })
+              // eslint-disable-next-line no-console
+              console.log("[FETCH-POIS] osm_data payload", JSON.stringify({ points }))
+              // UE5 hand-off is wired through the same onUE5Command channel
+              // every other UE5 message uses; the bridge maps "osm_data" to
+              // sendCommand("osm_data", <jsonString>).
+              onUE5Command("osm_data", JSON.stringify({ points }))
+
+              if (points.length === 0) {
+                interrupt()
+                repeat(renderSpeech("showInterestPointsEmpty", { category })).catch(() => undefined)
+              } else {
+                interrupt()
+                repeat(
+                  renderSpeech("showInterestPointsResult", {
+                    category,
+                    count: points.length,
+                  }),
+                ).catch(() => undefined)
+              }
+            } catch (err) {
+              if ((err as Error).name === "AbortError") return
+              console.error("[FETCH-POIS] failed", err)
+            } finally {
+              if (poiFetchAbortRef.current === controller) {
+                poiFetchAbortRef.current = null
+              }
+            }
+          })()
+          break
+        }
       }
     }
   }, [interrupt, repeat, stopListening, onUE5Command, onOpenPanel, onClosePanels, onFadeTransition, setJourneyStage, onResetToDefault, onSelectHotel, downloadUserData, rooms, setBookingOutcome, options])
@@ -1777,11 +1844,26 @@ export function useJourney(options: UseJourneyOptions) {
               : undefined
           const lightingMode = envelopeLightingMode ?? paramLightingMode ?? resultLightingMode
 
+          // LOCATE_INTEREST_POINTS carries a free-text Places-API query in
+          // `category`. Server ships it under both the top-level result.category
+          // (legacy mirror) and envelope params.category. Prefer params.
+          const envelopeCategory =
+            envelopeAction.params && typeof envelopeAction.params.category === "string"
+              ? (envelopeAction.params.category as string)
+              : undefined
+          const resultCategory =
+            result.tool === "navigate_and_speak" && result.intent.type === "LOCATE_INTEREST_POINTS"
+              ? result.intent.category
+              : undefined
+          const category = envelopeCategory ?? resultCategory
+
           let fullIntentObject: UserIntent
           if (intentTag === "AMENITY_BY_NAME" && amenityName) {
             fullIntentObject = { type: "AMENITY_BY_NAME", amenityName }
           } else if (intentTag === "LIGHTING_SET" && lightingMode) {
             fullIntentObject = { type: "LIGHTING_SET", mode: lightingMode }
+          } else if (intentTag === "LOCATE_INTEREST_POINTS" && category) {
+            fullIntentObject = { type: "LOCATE_INTEREST_POINTS", category }
           } else {
             fullIntentObject = { type: intentTag } as UserIntent
           }

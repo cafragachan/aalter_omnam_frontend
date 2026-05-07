@@ -12,6 +12,7 @@ export type UE5MessageType =
   | "sunPosition"
   | "hotelSelected"
   | "profileUpdate"
+  | "osm_data"
 
 export type UE5IncomingMessage = {
   type: string

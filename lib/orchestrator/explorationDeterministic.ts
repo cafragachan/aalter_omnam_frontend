@@ -21,6 +21,14 @@ const NAV_ACTION_RE =
 const GENERIC_AMENITIES_RE =
   /\b(?:show|list|open|pull up|see|browse|explore|check out)\s+(?:the\s+)?(?:amenities|facilities)\b|\b(?:amenities|facilities)\s+(?:please|now)\b/i
 
+// LOCATE_INTEREST_POINTS escalation: regex classifies "show me kitesurfing
+// spots nearby" as LOCATION (it matches "nearby"), which would otherwise be
+// handled deterministically and never reach the LLM. When the message names
+// a category alongside a LOCATION cue, escalate so the LLM can route it via
+// LOCATE_INTEREST_POINTS with a `category` payload.
+const POI_CATEGORY_CUE_RE =
+  /\b(restaurants?|dining|food|eat|cafes?|bars?|shops?|stores?|markets?|museums?|galler(?:y|ies)|parks?|gardens?|trails?|hik(?:e|ing)|kite(?:[\s-]?surf(?:ing)?)?|surf(?:ing)?|sail(?:ing)?|swim(?:ming)?|beach(?:es)?|churches?|cathedrals?|monuments?|landmarks?|spas?|wellness|clubs?|nightlife|sports?|activit(?:y|ies)|things\s+to\s+do|spots?|venues?|points?\s+of\s+interest|places?\s+(?:to|for))\b/i
+
 const HOTEL_EXPLORATION_ALLOWED = new Set<UserIntent["type"]>([
   "ROOMS",
   "AMENITIES",
@@ -76,6 +84,13 @@ export function evaluateDeterministicExplorationTurn(args: {
   const intent = classifyIntent(text)
   if (intent.type === "UNKNOWN") {
     return { handled: false, confidence: 0.25, reasons: ["unknown_intent"] }
+  }
+
+  // If the message reads as LOCATION but mentions a category cue, escalate
+  // to the LLM so it can emit LOCATE_INTEREST_POINTS with the proper
+  // `category` field instead of dropping into the bare "show the area" path.
+  if (intent.type === "LOCATION" && POI_CATEGORY_CUE_RE.test(text)) {
+    return { handled: false, confidence: 0.4, reasons: ["location_with_category_cue_escalate"] }
   }
 
   // A bare "yes" inside amenity viewing is contextually ambiguous: it can mean

@@ -39,6 +39,7 @@ const INTENT_VALUES = [
   "END_EXPERIENCE",
   "LIGHTING_CHANGE",
   "LIGHTING_SET",
+  "LOCATE_INTEREST_POINTS",
   "UNKNOWN",
 ] as const
 
@@ -67,6 +68,10 @@ const NavigateAndSpeakSchema = z.object({
   intent: z.enum(INTENT_VALUES),
   amenityName: z.string().optional(),
   lightingMode: z.enum(LIGHTING_MODE_VALUES).optional(),
+  // Free-text Places-API query used when intent is LOCATE_INTEREST_POINTS
+  // (e.g. "kitesurfing", "romantic restaurants in Bellagio"). Capped to keep
+  // pathological inputs out of the downstream Places call.
+  category: z.string().min(1).max(120).optional(),
   speech: z.string().min(1).max(500),
   profileUpdates: ProfileUpdatesSchema.optional(),
 })
@@ -1040,7 +1045,8 @@ Classify the user's intent into exactly one of these categories:
 - **ROOMS**: User wants to see rooms, suites, or accommodation options.
 - **AMENITIES**: User wants to see the list of amenities or facilities (generic request).
 - **AMENITY_BY_NAME**: User mentions or refers to a specific amenity (pool, spa, restaurant, lobby, conference, gym, bar, lounge, dining) — including paraphrases like "swimming area" → pool, "eat" / "food" → restaurant, "work out" → gym. You MUST also return the canonical amenity name (one of: pool, spa, restaurant, lobby, conference, gym, bar, lounge, dining) in the "amenityName" field.
-- **LOCATION**: User wants to see the hotel location, surroundings, neighbourhood, or area.
+- **LOCATION**: User wants to see the hotel location, surroundings, neighbourhood, or area in general — without naming a specific category. Use this when they ask to "see the area" / "show me what's around" with no further specificity.
+- **LOCATE_INTEREST_POINTS**: User wants to find a specific TYPE of place near the hotel — restaurants, kitesurfing spots, museums, hiking trails, golf courses, beaches, etc. You MUST also set the \`category\` field to a short Places-API-friendly query (e.g. "kitesurfing locations", "romantic restaurants in Bellagio", "art galleries", "hiking trails"). Normalize colloquial phrasing: "where can we eat fancy?" → "michelin restaurants", "any spots to kite?" → "kitesurfing locations", "what about old churches?" → "historic churches". This intent takes priority over LOCATION whenever a category is named or implied. ONLY valid in HOTEL_EXPLORATION, ROOM_SELECTED, and AMENITY_VIEWING.
 - **INTERIOR**: User wants to see the interior / inside view of a room or space.
 - **EXTERIOR**: User wants to see the exterior / outside view of a room or space.
 - **BACK**: User wants to go back, return to a previous view, or cancel current action.
@@ -1490,6 +1496,10 @@ function buildTools() {
               enum: ["daylight", "sunset", "night"],
               description: "Required when intent is LIGHTING_SET. Map evocative phrases: 'morning light', 'brighter' → daylight; 'golden hour', 'dusk', 'romantic/moody' → sunset; 'after dark', 'starlight' → night.",
             },
+            category: {
+              type: "string",
+              description: "Required when intent is LOCATE_INTEREST_POINTS. A short Places-API-friendly query for what the guest wants nearby — e.g. 'kitesurfing locations', 'romantic restaurants', 'art galleries', 'hiking trails'. Normalize colloquial phrasing into something the Places API can search.",
+            },
             speech: {
               type: "string",
               description: "Natural spoken response for the avatar (1-3 sentences, preserve all room names, amounts, and quantities verbatim)",
@@ -1621,9 +1631,17 @@ function buildTurnDecision(args: {
       result.lightingMode === "daylight" || result.lightingMode === "sunset" || result.lightingMode === "night"
         ? (result.lightingMode as "daylight" | "sunset" | "night")
         : undefined
+    const category =
+      typeof result.category === "string" && result.category.trim().length > 0
+        ? result.category.trim()
+        : undefined
     const params: Record<string, unknown> | undefined =
-      amenityName || lightingMode
-        ? { ...(amenityName ? { amenityName } : {}), ...(lightingMode ? { lightingMode } : {}) }
+      amenityName || lightingMode || category
+        ? {
+            ...(amenityName ? { amenityName } : {}),
+            ...(lightingMode ? { lightingMode } : {}),
+            ...(category ? { category } : {}),
+          }
         : undefined
     const proposal = proposalForIntent(intent, amenityName)
     const action: TurnDecisionActionWire = {
@@ -2029,6 +2047,7 @@ export async function POST(request: Request) {
         responseBody.intent = result.intent
         if (result.amenityName) responseBody.amenityName = result.amenityName
         if (result.lightingMode) responseBody.lightingMode = result.lightingMode
+        if (result.category) responseBody.category = result.category
         responseBody.speech = cleanSpeech(result.speech)
         passThroughProfileUpdates()
       } else if (functionName === "profile_turn") {

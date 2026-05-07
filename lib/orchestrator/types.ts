@@ -160,6 +160,9 @@ export type SpeechKey =
   | "unitExploreDeclined"
   | "unitDeclineClarify"
   | "lightingAskWhich"
+  | "showInterestPointsLoading"   // args: { category }
+  | "showInterestPointsResult"    // args: { category, count }
+  | "showInterestPointsEmpty"     // args: { category }
   // Templated keys (args documented in journey-machine.ts SPEAK_INTENT push sites)
   | "destinationPicked"        // args: { hotelName }
   | "unitPicked"               // args: { roomName }
@@ -188,6 +191,10 @@ export type JourneyEffect =
   | { type: "STOP_LISTENING" }
   | { type: "STOP_AVATAR" }
   | { type: "HIDE_UE5_STREAM" }
+  // POI discovery — executor calls /api/locate-interest-points, console-logs
+  // the merged JSON, and (when present) ships it to UE5 via osm_data. Async
+  // by nature; the reducer stays pure and just emits this descriptor.
+  | { type: "FETCH_POIS"; category: string }
 
 // ---------------------------------------------------------------------------
 // Reducer result

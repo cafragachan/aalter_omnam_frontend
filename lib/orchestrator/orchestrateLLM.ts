@@ -274,6 +274,7 @@ export async function orchestrateLLM(
       intent?: string
       amenityName?: string
       lightingMode?: "daylight" | "sunset" | "night"
+      category?: string
       speech?: string
       reasoning?: string
       profileUpdates?: ProfileUpdates
@@ -346,6 +347,8 @@ export async function orchestrateLLM(
         intent = { type: "AMENITY_BY_NAME", amenityName: data.amenityName }
       } else if (data.intent === "LIGHTING_SET" && data.lightingMode) {
         intent = { type: "LIGHTING_SET", mode: data.lightingMode }
+      } else if (data.intent === "LOCATE_INTEREST_POINTS" && data.category) {
+        intent = { type: "LOCATE_INTEREST_POINTS", category: data.category }
       } else {
         intent = { type: data.intent } as UserIntent
       }
