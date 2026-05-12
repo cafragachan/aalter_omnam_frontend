@@ -27,7 +27,7 @@ export const DEFAULT_SPEECH = {
   hotelIntroShort: "Welcome to the hotel. Would you like rooms, amenities, or the surrounding area? I can also adjust the lighting.",
   pullUpRooms: "I'll bring up the rooms now. You can update your selection and explore the rooms by adjusting the quantity on the right",
   amenitiesAskWhich: "Which amenity would you like: pool, lobby, or conference room?",
-  showLocation: "I'll show you the surrounding area.",
+  showLocation: "Here's the area. Tell me what you'd like to see nearby — restaurants, hiking, museums, or anything else — and I'll drop it on the map.",
   bookPickRoom: "Certainly. Please choose the room you'd like to book.",
   otherOptionsRooms: "I'll show you the available room options.",
   hotelBackOverview: "Back to the overview. Rooms, amenities, or the area?",
@@ -152,14 +152,32 @@ const PURPOSE_NARRATIVE: Record<string, string> = {
   adventure: "with adventure in mind",
 }
 
+function buildDescribedOnlyTail(describedOnlyNames?: string[]): string {
+  if (!describedOnlyNames || describedOnlyNames.length === 0) return ""
+  const lowered = describedOnlyNames.map((n) => n.toLowerCase())
+  const listText =
+    lowered.length === 1
+      ? lowered[0]
+      : lowered.slice(0, -1).join(", ") + ` and ${lowered[lowered.length - 1]}`
+  return ` We also have ${listText} which I can tell you about, though they're not part of the live tour.`
+}
+
 /** Build the speech text for listing amenities (first time, partial, or all visited) */
 export function buildAmenityListingSpeech(
   allAmenities: AmenityRef[],
   visitedAmenities: string[],
   travelPurpose?: string,
   recommendedAmenityName?: string,
+  describedOnlyAmenityNames?: string[],
 ): { text: string; suggestedName?: string } {
+  const describedTail = buildDescribedOnlyTail(describedOnlyAmenityNames)
+
   if (allAmenities.length === 0) {
+    if (describedTail) {
+      return {
+        text: `There are no amenity spaces in the live tour right now, but I can tell you about ${(describedOnlyAmenityNames ?? []).map((n) => n.toLowerCase()).join(", ")}. Would you like to hear about one?`,
+      }
+    }
     return { text: "There are no amenity tours available right now. Would you like to view the rooms instead?" }
   }
 
@@ -170,7 +188,7 @@ export function buildAmenityListingSpeech(
   // All visited
   if (remaining.length === 0) {
     const visitedText = visited.map((a) => `the ${a.name.toLowerCase()}`).join(", ")
-    return { text: `You've seen ${visitedText}. Would you like to revisit one or view rooms?` }
+    return { text: `You've seen ${visitedText}.${describedTail} Would you like to revisit one or view rooms?` }
   }
 
   // Some visited — mention visited, offer remaining
@@ -181,7 +199,7 @@ export function buildAmenityListingSpeech(
       ? `the ${remaining[0].name.toLowerCase()}`
       : remaining.map((a) => `the ${a.name.toLowerCase()}`).join(" and ")
     return {
-      text: `We've seen ${visitedText}. Next, would you like ${remainingText}?`,
+      text: `We've seen ${visitedText}. Next, would you like ${remainingText}?${describedTail}`,
       suggestedName,
     }
   }
@@ -196,7 +214,7 @@ export function buildAmenityListingSpeech(
         ? `a ${others[0].name.toLowerCase()}`
         : others.map((a) => `a ${a.name.toLowerCase()}`).join(" and ")
       return {
-        text: `Since you're here ${narrative}, I'd recommend the ${recommended.name.toLowerCase()}. We also have ${othersText}. Which would you prefer?`,
+        text: `Since you're here ${narrative}, I'd recommend the ${recommended.name.toLowerCase()}. We also have ${othersText}.${describedTail} Which would you prefer?`,
         suggestedName: recommended.name,
       }
     }
@@ -209,7 +227,7 @@ export function buildAmenityListingSpeech(
     ? `a ${names[0].toLowerCase()}`
     : names.slice(0, -1).map((n) => `a ${n.toLowerCase()}`).join(", ") + ` and a ${names[names.length - 1].toLowerCase()}`
   return {
-    text: `This property offers ${listText}. Which would you like to visit first?`,
+    text: `This property offers ${listText}.${describedTail} Which would you like to visit first?`,
     suggestedName,
   }
 }
@@ -959,12 +977,18 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
   // LIST_AMENITIES — global handler, builds listing speech from action data
   // -----------------------------------------------------------------------
   if (action.type === "LIST_AMENITIES") {
-    const { visitedAmenities, allAmenities, travelPurpose, recommendedAmenityName } = action
-    const listing = buildAmenityListingSpeech(allAmenities, visitedAmenities, travelPurpose, recommendedAmenityName)
+    const { visitedAmenities, allAmenities, travelPurpose, recommendedAmenityName, describedOnlyAmenityNames } = action
+    const listing = buildAmenityListingSpeech(
+      allAmenities,
+      visitedAmenities,
+      travelPurpose,
+      recommendedAmenityName,
+      describedOnlyAmenityNames,
+    )
     effects.push({
       type: "SPEAK_INTENT",
       key: "amenityListing",
-      args: { allAmenities, visitedAmenities, travelPurpose, recommendedAmenityName },
+      args: { allAmenities, visitedAmenities, travelPurpose, recommendedAmenityName, describedOnlyAmenityNames },
     })
 
     // If currently viewing an amenity, stay in AMENITY_VIEWING with updated suggestedNext

@@ -168,7 +168,7 @@ export type SpeechKey =
   | "unitPicked"               // args: { roomName }
   | "amenitySuggestFallback"   // args: { suggestedNext }
   | "amenityNavigate"          // args: { amenityName, narrative, teaser }
-  | "amenityListing"           // args: { allAmenities, visitedAmenities, travelPurpose?, recommendedAmenityName? }
+  | "amenityListing"           // args: { allAmenities, visitedAmenities, travelPurpose?, recommendedAmenityName?, describedOnlyAmenityNames? }
   | "lightingSet"              // args: { mode: "daylight" | "sunset" | "night" }
   | "reengage"                 // args: { state }
   | "literal"                  // args: { text } — escape hatch for dynamic strings

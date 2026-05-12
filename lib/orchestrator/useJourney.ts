@@ -36,6 +36,56 @@ const AMENITY_ALIASES: Record<string, string> = {
   entrance: "lobby",
 }
 
+// Maps category-style keywords (what the user actually says) to the catalog's
+// `category` field on amenities. Used as a fallback when name/scene substring
+// matching misses — e.g. the user says "restaurant" but the catalog entries
+// are named "Cetino" and "Renzo" (both `category: "dining"`). Without this
+// the matcher denies the existence of amenities the property clearly has.
+const KEYWORD_TO_CATEGORY: Record<string, string> = {
+  restaurant: "dining",
+  restaurants: "dining",
+  dining: "dining",
+  food: "dining",
+  eat: "dining",
+  cuisine: "dining",
+  bar: "bar",
+  drinks: "bar",
+  aperitivo: "bar",
+  wellness: "spa",
+  spa: "spa",
+  workout: "fitness",
+  fitness: "fitness",
+  exercise: "fitness",
+  gym: "fitness",
+  pool: "pool",
+  swim: "pool",
+  swimming: "pool",
+  conference: "meetings",
+  meeting: "meetings",
+  meetings: "meetings",
+  beach: "waterfront",
+  dock: "waterfront",
+  pier: "waterfront",
+  waterfront: "waterfront",
+}
+
+// Plural-ish human labels for the combined-described-only sentence. Falls
+// back to the bare category name when a label is missing.
+const CATEGORY_LABELS: Record<string, string> = {
+  dining: "dining venues",
+  bar: "bars",
+  spa: "spa spaces",
+  fitness: "fitness facilities",
+  pool: "pools",
+  meetings: "meeting spaces",
+  waterfront: "waterfront spots",
+}
+
+const NUMBER_WORDS = ["zero", "one", "two", "three", "four", "five", "six"]
+function numberWord(n: number): string {
+  return n < NUMBER_WORDS.length ? NUMBER_WORDS[n] : String(n)
+}
+
 // Delay between Phase 1 (USER_INTENT shortcut → startTEST + travel) and Phase 2
 // (panel-open / amenity nav). Gives UE5's server-travel time to settle so the
 // follow-up nav command (gameEstate / communal) lands on the loaded level.
@@ -824,7 +874,63 @@ export function useJourney(options: UseJourneyOptions) {
       return
     }
 
-    // 3. No match anywhere — speak the legacy "we don't have one" line.
+    // 3. Category fallback. Some user words don't appear in any amenity's
+    //    name or scene but DO map to the catalog's `category` field — e.g.
+    //    "restaurant" / "dining" against Cetino + Renzo (both category
+    //    "dining"), or "bar" against the Lobby (category "bar"). Without
+    //    this step the matcher would deny the existence of amenities the
+    //    property clearly has.
+    const category = KEYWORD_TO_CATEGORY[normalized]
+    if (category) {
+      const activeCategoryMatches = liveAmenities.filter((a) => a.category === category)
+      if (activeCategoryMatches.length > 0) {
+        const m = activeCategoryMatches[0]
+        trackAmenityExplored(m.name)
+        startAmenityTimer(m.name)
+        dispatch({
+          type: "NAVIGATE_TO_AMENITY",
+          amenity: { id: m.id, name: m.name, scene: m.scene },
+          narrative: buildAmenityNarrative(m.name, m.scene),
+          visitedAmenities: visitedAmenityNamesRef.current,
+          allAmenities: liveAmenities.map((a): AmenityRef => ({ id: a.id, name: a.name, scene: a.scene })),
+        })
+        return
+      }
+
+      const describedCategoryMatches = describedOnly.filter((a) => a.category === category)
+      if (describedCategoryMatches.length === 1) {
+        const m = describedCategoryMatches[0]
+        const blurb = m.shortDescription ?? m.description ?? ""
+        const visitableAlt = liveAmenities[0]?.name?.toLowerCase()
+        const fallbackOffer = visitableAlt
+          ? `Would you like me to take you to the ${visitableAlt} instead?`
+          : "Would you like to see the rooms or explore the surrounding area instead?"
+        const text = blurb
+          ? `${m.name} — ${blurb} The live tour doesn't reach that space just yet. ${fallbackOffer}`
+          : `${m.name} is one of our property's offerings, but it's not part of the live tour just yet. ${fallbackOffer}`
+        interrupt()
+        void repeat(text).catch(() => undefined)
+        return
+      }
+      if (describedCategoryMatches.length > 1) {
+        const names = describedCategoryMatches.map((a) => a.name)
+        const namesText =
+          names.length === 2
+            ? `${names[0]} and ${names[1]}`
+            : names.slice(0, -1).join(", ") + `, and ${names[names.length - 1]}`
+        const visitableAlt = liveAmenities[0]?.name?.toLowerCase()
+        const fallbackOffer = visitableAlt
+          ? `Would you like me to take you to the ${visitableAlt} instead?`
+          : "Would you like to see the rooms or explore the surrounding area instead?"
+        const label = CATEGORY_LABELS[category] ?? `${category} options`
+        const text = `We have ${numberWord(describedCategoryMatches.length)} ${label} at the property — ${namesText}. They're not part of the live tour just yet, but I can tell you about either one. ${fallbackOffer}`
+        interrupt()
+        void repeat(text).catch(() => undefined)
+        return
+      }
+    }
+
+    // 4. No match anywhere — speak the legacy "we don't have one" line.
     const text = `I don't think we have a ${amenityName} at this property. Would you like to see the rooms, or explore the surrounding area?`
     interrupt()
     void repeat(text).catch(() => undefined)
