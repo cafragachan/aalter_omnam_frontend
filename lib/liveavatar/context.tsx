@@ -43,6 +43,12 @@ type LiveAvatarContextProps = {
    * `messages` on their own.
    */
   appendMessage: (sender: MessageSender, text: string) => void
+  /**
+   * Drop incoming HeyGen USER_TRANSCRIPTION events instead of appending them.
+   * Chat mode flips this on to prevent ghost text — `voiceChat.mute()` alone
+   * doesn't stop the server-side STT pipeline from emitting transcripts.
+   */
+  setSuppressUserTranscription: (suppress: boolean) => void
 }
 
 const LiveAvatarContext = createContext<LiveAvatarContextProps | null>(null)
@@ -198,6 +204,10 @@ export function LiveAvatarContextProvider({
     if (!session) return
 
     const handleUserTranscription = ({ text }: { text: string }) => {
+      if (suppressUserTranscriptionRef.current) {
+        console.log("[USER_TX][suppressed]", JSON.stringify(text))
+        return
+      }
       lastUserTranscriptionAtMsRef.current = Date.now()
       console.log("[USER_TX]", JSON.stringify(text))
       setMessages((prev) => [
@@ -230,6 +240,11 @@ export function LiveAvatarContextProvider({
     ])
   }, [])
 
+  const suppressUserTranscriptionRef = useRef<boolean>(false)
+  const setSuppressUserTranscription = useCallback((suppress: boolean) => {
+    suppressUserTranscriptionRef.current = suppress
+  }, [])
+
   const value = useMemo(
     () => ({
       sessionRef,
@@ -248,8 +263,9 @@ export function LiveAvatarContextProvider({
       sessionIdRef,
       messages,
       appendMessage,
+      setSuppressUserTranscription,
     }),
-    [appendMessage, connectionQuality, isAvatarTalking, isMuted, isStreamReady, isUserTalking, lastUserSpeakEndedAtRef, lastUserSpeakEndedAtMsRef, lastUserTranscriptionAtMsRef, lastAvatarSpeakStartedAtMsRef, lastAvatarSpeakEndedAtMsRef, sessionIdRef, messages, sessionState, voiceChatState],
+    [appendMessage, connectionQuality, isAvatarTalking, isMuted, isStreamReady, isUserTalking, lastUserSpeakEndedAtRef, lastUserSpeakEndedAtMsRef, lastUserTranscriptionAtMsRef, lastAvatarSpeakStartedAtMsRef, lastAvatarSpeakEndedAtMsRef, sessionIdRef, messages, sessionState, setSuppressUserTranscription, voiceChatState],
   )
 
   return <LiveAvatarContext.Provider value={value}>{children}</LiveAvatarContext.Provider>

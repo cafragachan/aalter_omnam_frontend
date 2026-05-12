@@ -1,6 +1,6 @@
 "use client"
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
+import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react"
 import { useLiveAvatarContext } from "@/lib/liveavatar/context"
 import { MessageSender } from "@/lib/liveavatar/types"
 
@@ -23,12 +23,8 @@ type InputModeContextProps = {
 export const InputModeContext = createContext<InputModeContextProps | null>(null)
 
 export function InputModeProvider({ children }: { children: ReactNode }) {
-  const { sessionRef, isMuted, appendMessage } = useLiveAvatarContext()
+  const { sessionRef, appendMessage, setSuppressUserTranscription } = useLiveAvatarContext()
   const [mode, setModeState] = useState<InputMode>("voice")
-
-  // Remember the mute state at the moment we enter chat mode so we can
-  // restore it on exit. The HeyGen voiceChat is force-muted while in chat.
-  const preChatMuteRef = useRef<boolean | null>(null)
 
   const setMode = useCallback(
     (next: InputMode) => {
@@ -36,16 +32,19 @@ export function InputModeProvider({ children }: { children: ReactNode }) {
         if (prev === next) return prev
         const vc = sessionRef.current?.voiceChat
         if (next === "chat") {
-          preChatMuteRef.current = isMuted
-          if (!isMuted) vc?.mute()
+          // Gate before mute so any in-flight USER_TRANSCRIPTION lands suppressed.
+          setSuppressUserTranscription(true)
+          vc?.mute()
         } else {
-          if (preChatMuteRef.current === false) vc?.unmute()
-          preChatMuteRef.current = null
+          // Unmute before dropping the gate to avoid a window where a stale
+          // transcript from the chat-mode mic stream could be appended.
+          vc?.unmute()
+          setSuppressUserTranscription(false)
         }
         return next
       })
     },
-    [isMuted, sessionRef],
+    [sessionRef, setSuppressUserTranscription],
   )
 
   const sendUserText = useCallback(
@@ -56,19 +55,6 @@ export function InputModeProvider({ children }: { children: ReactNode }) {
     },
     [appendMessage],
   )
-
-  // If the HeyGen session disconnects while we're chatting, the mute-restore
-  // on exit would be a no-op. Clear the memoized pre-chat mute if the session
-  // tears down so we don't accidentally call unmute on a dead session later.
-  useEffect(() => {
-    const session = sessionRef.current
-    if (!session) return
-    // No listener needed — the provider's own state-change handler will reset
-    // flags naturally; this is just defensive cleanup on unmount.
-    return () => {
-      preChatMuteRef.current = null
-    }
-  }, [sessionRef])
 
   const value = useMemo(
     () => ({ mode, setMode, sendUserText }),
