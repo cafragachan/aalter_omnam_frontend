@@ -24,6 +24,7 @@ import { useOmnamStore, type CurrentRoomPlan } from "@/lib/omnam-store"
 import { useLiveAvatarContext } from "@/lib/liveavatar/context"
 import { MessageSender } from "@/lib/liveavatar/types"
 import { useAvatarActions } from "@/lib/liveavatar/useAvatarActions"
+import { claimSpeech } from "./speech-mutex"
 
 type Trigger = "panel_opened" | "user_message"
 
@@ -35,7 +36,21 @@ type RoomPlannerResponse = {
 }
 
 export function useRoomPlanner(): {
-  requestPlan: (trigger: Trigger, latestMessage?: string) => Promise<void>
+  /**
+   * Kick off a planner request.
+   *  - `trigger`: "panel_opened" (UI-driven, bypasses the speech mutex) or
+   *    "user_message" (utterance-driven, competes for the mutex).
+   *  - `latestMessage`: the user's most recent utterance (for transcript).
+   *  - `utteranceTurnId`: the speech-mutex turn id minted in useJourney's
+   *    user-messages effect. Required for "user_message" trigger so a slow
+   *    planner response from a superseded turn cannot speak; ignored for
+   *    "panel_opened" (which has no associated utterance turn).
+   */
+  requestPlan: (
+    trigger: Trigger,
+    latestMessage?: string,
+    utteranceTurnId?: number,
+  ) => Promise<void>
   /**
    * Cancel any in-flight planner request. Used when the guest manually edits
    * the plan from the RoomsPanel — a slow planner response from a moment ago
@@ -76,7 +91,11 @@ export function useRoomPlanner(): {
   }, [])
 
   const requestPlan = useCallback(
-    async (trigger: Trigger, latestMessage?: string): Promise<void> => {
+    async (
+      trigger: Trigger,
+      latestMessage?: string,
+      utteranceTurnId?: number,
+    ): Promise<void> => {
       const snapshot = stateRef.current
       const hotelSlug = snapshot.app.selectedHotel
       if (!hotelSlug) {
@@ -198,7 +217,6 @@ export function useRoomPlanner(): {
         }
 
         dispatch({ type: "SET_ROOM_PLAN", plan: nextPlan })
-        interrupt()
         // Always close the planner utterance with the unit-picker hint so the
         // guest knows the UE5 scene is now interactive. Append defensively —
         // the LLM shouldn't emit this phrase, but guard against duplication
@@ -209,6 +227,28 @@ export function useRoomPlanner(): {
         const withHint = alreadyHinted
           ? base
           : `${base}${/[.!?]$/.test(base) ? "" : "."} ${HINT}`
+        // Speech mutex: utterance-driven calls must claim the same turn id
+        // the journey orchestrator stamped onto its own SPEAK_INTENT.
+        // If the journey already spoke for this turn (e.g. navigating to
+        // an amenity), our recommendation must NOT pile on top. The plan
+        // itself still lands in the panel via SET_ROOM_PLAN above — only
+        // the spoken recommendation is suppressed.
+        //
+        // Panel-opened calls have no turn id (UI-driven, not utterance-
+        // driven) — they bypass the mutex and speak unconditionally.
+        if (trigger === "user_message" && utteranceTurnId !== undefined) {
+          if (!claimSpeech(utteranceTurnId, "room_planner")) {
+            // eslint-disable-next-line no-console
+            console.log("[SPEECH_LOCK_SUPPRESSED]", {
+              source: "room_planner",
+              turnId: utteranceTurnId,
+              trigger,
+              text: withHint.slice(0, 80),
+            })
+            return
+          }
+        }
+        interrupt()
         void repeat(withHint).catch(() => undefined)
       } catch (err) {
         // AbortController-triggered termination: a newer requestPlan call

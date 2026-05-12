@@ -16,6 +16,7 @@ import type { ProfileAwaiting } from "./profileFastPath"
 import { evaluateDeterministicProfileTurn } from "./profileDeterministic"
 import { evaluateDeterministicExplorationTurn } from "./explorationDeterministic"
 import { useIdleDetection } from "./idle-detection"
+import { beginUtteranceTurn, claimSpeech, type SpeechSource } from "./speech-mutex"
 import type { JourneyState, JourneyAction, JourneyEffect, AmenityRef } from "./types"
 import { renderSpeech } from "./speech-renderer"
 import { logTurn, logEffect, logLatency, type EffectEntry } from "@/lib/debug"
@@ -206,6 +207,7 @@ type UseJourneyOptions = {
     current: (
       trigger: "panel_opened" | "user_message",
       latestMessage?: string,
+      utteranceTurnId?: number,
     ) => Promise<void>
   }
   isRoomsPanelVisibleRef?: { current: boolean }
@@ -284,6 +286,20 @@ export function useJourney(options: UseJourneyOptions) {
 
   // --- Pre-generated speech ref (Phase 4: orchestrate fills this before processIntent) ---
   const preGeneratedSpeechRef = useRef<string | null>(null)
+
+  // --- Speech-mutex turn id for utterance-driven SPEAK_INTENT effects ---
+  //
+  // The SPEAK_INTENT executor in executeEffects has no way to tell whether
+  // it was triggered by a user utterance (where the mutex must apply) or by
+  // a UI tap / panel-open dispatch (where it must not). We resolve that by
+  // stamping the current utterance turn id onto this ref RIGHT BEFORE every
+  // utterance-driven `dispatch` / `processIntent` call. The SPEAK_INTENT
+  // handler reads + clears the ref; a null read means "speak unconditionally".
+  //
+  // This is intentionally a ref (not state) — the dispatch → reducer →
+  // executeEffects chain is synchronous, so the value set on line N is
+  // guaranteed to be visible inside the SPEAK_INTENT case on line N+ε.
+  const speechTurnIdForEffectsRef = useRef<number | null>(null)
 
   // POI fetch — abort the in-flight request if a newer FETCH_POIS effect fires
   // before the previous one resolves (e.g. guest changes their mind from
@@ -602,50 +618,45 @@ export function useJourney(options: UseJourneyOptions) {
     }
   }, [updateProfile])
 
-  // --- Phase 2 Room Planner: sole room brain when the rooms panel is open ---
+  // --- Room Planner gate (allowlist) ---
   //
-  // When the rooms panel is visible, the planner fires for EVERY user utterance
-  // EXCEPT two classes of intent:
-  //   • ROOM_EXIT_INTENT_TAGS — the user is leaving the rooms context entirely
-  //     (end experience, return to lounge, switch to amenities/hotel overview,
-  //     download data, travel elsewhere). The orchestrator/reducer handles
-  //     these; the planner would only produce noise.
-  //   • ROOM_INTERNAL_NAV_TAGS — the user is navigating inside the rooms UI
-  //     (tap a card's interior/exterior, go back, book). These are room-card-
-  //     detail gestures, not plan edits, and remain on the reducer path.
+  // The planner is the sole speech authority for room composition / plan
+  // changes. It must NOT fire on navigation intents — when the guest says
+  // "take me to the lobby" while the rooms panel is incidentally still open,
+  // the journey orchestrator routes them to the lobby and the planner would
+  // only produce a competing "Standard Mountain View at $199…" line on top.
   //
-  // All other intents (including UNKNOWN, ROOMS, ROOM_TOGETHER/SEPARATE,
-  // ROOM_PLAN_CHEAPER/COMPACT, AMENITY_BY_NAME when panel is open, etc.) flow
-  // to the planner. The planner reads the transcript and re-derives the plan
-  // from conversation ground truth, so we no longer need an allow-list of
-  // specific room-edit intents.
-  const ROOM_EXIT_INTENT_TAGS = useRef(
+  // Previously the gate was a denylist (skip exit + internal-nav, fire on
+  // everything else). That let AMENITY_BY_NAME, LOCATION, LOCATE_INTEREST_POINTS,
+  // AFFIRMATIVE, NEGATIVE, and OUT_OF_VOCAB navigation phrases all kick the
+  // planner alongside the journey orchestrator, producing the "two voices
+  // colliding" symptom.
+  //
+  // Now: planner fires ONLY for intents that genuinely change the plan —
+  // explicit room mentions, distribution preferences, price/compactness
+  // adjustments, and UNKNOWN (catch-all for phrases like "the standard
+  // double" that classify as UNKNOWN but the planner can interpret from
+  // transcript context).
+  const ROOM_PLANNER_ALLOWLIST = useRef(
     new Set<string>([
-      "END_EXPERIENCE",
-      "RETURN_TO_LOUNGE",
-      "AMENITIES",
-      "HOTEL_EXPLORE",
-      "DOWNLOAD_DATA",
-      "TRAVEL_TO_HOTEL",
-    ]),
-  )
-  const ROOM_INTERNAL_NAV_TAGS = useRef(
-    new Set<string>([
-      "INTERIOR",
-      "EXTERIOR",
-      "BACK",
-      "BOOK",
+      "ROOMS",
+      "ROOM_TOGETHER",
+      "ROOM_SEPARATE",
+      "ROOM_AUTO",
+      "ROOM_PLAN_CHEAPER",
+      "ROOM_PLAN_COMPACT",
+      "OTHER_OPTIONS",
+      "UNKNOWN",
     ]),
   )
   const requestRoomPlanRef = options.requestRoomPlanRef
   const isRoomsPanelVisibleRef = options.isRoomsPanelVisibleRef
   const maybeKickRoomPlanner = useCallback(
-    (intentTag: string, latestMessage: string) => {
+    (intentTag: string, latestMessage: string, utteranceTurnId: number) => {
       if (!requestRoomPlanRef?.current) return
       if (!isRoomsPanelVisibleRef?.current) return
-      if (ROOM_EXIT_INTENT_TAGS.current.has(intentTag)) return
-      if (ROOM_INTERNAL_NAV_TAGS.current.has(intentTag)) return
-      void requestRoomPlanRef.current("user_message", latestMessage)
+      if (!ROOM_PLANNER_ALLOWLIST.current.has(intentTag)) return
+      void requestRoomPlanRef.current("user_message", latestMessage, utteranceTurnId)
     },
     [requestRoomPlanRef, isRoomsPanelVisibleRef],
   )
@@ -677,6 +688,32 @@ export function useJourney(options: UseJourneyOptions) {
           } else {
             text = renderSpeech(effect.key, effect.args)
             speechSource = "rendered"
+          }
+          // Speech mutex: if this effect was caused by a user utterance
+          // (turn id stamped just before dispatch), only the first claimant
+          // for that turn may speak. UI-driven dispatches (panel taps, etc.)
+          // leave the ref null and speak unconditionally.
+          const turnId = speechTurnIdForEffectsRef.current
+          speechTurnIdForEffectsRef.current = null
+          if (turnId !== null) {
+            const claimSource: SpeechSource =
+              speechSource === "llm" ? "llm_envelope" : "reducer"
+            if (!claimSpeech(turnId, claimSource)) {
+              // eslint-disable-next-line no-console
+              console.log("[SPEECH_LOCK_SUPPRESSED]", {
+                source: claimSource,
+                turnId,
+                effect: effect.key,
+                text: text.slice(0, 80),
+              })
+              logEffect({
+                type: effect.type,
+                params: params as Record<string, unknown>,
+                source,
+                speechSource,
+              })
+              break
+            }
           }
           logEffect({
             type: effect.type,
@@ -829,6 +866,29 @@ export function useJourney(options: UseJourneyOptions) {
     const liveAmenities = amenitiesRef.current
     const normalized = AMENITY_ALIASES[amenityName.toLowerCase()] ?? amenityName.toLowerCase()
 
+    // Local helper: speak a described-only redirect line, but only after
+    // claiming the speech mutex for this utterance turn. The caller
+    // stamped speechTurnIdForEffectsRef before invoking processIntent;
+    // we read + consume it so a subsequent SPEAK_INTENT can't re-claim
+    // and a stale claim can't leak to the next turn. UI-driven calls
+    // (no turn id) speak unconditionally.
+    const speakDescribedOnly = (text: string): void => {
+      const turnId = speechTurnIdForEffectsRef.current
+      speechTurnIdForEffectsRef.current = null
+      if (turnId !== null && !claimSpeech(turnId, "reducer")) {
+        // eslint-disable-next-line no-console
+        console.log("[SPEECH_LOCK_SUPPRESSED]", {
+          source: "reducer",
+          turnId,
+          path: "described_only_amenity",
+          text: text.slice(0, 80),
+        })
+        return
+      }
+      interrupt()
+      void repeat(text).catch(() => undefined)
+    }
+
     // 1. Active match → navigate normally.
     const match = liveAmenities.find((a) => {
       const n = a.name.toLowerCase()
@@ -869,8 +929,7 @@ export function useJourney(options: UseJourneyOptions) {
       const text = blurb
         ? `${describedMatch.name} — ${blurb} The live tour doesn't reach that space just yet. ${fallbackOffer}`
         : `${describedMatch.name} is one of our property's offerings, but it's not part of the live tour just yet. ${fallbackOffer}`
-      interrupt()
-      void repeat(text).catch(() => undefined)
+      speakDescribedOnly(text)
       return
     }
 
@@ -908,8 +967,7 @@ export function useJourney(options: UseJourneyOptions) {
         const text = blurb
           ? `${m.name} — ${blurb} The live tour doesn't reach that space just yet. ${fallbackOffer}`
           : `${m.name} is one of our property's offerings, but it's not part of the live tour just yet. ${fallbackOffer}`
-        interrupt()
-        void repeat(text).catch(() => undefined)
+        speakDescribedOnly(text)
         return
       }
       if (describedCategoryMatches.length > 1) {
@@ -924,16 +982,14 @@ export function useJourney(options: UseJourneyOptions) {
           : "Would you like to see the rooms or explore the surrounding area instead?"
         const label = CATEGORY_LABELS[category] ?? `${category} options`
         const text = `We have ${numberWord(describedCategoryMatches.length)} ${label} at the property — ${namesText}. They're not part of the live tour just yet, but I can tell you about either one. ${fallbackOffer}`
-        interrupt()
-        void repeat(text).catch(() => undefined)
+        speakDescribedOnly(text)
         return
       }
     }
 
     // 4. No match anywhere — speak the legacy "we don't have one" line.
     const text = `I don't think we have a ${amenityName} at this property. Would you like to see the rooms, or explore the surrounding area?`
-    interrupt()
-    void repeat(text).catch(() => undefined)
+    speakDescribedOnly(text)
   }, [trackAmenityExplored, startAmenityTimer, interrupt, repeat, dispatch])
 
   /** Dispatch LIST_AMENITIES action with pre-computed hotel data */
@@ -1226,6 +1282,12 @@ export function useJourney(options: UseJourneyOptions) {
     lastMessageCountRef.current = userMessages.length
 
     const latestMessage = userMessages[userMessages.length - 1]?.message ?? ""
+    // Speech-mutex: open a fresh utterance turn before any branching. Every
+    // downstream speech producer (deterministic, LLM envelope, no_action,
+    // profile_turn, room planner) will compete to claim THIS id; the first
+    // claimant speaks and the rest suppress, eliminating the "two voices
+    // talking over each other" collision.
+    const utteranceTurnId = beginUtteranceTurn()
     markTurnTiming("t0", {
       message: latestMessage,
       stage: stateRef.current.stage,
@@ -1277,6 +1339,7 @@ export function useJourney(options: UseJourneyOptions) {
         latencyMs: 0,
         pathway: "regex-shortcircuit",
       })
+      speechTurnIdForEffectsRef.current = utteranceTurnId
       dispatch({ type: "USER_INTENT", intent: earlyIntent })
       return
     }
@@ -1295,6 +1358,7 @@ export function useJourney(options: UseJourneyOptions) {
           latencyMs: 0,
           pathway: "regex-shortcircuit",
         })
+        speechTurnIdForEffectsRef.current = utteranceTurnId
         dispatch({ type: "USER_INTENT", intent: confirmIntent })
       }
       return
@@ -1314,6 +1378,7 @@ export function useJourney(options: UseJourneyOptions) {
           latencyMs: 0,
           pathway: "regex-shortcircuit",
         })
+        speechTurnIdForEffectsRef.current = utteranceTurnId
         dispatch({ type: "USER_INTENT", intent: confirmIntent })
       }
       return
@@ -1395,10 +1460,20 @@ export function useJourney(options: UseJourneyOptions) {
 
             if (deterministic.decision === "ready") {
               preGeneratedSpeechRef.current = deterministic.speech
+              speechTurnIdForEffectsRef.current = utteranceTurnId
               dispatch({ type: "FORCE_ADVANCE" })
               return
             }
 
+            if (!claimSpeech(utteranceTurnId, "deterministic_profile")) {
+              // eslint-disable-next-line no-console
+              console.log("[SPEECH_LOCK_SUPPRESSED]", {
+                source: "deterministic_profile",
+                turnId: utteranceTurnId,
+                text: deterministic.speech.slice(0, 80),
+              })
+              return
+            }
             interrupt()
             repeat(deterministic.speech).catch(() => undefined)
             return
@@ -1532,6 +1607,7 @@ export function useJourney(options: UseJourneyOptions) {
                 fallbackIntent.type === "TRAVEL_TO_HOTEL" ||
                 fallbackIntent.type === "AFFIRMATIVE"
             ) {
+              speechTurnIdForEffectsRef.current = utteranceTurnId
               dispatch({ type: "FORCE_ADVANCE" })
             }
             return
@@ -1608,12 +1684,23 @@ export function useJourney(options: UseJourneyOptions) {
               // lounge. Null the override so the reducer's canned lounge-ask
               // always plays on this one transition.
               preGeneratedSpeechRef.current = null
+              speechTurnIdForEffectsRef.current = utteranceTurnId
               dispatch({ type: "FORCE_ADVANCE" })
               prevAwaitingRef.current = freshAwaiting
               return
             }
 
             // ask_next or clarify — speak directly, stay in PROFILE_COLLECTION.
+            if (!claimSpeech(utteranceTurnId, "llm_profile")) {
+              // eslint-disable-next-line no-console
+              console.log("[SPEECH_LOCK_SUPPRESSED]", {
+                source: "llm_profile",
+                turnId: utteranceTurnId,
+                text: result.speech.slice(0, 80),
+              })
+              prevAwaitingRef.current = freshAwaiting
+              return
+            }
             interrupt()
             repeat(result.speech).catch(() => undefined)
             prevAwaitingRef.current = freshAwaiting
@@ -1682,6 +1769,7 @@ export function useJourney(options: UseJourneyOptions) {
               // the rooms now") as the Phase-1 transition speech. The reducer's
               // SPEAK_INTENT effect drains preGeneratedSpeechRef.
               preGeneratedSpeechRef.current = result.speech
+              speechTurnIdForEffectsRef.current = utteranceTurnId
               processIntent(llmIntent, latestMessage, stateRef.current, "PROFILE_COLLECTION")
               return
             }
@@ -1702,6 +1790,15 @@ export function useJourney(options: UseJourneyOptions) {
           })
           prevAwaitingRef.current = freshAwaiting
           if (cancelled) return
+          if (!claimSpeech(utteranceTurnId, "llm_profile")) {
+            // eslint-disable-next-line no-console
+            console.log("[SPEECH_LOCK_SUPPRESSED]", {
+              source: "llm_profile",
+              turnId: utteranceTurnId,
+              text: result.speech.slice(0, 80),
+            })
+            return
+          }
           interrupt()
           repeat(result.speech).catch(() => undefined)
         })()
@@ -1794,8 +1891,9 @@ export function useJourney(options: UseJourneyOptions) {
           pathway: "deterministic",
         })
         preGeneratedSpeechRef.current = null
+        speechTurnIdForEffectsRef.current = utteranceTurnId
         processIntent(deterministic.intent, latestMessage, currentState, stage)
-        maybeKickRoomPlanner(deterministic.intent.type, latestMessage)
+        maybeKickRoomPlanner(deterministic.intent.type, latestMessage, utteranceTurnId)
         return
       }
       const orchestrateStart = Date.now()
@@ -1902,6 +2000,7 @@ export function useJourney(options: UseJourneyOptions) {
             latencyMs,
             pathway: "fallback",
           })
+          speechTurnIdForEffectsRef.current = utteranceTurnId
           processIntent(regexIntent, latestMessage, currentState, stage)
           return
         }
@@ -2002,11 +2101,15 @@ export function useJourney(options: UseJourneyOptions) {
           // the top of the file for the full rationale.
           preGeneratedSpeechRef.current =
             CANONICAL_REDUCER_INTENTS.has(intentTag) ? null : envelope.speech
+          speechTurnIdForEffectsRef.current = utteranceTurnId
           processIntent(fullIntentObject, latestMessage, currentState, stage)
           // Room Planner: sole room brain when the rooms panel is open.
-          // Fires for every non-exit, non-internal-nav utterance; see
-          // `maybeKickRoomPlanner` above for the gate.
-          maybeKickRoomPlanner(intentTag, latestMessage)
+          // Gated by ROOM_PLANNER_ALLOWLIST (room-edit intents only) —
+          // see `maybeKickRoomPlanner` above. The planner also competes
+          // for the speech mutex via `utteranceTurnId`; if the reducer
+          // already spoke this turn, the planner's recommendation is
+          // suppressed.
+          maybeKickRoomPlanner(intentTag, latestMessage, utteranceTurnId)
           return
         }
 
@@ -2025,6 +2128,15 @@ export function useJourney(options: UseJourneyOptions) {
             (result as { profileUpdates?: Record<string, unknown> }).profileUpdates,
             "no_action_speak",
           )
+          if (!claimSpeech(utteranceTurnId, "llm_no_action")) {
+            // eslint-disable-next-line no-console
+            console.log("[SPEECH_LOCK_SUPPRESSED]", {
+              source: "llm_no_action",
+              turnId: utteranceTurnId,
+              text: result.speech.slice(0, 80),
+            })
+            return
+          }
           interrupt()
           repeat(result.speech).catch(() => undefined)
           return
@@ -2043,6 +2155,15 @@ export function useJourney(options: UseJourneyOptions) {
             latencyMs,
             pathway: "orchestrate",
           })
+          if (!claimSpeech(utteranceTurnId, "llm_profile")) {
+            // eslint-disable-next-line no-console
+            console.log("[SPEECH_LOCK_SUPPRESSED]", {
+              source: "llm_profile",
+              turnId: utteranceTurnId,
+              text: result.speech.slice(0, 80),
+            })
+            return
+          }
           interrupt()
           repeat(result.speech).catch(() => undefined)
           return
@@ -2076,12 +2197,12 @@ export function useJourney(options: UseJourneyOptions) {
         // See the CANONICAL_REDUCER_INTENTS note at the top of the file.
         preGeneratedSpeechRef.current =
           CANONICAL_REDUCER_INTENTS.has(result.intent.type) ? null : result.speech
+        speechTurnIdForEffectsRef.current = utteranceTurnId
         processIntent(result.intent, latestMessage, currentState, stage)
-        // Room Planner: fallback path — same room-edit intent gate as the
-        // envelope branch above. Covers the case where the envelope shape
-        // is missing/malformed but the legacy tool carried a room-edit
-        // intent.
-        maybeKickRoomPlanner(result.intent.type, latestMessage)
+        // Room Planner: fallback path — allowlist-gated (see
+        // `maybeKickRoomPlanner` above). Speech-mutex applies the same way
+        // as in the envelope branch.
+        maybeKickRoomPlanner(result.intent.type, latestMessage, utteranceTurnId)
       })()
       // Day-1 latency batch: trimmed from 600→250ms. HeyGen's
       // USER_TRANSCRIPTION fires per finalized utterance; the AbortController
