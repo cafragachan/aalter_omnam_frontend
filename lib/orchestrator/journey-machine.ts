@@ -637,7 +637,11 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
             effects.push({ type: "OPEN_PANEL", panel: "location" })
             return { nextState: { stage: "HOTEL_EXPLORATION", subState: "panel_open" }, effects }
           }
-          return { nextState: state, effects: [] }
+          // Bare "yes" with no recognized proposal — never silent. Speak the
+          // canonical unknown-response so the user knows we heard them and
+          // gets a hint about what they can ask for next.
+          effects.push({ type: "SPEAK_INTENT", key: "unknownResponse" })
+          return { nextState: state, effects }
         }
 
         case "ROOMS":
@@ -758,7 +762,11 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
             effects.push({ type: "SPEAK_INTENT", key: "unitDeclineClarify" })
             return { nextState: state, effects }
           }
-          return { nextState: state, effects: [] }
+          // Bare "yes" with no recognized proposal — never silent. Speak
+          // the canonical unknown-response so the turn always produces a
+          // response and the user can re-state what they wanted.
+          effects.push({ type: "SPEAK_INTENT", key: "unknownResponse" })
+          return { nextState: state, effects }
         }
 
         case "NEGATIVE": {

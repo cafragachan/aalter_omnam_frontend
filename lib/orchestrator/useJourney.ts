@@ -1173,12 +1173,18 @@ export function useJourney(options: UseJourneyOptions) {
     }
 
     if (intent.type === "AMENITY_BY_NAME") {
-      // Phase 2: when the rooms panel is open, "standard mountain view" and
-      // similar room-ish phrases were previously mis-classified as
-      // AMENITY_BY_NAME and would hijack navigation to the lobby. When the
-      // planner is the sole room brain, swallow the intent and let the planner
-      // interpret the utterance literally as a room request.
-      if (isRoomsPanelVisibleRef?.current) return
+      // Navigate to the named amenity regardless of which panel is visible —
+      // "the lobby" / "show me the pool" should always reach the amenity.
+      // The reducer's NAVIGATE_TO_AMENITY handler emits CLOSE_PANELS +
+      // RESET_TO_DEFAULT so any open panel (including rooms) is dismissed
+      // cleanly before the UE5 scene transitions.
+      //
+      // Note: the AMENITY_NAME regex (lobby|conference|spa|restaurant|pool|
+      // gym|bar|lounge|dining) is permissive — a phrase like "room with a
+      // pool view" will also match. The Room Planner reads the full
+      // transcript and will still update the plan even if spatial nav
+      // moves to the pool. If this becomes a frequent miscategorization,
+      // tighten the regex with a room-feature negative lookbehind.
       navigateToAmenityByName(intent.amenityName)
       return
     }
