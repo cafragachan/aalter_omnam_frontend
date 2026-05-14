@@ -155,3 +155,17 @@ export async function assignMachine(streamId: string): Promise<AssignResult> {
     machineId: data.machine.id,
   }
 }
+
+/** Stop a machine by ID. */
+export async function stopMachine(machineId: string): Promise<void> {
+  const path = "/app-stream-management/v2/streams/stop-machine"
+  const body = JSON.stringify({ machine_id: machineId })
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: authedHeaders("POST", path, body),
+    body,
+  })
+  if (!res.ok) {
+    console.error(`[vagon-api] stopMachine failed: ${res.status}`)
+  }
+}

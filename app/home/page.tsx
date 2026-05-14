@@ -716,10 +716,45 @@ export default function HomePage() {
   const streamMode = process.env.NEXT_PUBLIC_STREAM_MODE || "local"
   const isVagonMode = streamMode === "vagon"
 
-  // Tell Vagon to end the session on tab close / reload so the next page
-  // load gets a fresh machine instead of reconnecting to the previous,
-  // idle-pending-delete one. shutdown() is the SDK's graceful teardown,
-  // so Vagon still gets to run its post-session cache snapshot.
+  // Capture the assigned machine id from the SDK so we can explicitly
+  // terminate it on tab close. The hosted-stream URL doesn't tell us
+  // the machine id directly — onSessionInformation is the SDK's
+  // metadata channel. We log whatever it returns so we can map fields
+  // to whatever Vagon actually sends.
+  const vagonMachineIdRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!isVagonMode) return
+    const attach = () => {
+      const v = window.Vagon
+      if (!v || typeof v.onSessionInformation !== "function") {
+        setTimeout(attach, 1000)
+        return
+      }
+      v.onSessionInformation((data) => {
+        console.log("[Vagon] onSessionInformation:", data)
+        // Best-effort extraction — adjust the field name once we see
+        // what Vagon actually sends. Common candidates:
+        // machine_id, machine.id, machine.uid, machine_uid, sessionId, etc.
+        const d = data as Record<string, unknown> | null | undefined
+        const machineId =
+          (d?.machine_id as string | undefined) ??
+          ((d?.machine as { id?: string; uid?: string } | undefined)?.id) ??
+          ((d?.machine as { id?: string; uid?: string } | undefined)?.uid) ??
+          (d?.machine_uid as string | undefined) ??
+          null
+        if (machineId) vagonMachineIdRef.current = machineId
+      })
+      if (typeof v.getSessionInformation === "function") {
+        v.getSessionInformation()
+      }
+    }
+    attach()
+  }, [isVagonMode])
+
+  // Terminate the Vagon machine on tab close / reload. Also fires
+  // Vagon.shutdown() as a fallback. machine_id may not be available
+  // if onSessionInformation never fired (e.g. user closes tab before
+  // stream connects) — in that case Vagon's idle reaper handles it.
   useEffect(() => {
     if (!isVagonMode) return
     const handlePageHide = () => {
@@ -727,6 +762,15 @@ export default function HomePage() {
         window.Vagon?.shutdown?.()
       } catch {
         /* SDK may not be ready / iframe already gone */
+      }
+      if (vagonMachineIdRef.current) {
+        navigator.sendBeacon(
+          "/api/stop-vagon-machine",
+          new Blob(
+            [JSON.stringify({ machine_id: vagonMachineIdRef.current })],
+            { type: "application/json" },
+          ),
+        )
       }
     }
     window.addEventListener("pagehide", handlePageHide)
