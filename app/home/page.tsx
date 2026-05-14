@@ -715,6 +715,23 @@ export default function HomePage() {
   const streamMode = process.env.NEXT_PUBLIC_STREAM_MODE || "local"
   const isVagonMode = streamMode === "vagon"
 
+  // Tell Vagon to end the session on tab close / reload so the next page
+  // load gets a fresh machine instead of reconnecting to the previous,
+  // idle-pending-delete one. shutdown() is the SDK's graceful teardown,
+  // so Vagon still gets to run its post-session cache snapshot.
+  useEffect(() => {
+    if (!isVagonMode) return
+    const handlePageHide = () => {
+      try {
+        window.Vagon?.shutdown?.()
+      } catch {
+        /* SDK may not be ready / iframe already gone */
+      }
+    }
+    window.addEventListener("pagehide", handlePageHide)
+    return () => window.removeEventListener("pagehide", handlePageHide)
+  }, [isVagonMode])
+
   // The overlay stays until introComplete — auth state changes mid-intro don't dismiss it
   const showLoginOverlay = !introComplete
 
