@@ -24,7 +24,6 @@ import { useAvatarActions } from "@/lib/liveavatar/useAvatarActions"
 import { useJourney } from "@/lib/orchestrator"
 import { useRoomPlanner } from "@/lib/orchestrator/useRoomPlanner"
 import { useUE5Bridge } from "@/lib/ue5/bridge"
-import { useVagonSession } from "@/lib/ue5/useVagonSession"
 import { hotels, getHotelBySlug, getRoomsByHotelId, getAmenitiesByHotelId } from "@/lib/hotel-data"
 import type { Room, Amenity, HotelCatalog } from "@/lib/hotel-data"
 import { useUE5WebSocket } from "@/lib/useUE5WebSocket"
@@ -709,16 +708,13 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null)
 
   // --- Stream config ---
-  // We use the API (getStreams → assignMachine) rather than Vagon's
-  // hosted stream URL because the hosted URL sticky-routes returning
-  // visitors back to their previous machine (cookie on streams.vagon.io
-  // we can't clear). assign-machine returns a unique connection_link
-  // per call, so each session is a fresh machine. Teardown is left to
-  // Vagon's platform-side idle reaper so the post-session cache snapshot
-  // has time to complete.
+  // Using Vagon's hosted stream URL directly in the iframe. Vagon handles
+  // machine ops server-side per their docs. Known issue: the hosted page
+  // sticky-routes returning visitors back to their previous machine. The
+  // API path (assign-machine, which returns a unique connection_link)
+  // would solve that, but currently 404s — to be unblocked with Vagon.
   const streamMode = process.env.NEXT_PUBLIC_STREAM_MODE || "local"
   const isVagonMode = streamMode === "vagon"
-  const vagon = useVagonSession(isVagonMode)
 
   // Tell Vagon to end the session on tab close / reload so the next page
   // load gets a fresh machine instead of reconnecting to the previous,
@@ -791,12 +787,12 @@ export default function HomePage() {
   }, [ue5Ready, introComplete, isAuthenticated, userProfile, returningUserData, firebaseUser])
 
   // --- Stream config (streamMode & isVagonMode declared earlier) ---
+  // Hardcoded Vagon hosted-stream URL for vagon mode. Will move to an
+  // env var once we settle the sticky-session question with Vagon.
   const streamUrl = isVagonMode
-    ? (vagon.connectionLink ?? "")
+    ? "https://streams.vagon.io/streams/e92ad7d9-0510-4246-bdac-8fbedb5653ed"
     : (process.env.NEXT_PUBLIC_VAGON_STREAM_URL || "http://127.0.0.1")
-  const hasStream = isVagonMode
-    ? !!vagon.connectionLink
-    : (!!streamUrl && streamUrl !== "about:blank")
+  const hasStream = !!streamUrl && streamUrl !== "about:blank"
   const iframeAllow = isVagonMode
     ? "microphone *; clipboard-read *; clipboard-write *; encrypted-media *; fullscreen *"
     : "autoplay; fullscreen; clipboard-read; clipboard-write; gamepad"
