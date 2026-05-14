@@ -1,10 +1,15 @@
 /**
  * Vagon Streams API — HMAC-authenticated machine lifecycle management.
  *
- * Flow: getStreams → startMachine → assignMachine.
+ * Flow: getStreams → assignMachine.
  *
- * No region is sent: the enterprise automated setup picks the optimal
- * region by latency. Teardown is handled by the platform's idle reaper.
+ * start-machine is intentionally not called: per Vagon's docs it only
+ * applies to Cost Optimized streams. Our streams are Availability
+ * Optimized (Automated Setup), where capacity management is handled by
+ * the platform — calling start-machine returns 4610/400.
+ *
+ * No region is sent either: Automated Setup picks the optimal region
+ * by latency. Teardown is handled by the platform's idle reaper.
  */
 
 import crypto from "crypto"
@@ -118,26 +123,12 @@ export async function getStreams(): Promise<string> {
   return data.streams[0].id
 }
 
-/** Start a machine for the given stream. */
-export async function startMachine(streamId: string): Promise<void> {
-  const path = `/app-stream-management/v2/streams/${streamId}/start-machine`
-  const body = "{}"
-  const res = await fetch(`${API_BASE}${path}`, {
-    method: "POST",
-    headers: authedHeaders("POST", path, body),
-    body,
-  })
-  if (!res.ok) return failWithBody("startMachine", res)
-}
-
 /** Assign a machine and return the connection link + machine ID. */
 export async function assignMachine(streamId: string): Promise<AssignResult> {
   const path = `/app-stream-management/v2/streams/${streamId}/assign-machine`
-  const body = "{}"
   const res = await fetch(`${API_BASE}${path}`, {
     method: "POST",
-    headers: authedHeaders("POST", path, body),
-    body,
+    headers: authedHeaders("POST", path),
   })
   if (!res.ok) return failWithBody("assignMachine", res)
   const data: AssignMachineResponse = await res.json()
