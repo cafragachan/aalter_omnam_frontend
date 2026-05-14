@@ -96,6 +96,12 @@ function authedHeaders(method: string, path: string, body = "") {
   }
 }
 
+async function failWithBody(label: string, res: Response): Promise<never> {
+  const text = await res.text().catch(() => "<unreadable body>")
+  console.error(`[vagon-api] ${label} ${res.status} body:`, text)
+  throw new Error(`${label} failed: ${res.status} ${text}`)
+}
+
 /** Fetch available streams for our app. */
 export async function getStreams(): Promise<string> {
   const { appId } = getConfig()
@@ -104,7 +110,7 @@ export async function getStreams(): Promise<string> {
     method: "GET",
     headers: authedHeaders("GET", path),
   })
-  if (!res.ok) throw new Error(`getStreams failed: ${res.status}`)
+  if (!res.ok) return failWithBody("getStreams", res)
   const data: StreamsResponse = await res.json()
   if (!Array.isArray(data.streams) || data.streams.length === 0) {
     throw new Error("No streams available")
@@ -121,7 +127,7 @@ export async function startMachine(streamId: string): Promise<void> {
     headers: authedHeaders("POST", path, body),
     body,
   })
-  if (!res.ok) throw new Error(`startMachine failed: ${res.status}`)
+  if (!res.ok) return failWithBody("startMachine", res)
 }
 
 /** Assign a machine and return the connection link + machine ID. */
@@ -133,7 +139,7 @@ export async function assignMachine(streamId: string): Promise<AssignResult> {
     headers: authedHeaders("POST", path, body),
     body,
   })
-  if (!res.ok) throw new Error(`assignMachine failed: ${res.status}`)
+  if (!res.ok) return failWithBody("assignMachine", res)
   const data: AssignMachineResponse = await res.json()
   return {
     connectionLink: data.connection_link,
