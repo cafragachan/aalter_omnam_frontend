@@ -8,8 +8,13 @@
  * Optimized (Automated Setup), where capacity management is handled by
  * the platform — calling start-machine returns 4610/400.
  *
- * No region is sent either: Automated Setup picks the optimal region
- * by latency. Teardown is handled by the platform's idle reaper.
+ * `region` is sent on assign-machine because the API documents it as
+ * required and rejects empty bodies with 400, even though Vagon support
+ * told us to omit it for Automated Setup. To get true automatic region
+ * selection we likely need `region_optimization: true` on the stream
+ * config (PUT /streams/{id}). To be clarified with Vagon on the call.
+ *
+ * Teardown is handled by the platform's idle reaper.
  */
 
 import crypto from "crypto"
@@ -75,6 +80,7 @@ function getConfig() {
     apiKey: process.env.NEXT_PUBLIC_VAGON_API_KEY ?? "",
     apiSecret: process.env.NEXT_PUBLIC_VAGON_API_SECRET ?? "",
     appId: process.env.NEXT_PUBLIC_VAGON_APP_ID ?? "",
+    region: process.env.NEXT_PUBLIC_VAGON_REGION ?? "dublin",
   }
 }
 
@@ -125,10 +131,13 @@ export async function getStreams(): Promise<string> {
 
 /** Assign a machine and return the connection link + machine ID. */
 export async function assignMachine(streamId: string): Promise<AssignResult> {
+  const { region } = getConfig()
   const path = `/app-stream-management/v2/streams/${streamId}/assign-machine`
+  const body = JSON.stringify({ region })
   const res = await fetch(`${API_BASE}${path}`, {
     method: "POST",
-    headers: authedHeaders("POST", path),
+    headers: authedHeaders("POST", path, body),
+    body,
   })
   if (!res.ok) return failWithBody("assignMachine", res)
   const data: AssignMachineResponse = await res.json()
