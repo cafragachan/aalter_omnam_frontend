@@ -1,7 +1,7 @@
 /**
  * Server-side proxy for stopping a Vagon machine.
  *
- * Called via navigator.sendBeacon() on tab close / pagehide so HMAC signing
+ * Called via navigator.sendBeacon() on tab close / refresh so HMAC signing
  * happens server-side (beacon can't set custom Authorization headers).
  */
 

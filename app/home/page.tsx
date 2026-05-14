@@ -24,6 +24,7 @@ import { useAvatarActions } from "@/lib/liveavatar/useAvatarActions"
 import { useJourney } from "@/lib/orchestrator"
 import { useRoomPlanner } from "@/lib/orchestrator/useRoomPlanner"
 import { useUE5Bridge } from "@/lib/ue5/bridge"
+import { useVagonSession } from "@/lib/ue5/useVagonSession"
 import { hotels, getHotelBySlug, getRoomsByHotelId, getAmenitiesByHotelId } from "@/lib/hotel-data"
 import type { Room, Amenity, HotelCatalog } from "@/lib/hotel-data"
 import { useUE5WebSocket } from "@/lib/useUE5WebSocket"
@@ -708,61 +709,21 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null)
 
   // --- Stream config ---
-  // Using Vagon's hosted stream URL directly in the iframe. Vagon handles
-  // machine ops server-side per their docs. Known issue: the hosted page
-  // sticky-routes returning visitors back to their previous machine. The
-  // API path (assign-machine, which returns a unique connection_link)
-  // would solve that, but currently 404s — to be unblocked with Vagon.
   const streamMode = process.env.NEXT_PUBLIC_STREAM_MODE || "local"
   const isVagonMode = streamMode === "vagon"
 
-  // Capture the assigned machine id from the SDK so we can explicitly
-  // terminate it on tab close. The hosted-stream URL doesn't tell us
-  // the machine id directly — onSessionInformation is the SDK's
-  // metadata channel. We log whatever it returns so we can map fields
-  // to whatever Vagon actually sends.
+  // Vagon machine lifecycle (only active in vagon mode)
+  const vagon = useVagonSession(isVagonMode)
   const vagonMachineIdRef = useRef<string | null>(null)
+  // Keep ref in sync so beforeunload can access it
   useEffect(() => {
-    if (!isVagonMode) return
-    const attach = () => {
-      const v = window.Vagon
-      if (!v || typeof v.onSessionInformation !== "function") {
-        setTimeout(attach, 1000)
-        return
-      }
-      v.onSessionInformation((data) => {
-        console.log("[Vagon] onSessionInformation:", data)
-        // Best-effort extraction — adjust the field name once we see
-        // what Vagon actually sends. Common candidates:
-        // machine_id, machine.id, machine.uid, machine_uid, sessionId, etc.
-        const d = data as Record<string, unknown> | null | undefined
-        const machineId =
-          (d?.machine_id as string | undefined) ??
-          ((d?.machine as { id?: string; uid?: string } | undefined)?.id) ??
-          ((d?.machine as { id?: string; uid?: string } | undefined)?.uid) ??
-          (d?.machine_uid as string | undefined) ??
-          null
-        if (machineId) vagonMachineIdRef.current = machineId
-      })
-      if (typeof v.getSessionInformation === "function") {
-        v.getSessionInformation()
-      }
-    }
-    attach()
-  }, [isVagonMode])
+    vagonMachineIdRef.current = vagon.machineId
+  }, [vagon.machineId])
 
-  // Terminate the Vagon machine on tab close / reload. Also fires
-  // Vagon.shutdown() as a fallback. machine_id may not be available
-  // if onSessionInformation never fired (e.g. user closes tab before
-  // stream connects) — in that case Vagon's idle reaper handles it.
+  // Cleanup Vagon machine on tab close / navigation away
   useEffect(() => {
-    if (!isVagonMode) return
-    const handlePageHide = () => {
-      try {
-        window.Vagon?.shutdown?.()
-      } catch {
-        /* SDK may not be ready / iframe already gone */
-      }
+    const handleUnload = () => {
+      // Stop Vagon machine via server-side proxy (beacon can't set HMAC headers)
       if (vagonMachineIdRef.current) {
         navigator.sendBeacon(
           "/api/stop-vagon-machine",
@@ -773,9 +734,15 @@ export default function HomePage() {
         )
       }
     }
-    window.addEventListener("pagehide", handlePageHide)
-    return () => window.removeEventListener("pagehide", handlePageHide)
-  }, [isVagonMode])
+    window.addEventListener("beforeunload", handleUnload)
+    return () => {
+      window.removeEventListener("beforeunload", handleUnload)
+      // Also stop on React unmount (SPA navigation)
+      if (vagonMachineIdRef.current) {
+        void vagon.stop()
+      }
+    }
+  }, [vagon.stop])
 
   // The overlay stays until introComplete — auth state changes mid-intro don't dismiss it
   const showLoginOverlay = !introComplete
@@ -831,12 +798,12 @@ export default function HomePage() {
   }, [ue5Ready, introComplete, isAuthenticated, userProfile, returningUserData, firebaseUser])
 
   // --- Stream config (streamMode & isVagonMode declared earlier) ---
-  // Hardcoded Vagon hosted-stream URL for vagon mode. Will move to an
-  // env var once we settle the sticky-session question with Vagon.
   const streamUrl = isVagonMode
-    ? "https://streams.vagon.io/streams/e92ad7d9-0510-4246-bdac-8fbedb5653ed"
+    ? (vagon.connectionLink ?? "")
     : (process.env.NEXT_PUBLIC_VAGON_STREAM_URL || "http://127.0.0.1")
-  const hasStream = !!streamUrl && streamUrl !== "about:blank"
+  const hasStream = isVagonMode
+    ? !!vagon.connectionLink
+    : (!!streamUrl && streamUrl !== "about:blank")
   const iframeAllow = isVagonMode
     ? "microphone *; clipboard-read *; clipboard-write *; encrypted-media *; fullscreen *"
     : "autoplay; fullscreen; clipboard-read; clipboard-write; gamepad"
