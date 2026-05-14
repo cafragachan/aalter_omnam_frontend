@@ -24,7 +24,6 @@ import { useAvatarActions } from "@/lib/liveavatar/useAvatarActions"
 import { useJourney } from "@/lib/orchestrator"
 import { useRoomPlanner } from "@/lib/orchestrator/useRoomPlanner"
 import { useUE5Bridge } from "@/lib/ue5/bridge"
-import { useVagonSession } from "@/lib/ue5/useVagonSession"
 import { hotels, getHotelBySlug, getRoomsByHotelId, getAmenitiesByHotelId } from "@/lib/hotel-data"
 import type { Room, Amenity, HotelCatalog } from "@/lib/hotel-data"
 import { useUE5WebSocket } from "@/lib/useUE5WebSocket"
@@ -709,13 +708,12 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null)
 
   // --- Stream config ---
+  // TESTING: use Vagon's hosted stream URL directly in the iframe instead
+  // of orchestrating machines via the HMAC API. Per Vagon's docs, the URL
+  // link from the dashboard handles all machine ops server-side. If this
+  // works, the useVagonSession / vagon-api code path can be deleted.
   const streamMode = process.env.NEXT_PUBLIC_STREAM_MODE || "local"
   const isVagonMode = streamMode === "vagon"
-
-  // Vagon machine lifecycle (only active in vagon mode).
-  // Teardown is left to Vagon's platform-side idle reaper so the
-  // post-session cache snapshot has time to complete.
-  const vagon = useVagonSession(isVagonMode)
 
   // The overlay stays until introComplete — auth state changes mid-intro don't dismiss it
   const showLoginOverlay = !introComplete
@@ -771,12 +769,12 @@ export default function HomePage() {
   }, [ue5Ready, introComplete, isAuthenticated, userProfile, returningUserData, firebaseUser])
 
   // --- Stream config (streamMode & isVagonMode declared earlier) ---
+  // TESTING: hardcoded Vagon hosted-stream URL for vagon mode.
+  // If this proves stable, swap to an env var and clean up the API code.
   const streamUrl = isVagonMode
-    ? (vagon.connectionLink ?? "")
+    ? "https://streams.vagon.io/streams/e92ad7d9-0510-4246-bdac-8fbedb5653ed"
     : (process.env.NEXT_PUBLIC_VAGON_STREAM_URL || "http://127.0.0.1")
-  const hasStream = isVagonMode
-    ? !!vagon.connectionLink
-    : (!!streamUrl && streamUrl !== "about:blank")
+  const hasStream = !!streamUrl && streamUrl !== "about:blank"
   const iframeAllow = isVagonMode
     ? "microphone *; clipboard-read *; clipboard-write *; encrypted-media *; fullscreen *"
     : "autoplay; fullscreen; clipboard-read; clipboard-write; gamepad"

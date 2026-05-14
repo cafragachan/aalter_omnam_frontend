@@ -126,6 +126,13 @@ export async function getStreams(): Promise<string> {
   if (!Array.isArray(data.streams) || data.streams.length === 0) {
     throw new Error("No streams available")
   }
+  console.log(
+    "[vagon-api] getStreams →",
+    data.streams.map((s) => ({
+      id: s.id,
+      attrs: (s as { attributes?: Record<string, unknown> }).attributes,
+    })),
+  )
   return data.streams[0].id
 }
 
@@ -134,6 +141,7 @@ export async function assignMachine(streamId: string): Promise<AssignResult> {
   const { region } = getConfig()
   const path = `/app-stream-management/v2/streams/${streamId}/assign-machine`
   const body = JSON.stringify({ region })
+  console.log("[vagon-api] assignMachine →", { url: `${API_BASE}${path}`, body })
   const res = await fetch(`${API_BASE}${path}`, {
     method: "POST",
     headers: authedHeaders("POST", path, body),
