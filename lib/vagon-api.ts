@@ -49,6 +49,10 @@ export interface Machine {
 
 export interface Stream {
   id: string
+  attributes: {
+    uid: string
+    [key: string]: unknown
+  }
   [key: string]: unknown
 }
 
@@ -128,10 +132,7 @@ export async function getStreams(): Promise<string> {
   }
   console.log(
     "[vagon-api] getStreams →",
-    data.streams.map((s) => ({
-      id: s.id,
-      attrs: (s as { attributes?: Record<string, unknown> }).attributes,
-    })),
+    data.streams.map((s) => ({ id: s.id, uid: s.attributes?.uid, attrs: s.attributes })),
   )
   return data.streams[0].id
 }
