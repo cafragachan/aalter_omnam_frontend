@@ -712,37 +712,10 @@ export default function HomePage() {
   const streamMode = process.env.NEXT_PUBLIC_STREAM_MODE || "local"
   const isVagonMode = streamMode === "vagon"
 
-  // Vagon machine lifecycle (only active in vagon mode)
+  // Vagon machine lifecycle (only active in vagon mode).
+  // Teardown is left to Vagon's platform-side idle reaper so the
+  // post-session cache snapshot has time to complete.
   const vagon = useVagonSession(isVagonMode)
-  const vagonMachineIdRef = useRef<string | null>(null)
-  // Keep ref in sync so beforeunload can access it
-  useEffect(() => {
-    vagonMachineIdRef.current = vagon.machineId
-  }, [vagon.machineId])
-
-  // Cleanup Vagon machine on tab close / navigation away
-  useEffect(() => {
-    const handleUnload = () => {
-      // Stop Vagon machine via server-side proxy (beacon can't set HMAC headers)
-      if (vagonMachineIdRef.current) {
-        navigator.sendBeacon(
-          "/api/stop-vagon-machine",
-          new Blob(
-            [JSON.stringify({ machine_id: vagonMachineIdRef.current })],
-            { type: "application/json" },
-          ),
-        )
-      }
-    }
-    window.addEventListener("beforeunload", handleUnload)
-    return () => {
-      window.removeEventListener("beforeunload", handleUnload)
-      // Also stop on React unmount (SPA navigation)
-      if (vagonMachineIdRef.current) {
-        void vagon.stop()
-      }
-    }
-  }, [vagon.stop])
 
   // The overlay stays until introComplete — auth state changes mid-intro don't dismiss it
   const showLoginOverlay = !introComplete

@@ -17,15 +17,3 @@ export async function initVagonMachine(): Promise<VagonInitResult> {
   }
   return res.json()
 }
-
-/** Stop a Vagon machine via server route. */
-export async function stopVagonMachine(machineId: string): Promise<void> {
-  const res = await fetch("/api/stop-vagon-machine", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ machine_id: machineId }),
-  })
-  if (!res.ok) {
-    console.error("[vagon-client] stop failed:", res.status)
-  }
-}

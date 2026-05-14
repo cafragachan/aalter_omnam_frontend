@@ -1,7 +1,10 @@
 /**
  * Vagon Streams API — HMAC-authenticated machine lifecycle management.
  *
- * Flow: getStreams → startMachine → assignMachine → stopMachine.
+ * Flow: getStreams → startMachine → assignMachine.
+ *
+ * No region is sent: the enterprise automated setup picks the optimal
+ * region by latency. Teardown is handled by the platform's idle reaper.
  */
 
 import crypto from "crypto"
@@ -67,7 +70,6 @@ function getConfig() {
     apiKey: process.env.NEXT_PUBLIC_VAGON_API_KEY ?? "",
     apiSecret: process.env.NEXT_PUBLIC_VAGON_API_SECRET ?? "",
     appId: process.env.NEXT_PUBLIC_VAGON_APP_ID ?? "",
-    region: process.env.NEXT_PUBLIC_VAGON_REGION ?? "dublin",
   }
 }
 
@@ -112,9 +114,8 @@ export async function getStreams(): Promise<string> {
 
 /** Start a machine for the given stream. */
 export async function startMachine(streamId: string): Promise<void> {
-  const { region } = getConfig()
   const path = `/app-stream-management/v2/streams/${streamId}/start-machine`
-  const body = JSON.stringify({ region })
+  const body = "{}"
   const res = await fetch(`${API_BASE}${path}`, {
     method: "POST",
     headers: authedHeaders("POST", path, body),
@@ -125,9 +126,8 @@ export async function startMachine(streamId: string): Promise<void> {
 
 /** Assign a machine and return the connection link + machine ID. */
 export async function assignMachine(streamId: string): Promise<AssignResult> {
-  const { region } = getConfig()
   const path = `/app-stream-management/v2/streams/${streamId}/assign-machine`
-  const body = JSON.stringify({ region })
+  const body = "{}"
   const res = await fetch(`${API_BASE}${path}`, {
     method: "POST",
     headers: authedHeaders("POST", path, body),
@@ -138,19 +138,5 @@ export async function assignMachine(streamId: string): Promise<AssignResult> {
   return {
     connectionLink: data.connection_link,
     machineId: data.machine.id,
-  }
-}
-
-/** Stop a machine by ID. */
-export async function stopMachine(machineId: string): Promise<void> {
-  const path = "/app-stream-management/v2/streams/stop-machine"
-  const body = JSON.stringify({ machine_id: machineId })
-  const res = await fetch(`${API_BASE}${path}`, {
-    method: "POST",
-    headers: authedHeaders("POST", path, body),
-    body,
-  })
-  if (!res.ok) {
-    console.error(`stopMachine failed: ${res.status}`)
   }
 }
