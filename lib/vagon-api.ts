@@ -2,6 +2,12 @@
  * Vagon Streams API — HMAC-authenticated machine lifecycle management.
  *
  * Flow: getStreams → startMachine → assignMachine → stopMachine.
+ *
+ * Region handling: we send the `regions` array (the Automated-Setup
+ * field per the docs) instead of pinning a single `region`. Vagon
+ * support told us not to force a single region; the `regions` array is
+ * the documented way to give them latency-based choice across our
+ * activated regions.
  */
 
 import crypto from "crypto"
@@ -63,11 +69,18 @@ export interface AssignResult {
 const API_BASE = "https://api.vagon.io"
 
 function getConfig() {
+  // NEXT_PUBLIC_VAGON_REGION accepts a single value or a comma-separated
+  // list — e.g. "dublin" or "dublin,frankfurt,north_virginia".
+  // The first entry is used as the legacy single-region fallback if we
+  // ever need to send `region`; the full list goes into `regions`.
+  const raw = process.env.NEXT_PUBLIC_VAGON_REGION ?? "dublin"
+  const regions = raw.split(",").map((s) => s.trim()).filter(Boolean)
   return {
     apiKey: process.env.NEXT_PUBLIC_VAGON_API_KEY ?? "",
     apiSecret: process.env.NEXT_PUBLIC_VAGON_API_SECRET ?? "",
     appId: process.env.NEXT_PUBLIC_VAGON_APP_ID ?? "",
-    region: process.env.NEXT_PUBLIC_VAGON_REGION ?? "dublin",
+    region: regions[0] ?? "dublin",
+    regions: regions.length > 0 ? regions : ["dublin"],
   }
 }
 
@@ -94,6 +107,12 @@ function authedHeaders(method: string, path: string, body = "") {
   }
 }
 
+async function failWithBody(label: string, res: Response): Promise<never> {
+  const text = await res.text().catch(() => "<unreadable body>")
+  console.error(`[vagon-api] ${label} ${res.status} body:`, text)
+  throw new Error(`${label} failed: ${res.status} ${text}`)
+}
+
 /** Fetch available streams for our app. */
 export async function getStreams(): Promise<string> {
   const { appId } = getConfig()
@@ -102,7 +121,7 @@ export async function getStreams(): Promise<string> {
     method: "GET",
     headers: authedHeaders("GET", path),
   })
-  if (!res.ok) throw new Error(`getStreams failed: ${res.status}`)
+  if (!res.ok) return failWithBody("getStreams", res)
   const data: StreamsResponse = await res.json()
   if (!Array.isArray(data.streams) || data.streams.length === 0) {
     throw new Error("No streams available")
@@ -112,28 +131,30 @@ export async function getStreams(): Promise<string> {
 
 /** Start a machine for the given stream. */
 export async function startMachine(streamId: string): Promise<void> {
-  const { region } = getConfig()
+  const { regions } = getConfig()
   const path = `/app-stream-management/v2/streams/${streamId}/start-machine`
-  const body = JSON.stringify({ region })
+  const body = JSON.stringify({ regions })
+  console.log("[vagon-api] startMachine →", { url: `${API_BASE}${path}`, body })
   const res = await fetch(`${API_BASE}${path}`, {
     method: "POST",
     headers: authedHeaders("POST", path, body),
     body,
   })
-  if (!res.ok) throw new Error(`startMachine failed: ${res.status}`)
+  if (!res.ok) return failWithBody("startMachine", res)
 }
 
 /** Assign a machine and return the connection link + machine ID. */
 export async function assignMachine(streamId: string): Promise<AssignResult> {
-  const { region } = getConfig()
+  const { regions } = getConfig()
   const path = `/app-stream-management/v2/streams/${streamId}/assign-machine`
-  const body = JSON.stringify({ region })
+  const body = JSON.stringify({ regions })
+  console.log("[vagon-api] assignMachine →", { url: `${API_BASE}${path}`, body })
   const res = await fetch(`${API_BASE}${path}`, {
     method: "POST",
     headers: authedHeaders("POST", path, body),
     body,
   })
-  if (!res.ok) throw new Error(`assignMachine failed: ${res.status}`)
+  if (!res.ok) return failWithBody("assignMachine", res)
   const data: AssignMachineResponse = await res.json()
   return {
     connectionLink: data.connection_link,
