@@ -131,9 +131,9 @@ export async function getStreams(): Promise<string> {
 
 /** Start a machine for the given stream. */
 export async function startMachine(streamId: string): Promise<void> {
-  const { regions } = getConfig()
+  const { region, regions } = getConfig()
   const path = `/app-stream-management/v2/streams/${streamId}/start-machine`
-  const body = JSON.stringify({ regions })
+  const body = JSON.stringify({ region, regions })
   console.log("[vagon-api] startMachine →", { url: `${API_BASE}${path}`, body })
   const res = await fetch(`${API_BASE}${path}`, {
     method: "POST",
@@ -145,9 +145,9 @@ export async function startMachine(streamId: string): Promise<void> {
 
 /** Assign a machine and return the connection link + machine ID. */
 export async function assignMachine(streamId: string): Promise<AssignResult> {
-  const { regions } = getConfig()
+  const { region, regions } = getConfig()
   const path = `/app-stream-management/v2/streams/${streamId}/assign-machine`
-  const body = JSON.stringify({ regions })
+  const body = JSON.stringify({ region, regions })
   console.log("[vagon-api] assignMachine →", { url: `${API_BASE}${path}`, body })
   const res = await fetch(`${API_BASE}${path}`, {
     method: "POST",
