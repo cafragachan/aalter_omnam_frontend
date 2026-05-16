@@ -40,6 +40,10 @@ import { SessionState, VoiceChatState } from "@heygen/liveavatar-web-sdk"
 // Typewriter intro constants & component
 // ---------------------------------------------------------------------------
 
+// Temporary: keep the Vagon machine alive across tab-close / refresh / SPA nav.
+// Flip to `false` to restore normal termination behaviour.
+const KEEP_VAGON_MACHINE_ON_UNLOAD = true
+
 const INTRO_MESSAGES = [
   "Welcome",
   "Your next stay begins here",
@@ -713,7 +717,7 @@ export default function HomePage() {
   const isVagonMode = streamMode === "vagon"
 
   // Vagon machine lifecycle (only active in vagon mode)
-  const vagon = useVagonSession(isVagonMode)
+  const vagon = useVagonSession(isVagonMode, { keepStaleOnInit: KEEP_VAGON_MACHINE_ON_UNLOAD })
   const vagonMachineIdRef = useRef<string | null>(null)
   // Keep ref in sync so beforeunload can access it
   useEffect(() => {
@@ -722,6 +726,7 @@ export default function HomePage() {
 
   // Cleanup Vagon machine on tab close / navigation away
   useEffect(() => {
+    if (KEEP_VAGON_MACHINE_ON_UNLOAD) return
     const handleUnload = () => {
       // Stop Vagon machine via server-side proxy (beacon can't set HMAC headers)
       if (vagonMachineIdRef.current) {

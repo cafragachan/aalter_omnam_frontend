@@ -43,8 +43,16 @@ function loadAndClearMachineId(): string | null {
  *   2. getStreams → assignMachine → ready (machine ID + connection link)
  *
  * Only active when `enabled` is true (i.e. streamMode === "vagon").
+ *
+ * `opts.keepStaleOnInit` (default false): when true, a stale machine id from a
+ * prior page load is cleared from sessionStorage but NOT stopped. Used to
+ * temporarily preserve the machine across refresh/close.
  */
-export function useVagonSession(enabled: boolean): VagonSession {
+export function useVagonSession(
+  enabled: boolean,
+  opts: { keepStaleOnInit?: boolean } = {},
+): VagonSession {
+  const { keepStaleOnInit = false } = opts
   const [connectionLink, setConnectionLink] = useState<string | null>(null)
   const [isReady, setIsReady] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
@@ -81,7 +89,7 @@ export function useVagonSession(enabled: boolean): VagonSession {
       try {
         // Stop any leftover machine from a previous page load (refresh)
         const staleId = loadAndClearMachineId()
-        if (staleId) {
+        if (staleId && !keepStaleOnInit) {
           console.log("[useVagonSession] Stopping stale machine:", staleId)
           await stopVagonMachine(staleId).catch(() => {})
         }
@@ -110,7 +118,7 @@ export function useVagonSession(enabled: boolean): VagonSession {
     return () => {
       cancelled = true
     }
-  }, [enabled])
+  }, [enabled, keepStaleOnInit])
 
   return {
     connectionLink,
