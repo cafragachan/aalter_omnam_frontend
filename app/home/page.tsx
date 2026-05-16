@@ -1191,6 +1191,33 @@ function HomePageContent({
     ue5.changeSunPosition("daylight")
   }, [selectedHotel]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // --- Release stuck UE5 input when drag ends over parent DOM ---
+  // Cross-origin iframes don't forward `mouseup` back to UE5, so when the
+  // user starts an orbit drag in the stream and releases over one of our
+  // overlay panels (rooms panel, unit detail, avatar dock, etc.), UE5 keeps
+  // thinking the mouse is held and orbits wildly on next move. We arm a flag
+  // whenever the iframe steals focus (window `blur` fires) and, on the next
+  // `pointerup`/`pointercancel` that bubbles to the parent window, ping UE5
+  // to release. The UE5 handler is idempotent — extra releases are no-ops.
+  const releaseInputUE5 = ue5.releaseInput
+  useEffect(() => {
+    let pendingRelease = false
+    const armRelease = () => { pendingRelease = true }
+    const flushRelease = () => {
+      if (!pendingRelease) return
+      pendingRelease = false
+      releaseInputUE5()
+    }
+    window.addEventListener("blur", armRelease)
+    window.addEventListener("pointerup", flushRelease)
+    window.addEventListener("pointercancel", flushRelease)
+    return () => {
+      window.removeEventListener("blur", armRelease)
+      window.removeEventListener("pointerup", flushRelease)
+      window.removeEventListener("pointercancel", flushRelease)
+    }
+  }, [releaseInputUE5])
+
   // --- Hotel selection handler ---
   const handleSelectHotel = useCallback((slug: string) => {
     const hotel = hotels.find((h) => h.slug === slug)

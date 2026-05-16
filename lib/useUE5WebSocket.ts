@@ -13,6 +13,7 @@ export type UE5MessageType =
   | "hotelSelected"
   | "profileUpdate"
   | "osm_data"
+  | "inputRelease"
 
 export type UE5IncomingMessage = {
   type: string

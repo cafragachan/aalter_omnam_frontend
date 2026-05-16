@@ -157,6 +157,14 @@ export function useUE5Bridge(opts: UE5BridgeOptions = {}) {
     setSelectedUnit(null)
   }, [])
 
+  // Tells UE5 to force-release any held mouse input. Sent when the user
+  // finishes a pointer gesture over parent-DOM — cross-origin iframes don't
+  // forward `mouseup` back to UE5, so without this the orbit camera stays
+  // stuck in drag mode. Idempotent on the UE5 side (no-op when nothing held).
+  const releaseInput = useCallback(() => {
+    sendRawMessage({ type: "inputRelease" })
+  }, [sendRawMessage])
+
   return {
     // State
     isConnected,
@@ -178,6 +186,7 @@ export function useUE5Bridge(opts: UE5BridgeOptions = {}) {
     startTest,
     sendOSMData,
     clearSelectedUnit,
+    releaseInput,
 
     // Transitions
     fadeTransition,
