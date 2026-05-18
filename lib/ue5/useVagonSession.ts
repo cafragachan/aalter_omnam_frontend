@@ -1,3 +1,8 @@
+/**
+ * @deprecated 2026-05-15 — see lib/vagon-api.ts header for context.
+ * Replaced by passing `?newSession=true` on the hosted stream URL
+ * directly in the iframe. Preserved unused.
+ */
 "use client"
 
 import { useEffect, useRef, useState, useCallback } from "react"

@@ -24,7 +24,6 @@ import { useAvatarActions } from "@/lib/liveavatar/useAvatarActions"
 import { useJourney } from "@/lib/orchestrator"
 import { useRoomPlanner } from "@/lib/orchestrator/useRoomPlanner"
 import { useUE5Bridge } from "@/lib/ue5/bridge"
-import { useVagonSession } from "@/lib/ue5/useVagonSession"
 import { hotels, getHotelBySlug, getRoomsByHotelId, getAmenitiesByHotelId } from "@/lib/hotel-data"
 import type { Room, Amenity, HotelCatalog } from "@/lib/hotel-data"
 import { useUE5WebSocket } from "@/lib/useUE5WebSocket"
@@ -39,10 +38,6 @@ import { SessionState, VoiceChatState } from "@heygen/liveavatar-web-sdk"
 // ---------------------------------------------------------------------------
 // Typewriter intro constants & component
 // ---------------------------------------------------------------------------
-
-// Temporary: keep the Vagon machine alive across tab-close / refresh / SPA nav.
-// Flip to `false` to restore normal termination behaviour.
-const KEEP_VAGON_MACHINE_ON_UNLOAD = true
 
 const INTRO_MESSAGES = [
   "Welcome",
@@ -713,41 +708,14 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null)
 
   // --- Stream config ---
+  // In vagon mode we point the iframe at Vagon's hosted stream URL with
+  // `?newSession=true` — per Vagon support this is the canonical way to
+  // run a session and forces a fresh machine on every load (defeats the
+  // streams.vagon.io sticky-session cookie). All machine ops (provision,
+  // assign, cache-snapshot, teardown) happen server-side on Vagon.
+  // The HMAC API path is preserved but unused — see lib/vagon-api.ts.
   const streamMode = process.env.NEXT_PUBLIC_STREAM_MODE || "local"
   const isVagonMode = streamMode === "vagon"
-
-  // Vagon machine lifecycle (only active in vagon mode)
-  const vagon = useVagonSession(isVagonMode, { keepStaleOnInit: KEEP_VAGON_MACHINE_ON_UNLOAD })
-  const vagonMachineIdRef = useRef<string | null>(null)
-  // Keep ref in sync so beforeunload can access it
-  useEffect(() => {
-    vagonMachineIdRef.current = vagon.machineId
-  }, [vagon.machineId])
-
-  // Cleanup Vagon machine on tab close / navigation away
-  useEffect(() => {
-    if (KEEP_VAGON_MACHINE_ON_UNLOAD) return
-    const handleUnload = () => {
-      // Stop Vagon machine via server-side proxy (beacon can't set HMAC headers)
-      if (vagonMachineIdRef.current) {
-        navigator.sendBeacon(
-          "/api/stop-vagon-machine",
-          new Blob(
-            [JSON.stringify({ machine_id: vagonMachineIdRef.current })],
-            { type: "application/json" },
-          ),
-        )
-      }
-    }
-    window.addEventListener("beforeunload", handleUnload)
-    return () => {
-      window.removeEventListener("beforeunload", handleUnload)
-      // Also stop on React unmount (SPA navigation)
-      if (vagonMachineIdRef.current) {
-        void vagon.stop()
-      }
-    }
-  }, [vagon.stop])
 
   // The overlay stays until introComplete — auth state changes mid-intro don't dismiss it
   const showLoginOverlay = !introComplete
@@ -804,11 +772,9 @@ export default function HomePage() {
 
   // --- Stream config (streamMode & isVagonMode declared earlier) ---
   const streamUrl = isVagonMode
-    ? (vagon.connectionLink ?? "")
+    ? "https://streams.vagon.io/streams/e92ad7d9-0510-4246-bdac-8fbedb5653ed?newSession=true"
     : (process.env.NEXT_PUBLIC_VAGON_STREAM_URL || "http://127.0.0.1")
-  const hasStream = isVagonMode
-    ? !!vagon.connectionLink
-    : (!!streamUrl && streamUrl !== "about:blank")
+  const hasStream = !!streamUrl && streamUrl !== "about:blank"
   const iframeAllow = isVagonMode
     ? "microphone *; clipboard-read *; clipboard-write *; encrypted-media *; fullscreen *"
     : "autoplay; fullscreen; clipboard-read; clipboard-write; gamepad"

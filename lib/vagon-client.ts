@@ -1,4 +1,8 @@
 /**
+ * @deprecated 2026-05-15 — see lib/vagon-api.ts header for context.
+ * Replaced by passing `?newSession=true` on the hosted stream URL
+ * directly in the iframe. Preserved unused.
+ *
  * Client-side Vagon helpers — calls server-side API routes
  * so HMAC secrets stay on the server.
  */

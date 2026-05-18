@@ -1,4 +1,9 @@
 /**
+ * @deprecated 2026-05-15 — see lib/vagon-api.ts header for context.
+ * Replaced by passing `?newSession=true` on the hosted stream URL
+ * directly in the iframe. Route preserved unused — nothing in the
+ * active code path posts to it.
+ *
  * Server-side proxy for stopping a Vagon machine.
  *
  * Called via navigator.sendBeacon() on tab close / refresh so HMAC signing

@@ -1,13 +1,22 @@
 /**
- * Vagon Streams API — HMAC-authenticated machine lifecycle management.
+ * @deprecated 2026-05-15
  *
- * Flow: getStreams → startMachine → assignMachine → stopMachine.
+ * Vagon support recommended embedding the hosted stream URL with
+ * `?newSession=true` instead of orchestrating machines via the HMAC API
+ * (`https://streams.vagon.io/streams/{stream_uid}?newSession=true`).
+ * The hosted page handles provisioning, region selection, assignment,
+ * the post-session cache snapshot, and teardown — and `newSession=true`
+ * defeats the visitor-cookie sticky-session reconnect we were hitting.
  *
- * Region handling: we send the `regions` array (the Automated-Setup
- * field per the docs) instead of pinning a single `region`. Vagon
- * support told us not to force a single region; the `regions` array is
- * the documented way to give them latency-based choice across our
- * activated regions.
+ * This module is intentionally preserved (unused) in case we ever need
+ * server-side machine orchestration again. Nothing in the active code
+ * path imports it.
+ *
+ * Original flow when in use:
+ *   getStreams → startMachine → assignMachine → stopMachine
+ *
+ * Region body shape sent both `region` (required per docs validator)
+ * and `regions` array (Automated-Setup latency-routing hint).
  */
 
 import crypto from "crypto"
