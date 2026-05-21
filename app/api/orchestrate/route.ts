@@ -826,6 +826,9 @@ ${collectedSummary}`
     lines.push(
       "When the guest asks a generic question about the hotel (\"tell me about this hotel\", \"what makes this place special\"), draw from this block. Speak conversationally — pick 1-2 highlights, don't recite the list. Mention the address only when the guest asks \"where is this?\" or similar.",
     )
+    lines.push(
+      "Do NOT phrase any highlight as a place the guest can step into / visit / see / tour unless the underlying facility appears in the Visitable amenities list below. Highlights that name a Described-only facility (e.g. the spa, a restaurant, the gym) must be framed as property credentials or atmosphere only — never as something the guest will walk into in this experience.",
+    )
     hotelOverviewBlock = `\n\n## Hotel overview (ground truth)\n\n${lines.join("\n")}`
   }
 
@@ -845,7 +848,8 @@ ${collectedSummary}`
   const isHotelContext =
     body.journeyContext.stage === "HOTEL_EXPLORATION" ||
     body.journeyContext.stage === "AMENITY_VIEWING" ||
-    body.journeyContext.stage === "ROOM_SELECTED"
+    body.journeyContext.stage === "ROOM_SELECTED" ||
+    body.journeyContext.stage === "VIRTUAL_LOUNGE"
   const active = body.hotelAmenitiesActive ?? []
   const describedOnly = body.hotelAmenitiesDescribedOnly ?? []
   const hasRichAmenityCtx = active.length > 0 || describedOnly.length > 0
