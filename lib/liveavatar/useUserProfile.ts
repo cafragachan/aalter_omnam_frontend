@@ -232,9 +232,12 @@ export const extractWithRegex = (
       }
     }
 
-    // Check for direct keyword mentions
+    // Check for direct keyword mentions. Word-boundary anchored — bare
+    // `includes()` matched "spa" inside "keyspaces", "pool" inside
+    // "Liverpool", etc., and those false positives were persisted as guest
+    // interests.
     for (const keyword of interestKeywords) {
-      if (lower.includes(keyword)) {
+      if (new RegExp(`\\b${keyword}\\b`, "i").test(lower)) {
         interestSet.add(keyword)
       }
     }
@@ -248,7 +251,7 @@ export const extractWithRegex = (
       "pescatarian", "celiac", "no pork", "no alcohol",
     ]
     for (const keyword of dietaryKeywords) {
-      if (lower.includes(keyword)) {
+      if (new RegExp(`\\b${keyword}\\b`, "i").test(lower)) {
         if (!result.dietaryRestrictions) result.dietaryRestrictions = []
         result.dietaryRestrictions.push(keyword)
       }
@@ -261,7 +264,7 @@ export const extractWithRegex = (
       "step-free", "elevator access",
     ]
     for (const keyword of accessibilityKeywords) {
-      if (lower.includes(keyword)) {
+      if (new RegExp(`\\b${keyword}\\b`, "i").test(lower)) {
         if (!result.accessibilityNeeds) result.accessibilityNeeds = []
         result.accessibilityNeeds.push(keyword)
       }
