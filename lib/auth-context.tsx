@@ -165,8 +165,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const register = useCallback(async (data: RegisterData): Promise<UserDBProfile> => {
     if (!auth) throw new Error("Firebase auth not configured")
+    // Drop any prior user's data before the auth swap so a stale value can't
+    // leak into the new account's first render. The matching load below
+    // refills it synchronously for the new uid.
+    setReturningUserData(null)
     const credential = await createUserWithEmailAndPassword(auth, data.email.trim(), data.password)
     const profile = await writeUserProfile(credential.user.uid, data)
+    try {
+      const returning = await loadReturningUser(credential.user.uid)
+      setReturningUserData(returning)
+    } catch {
+      // Non-critical — proceed without returning data
+    }
     setUserProfile(profile)
     return profile
   }, [])

@@ -191,7 +191,7 @@ Then naturally follow up for anything still missing. Ask ONE question at a time.
 
 Guest composition follow-up (IMPORTANT):
 When the guest gives a total guest count (e.g., "5 guests", "there will be 4 of us") but does NOT specify how many are adults vs children, you MUST naturally follow up to get the breakdown before moving on. This is critical for room recommendations.
-- For 2 guests: "Lovely — just the two of you, or will any little ones be joining?"
+- For 2 guests: "Lovely — will it just be the two of you, or is anyone else joining?"
 - For 3+ guests: "And of the [number], are any of them children?"
 - If they say something like "just adults" or "no kids", that counts — move on.
 - If they explicitly mention children (e.g., "me, my wife and 2 kids"), no follow-up needed.
@@ -456,10 +456,10 @@ export function buildOpeningText(input: ContextInput): string {
   const name = identity.firstName
 
   if (loyalty && loyalty.totalSessions > 0) {
-    return `Welcome back, ${name}. It's lovely to see you again. Tell me, when are you thinking of visiting Lake Como, how many will be joining you, and will there be any little ones in the group?`
+    return `Welcome back, ${name}. It's lovely to see you again. Tell me, when are you thinking of visiting Lake Como, and who will be joining you?`
   }
 
-  return `Hello ${name}, I'm Ava from the Omnam Group. Welcome to our Virtual Lounge. Today you'll be exploring a private preview of our AI-guided booking experience. For this demonstration, we'll be visiting our Edition Hotel at Lake Como together. Tell me, when are you thinking of traveling, how many will be joining, and will there be any little ones in the group?`
+  return `Hello ${name}, I'm Ava from the Omnam Group. Welcome to our Virtual Lounge. Today you'll be exploring a private preview of our AI-guided booking experience. For this demonstration, we'll be visiting our Edition Hotel at Lake Como together. Tell me, when are you thinking of traveling and who will be joining you?`
 }
 
 // ---------------------------------------------------------------------------

@@ -861,13 +861,19 @@ function HomePageContent({
   const { repeat } = useAvatarActions()
   useDebugLogger()
   const { writeEndOfSessionSnapshot } = useIncrementalPersistence()
-  const { userProfile, returningUserData } = useAuth()
+  const { userProfile, returningUserData, firebaseUser } = useAuth()
 
   // --- Pre-populate profile from returning user's persisted preferences ---
-  const hasHydratedRef = useRef(false)
+  // Keyed on uid (not a boolean latch) so the effect re-runs if the
+  // authenticated user changes mid-mount — otherwise the first non-null
+  // returningUserData seen during an auth transition would lock in another
+  // user's interests.
+  const hydratedUidRef = useRef<string | null>(null)
   useEffect(() => {
-    if (hasHydratedRef.current || !returningUserData) return
-    hasHydratedRef.current = true
+    const uid = firebaseUser?.uid ?? null
+    if (!uid || !returningUserData) return
+    if (hydratedUidRef.current === uid) return
+    hydratedUidRef.current = uid
     const { personality, preferences } = returningUserData
     updateProfile({
       interests: personality?.interests ?? [],
@@ -877,7 +883,7 @@ function HomePageContent({
       amenityPriorities: preferences?.preferredAmenities ?? [],
       // REMOVED: travelPurpose, guestComposition, familySize — per-trip, collected fresh
     })
-  }, [returningUserData, updateProfile])
+  }, [firebaseUser, returningUserData, updateProfile])
 
   // --- Speak opening greeting when avatar stream is ready ---
   const hasGreetedRef = useRef(false)
