@@ -71,7 +71,25 @@ const TRAVEL_TO_HOTEL_RE = /\b(take me to the hotel|go to the hotel|head to the 
 const AFFIRMATIVE_RE = /\b(yes|yeah|sure|absolutely|definitely|love to|why not|let'?s do it|sounds good|okay|ok|of course|i'?d love|please|certainly|yep|yea)\b/i
 const NEGATIVE_RE = /\b(no|nah|skip|not really|no thanks|no thank you|i'?m good|pass|nope|not interested)\b/i
 const ROOM_RE = /\b(room|rooms|suite|suites|stay|bed|accommodation)\b/
-const BOOK_RE = /\b(book\s*(?:it|this|that|the\s+room|now)?|reserve|make\s+(?:a\s+)?reservation|proceed\s+(?:with\s+)?(?:booking|reservation)|let'?s\s+(?:book|reserve|do\s+it)|i(?:'d| would)\s+(?:like\s+to\s+)?(?:book|reserve)|i(?:'ll| will)\s+take\s+(?:it|this|that)|sign\s+me\s+up)\b/i
+// BOOK is the user committing to *their stay* (a room). It must NOT match
+// "book a conference room", "book a restaurant", "book activities" — those are
+// amenity navigation requests, and AMENITY_BY_NAME (checked first below) owns
+// them. The verb is therefore only a match when followed by a room-meaning
+// object, an end-of-clause, or in framings that already imply the current
+// stay ("I'd like to book", "make a reservation", "I'll take it").
+const BOOK_OBJECTS = `(?:it|this|that|now|the\\s+(?:room|suite|unit|stay)|a\\s+(?:room|suite))`
+const BOOK_TAIL = `(?:\\s+${BOOK_OBJECTS}|\\s*(?:[.!?]|$))`
+const BOOK_RE = new RegExp(
+  `\\b(?:book|reserve)${BOOK_TAIL}` +
+  `|\\bmake\\s+(?:a\\s+|the\\s+)?reservation\\b` +
+  `|\\bproceed\\s+(?:with\\s+)?(?:booking|reservation)\\b` +
+  `|\\blet'?s\\s+(?:book|reserve)${BOOK_TAIL}` +
+  `|\\blet'?s\\s+do\\s+it\\b` +
+  `|\\bi(?:'d| would)\\s+(?:like\\s+to\\s+)?(?:book|reserve)${BOOK_TAIL}` +
+  `|\\bi(?:'ll| will)\\s+take\\s+(?:it|this|that)\\b` +
+  `|\\bsign\\s+me\\s+up\\b`,
+  "i",
+)
 const AMENITY_RE = /\b(amenity|amenities|facility|facilities)\b/
 const AMENITY_NAME_RE = /\b(lobby|conference|spa|restaurant|pool|gym|bar|lounge|dining)\b/
 const LOCATION_RE = /\b(location|surrounding|surroundings|area|neighbou?rhood|outside|around|nearby|map|walk)\b/
@@ -134,6 +152,12 @@ const HOTEL_EXPLORE_RE = new RegExp(
  *   DOWNLOAD_DATA > BACK > TRAVEL_TO_HOTEL > BOOK > INTERIOR / EXTERIOR >
  *   HOTEL_EXPLORE > AMENITY_BY_NAME > AMENITIES (generic) > ROOMS / LOCATION >
  *   OTHER_OPTIONS > AFFIRMATIVE / NEGATIVE
+ *
+ * BOOK defers to AMENITY_BY_NAME when its match also contains a specific
+ * amenity name (e.g. "book the spa", "let's reserve the conference room").
+ * This is belt-and-suspenders — the tightened BOOK_RE above also rejects
+ * "book a conference room" / "book a restaurant" / "book activities"
+ * outright by requiring a room-meaning object.
  */
 // ---------------------------------------------------------------------------
 // User Intent Classifier
@@ -157,8 +181,15 @@ export function classifyIntent(message: string): UserIntent {
   // --- travel to hotel (lounge → hotel transition) ---
   if (TRAVEL_TO_HOTEL_RE.test(lower)) return { type: "TRAVEL_TO_HOTEL" }
 
-  // --- booking intent ---
-  if (BOOK_RE.test(lower)) return { type: "BOOK" }
+  // --- booking intent (but defer to AMENITY_BY_NAME when the verb has a
+  //     named-amenity object: "book the spa", "let's reserve the conference") ---
+  if (BOOK_RE.test(lower)) {
+    const namedAmenity = lower.match(AMENITY_NAME_RE)
+    if (namedAmenity && !AMENITY_RE.test(lower)) {
+      return { type: "AMENITY_BY_NAME", amenityName: namedAmenity[1] }
+    }
+    return { type: "BOOK" }
+  }
 
   // --- lighting control (before question guard — lighting requests often
   //     phrase as questions: "can we see it at sunset?") ---

@@ -530,9 +530,10 @@ Use these exact ask_next questions when they match the next missing field:
 - Room distribution missing: "How would you like to split your guests across rooms?"
 
 Skip-ahead mapping:
-- rooms, suites, accommodation, booking -> intent ROOMS or BOOK
+- rooms, suites, accommodation, "book a room", "book it", "I want to book" -> intent ROOMS or BOOK
 - amenities/facilities -> AMENITIES
 - pool/spa/restaurant/lobby/conference/gym/bar/lounge/dining -> AMENITY_BY_NAME with amenityName
+- "book/reserve a {amenity}" (book a conference room, book a restaurant, reserve the spa, book a table) -> AMENITY_BY_NAME with the named amenity, NOT BOOK. The verb "book" only maps to BOOK when the object is the stay itself (a room/suite/it/this).
 - surroundings/location/area -> LOCATION
 - hotel/property/tour/continue/go ahead -> HOTEL_EXPLORE or TRAVEL_TO_HOTEL
 For skip-ahead speech, acknowledge briefly and lead in. Do not ask another profile question.${regexHint}`
@@ -680,9 +681,10 @@ A server validator will reject \`ready\` with missing fields and reject age list
 
 If the guest's latest turn explicitly asks to skip ahead — e.g. "show me the rooms / hotel / amenities / surrounding area / lobby / spa / pool", "take me to the hotel / rooms", "I want to see X", "let's go straight to the hotel" — emit \`navigate_and_speak\` instead of \`profile_turn\`, with the matching intent:
 
-- "show me the rooms" / "take me to a room" / "I want to book" → \`intent: "ROOMS"\` (or \`"BOOK"\`)
+- "show me the rooms" / "take me to a room" / "I want to book a room" / "book it" / "reserve the suite" → \`intent: "ROOMS"\` (or \`"BOOK"\`)
 - "show me the amenities" / "what amenities do you have" → \`intent: "AMENITIES"\`
 - a specific amenity name (pool, spa, restaurant, lobby, conference, gym, bar, lounge, dining) → \`intent: "AMENITY_BY_NAME"\` with \`amenityName\`
+- "book / reserve a {amenity}" — "book a conference room", "book a restaurant", "reserve the spa", "book a table" → \`intent: "AMENITY_BY_NAME"\` with the named amenity, NOT \`BOOK\`. "book" maps to \`BOOK\` only when the object is the stay itself (a room/suite/it/this).
 - "show me the surrounding area" / "what's around" / "the location" → \`intent: "LOCATION"\`
 - "show me the hotel" / "let me see the property" / generic "let's go" → \`intent: "HOTEL_EXPLORE"\` (or \`"TRAVEL_TO_HOTEL"\`)
 
@@ -1056,7 +1058,7 @@ Classify the user's intent into exactly one of these categories:
 - **BACK**: User wants to go back, return to a previous view, or cancel current action.
 - **HOTEL_EXPLORE**: User wants a general overview / tour of the hotel property (bird's eye view, zoom out, explore the hotel).
 - **DOWNLOAD_DATA**: User explicitly requests to download their user data.
-- **BOOK**: User wants to book, reserve, or proceed with a reservation.
+- **BOOK**: User wants to book, reserve, or proceed with a reservation **for their stay** — i.e., a room. Examples: "book it", "book the room", "I'll take this one", "let's reserve the suite", "sign me up", "make a reservation". **Do NOT use BOOK when the verb's object is an amenity** ("book a conference room", "book a restaurant", "reserve the spa", "book a table") — those are AMENITY_BY_NAME with the named amenity.
 - **AFFIRMATIVE**: User agrees, says yes, confirms, or accepts a proposal.
 - **NEGATIVE**: User declines, says no, refuses, or rejects a proposal.
 - **TRAVEL_TO_HOTEL**: User wants to proceed to the hotel building itself (NOT a specific room or amenity within it). Typically used when leaving the lounge. Examples: "I'm ready", "let's go", "take me to the hotel", "let's continue". If the user says "take me to the [specific amenity]" (e.g., "take me to the pool"), that is AMENITY_BY_NAME, not TRAVEL_TO_HOTEL. **Hotel-intro speech rule**: whenever your \`navigate_and_speak\` emits TRAVEL_TO_HOTEL, the guest is about to enter the hotel for the first time this session — your speech MUST briefly cover (a) what's available to explore (rooms, amenities, grounds), (b) that they can switch the lighting to daylight, sunset, or night any time, including by using the toggle on your right, and (c) that they can return to the virtual lounge whenever they want. One warm paragraph — don't bullet-list.
@@ -1078,6 +1080,7 @@ Classify the user's intent into exactly one of these categories:
 2. Only return AMENITY_BY_NAME when the user's message itself references a specific amenity. A bare "yes" with a suggestedAmenityName in context is still AFFIRMATIVE.
 3. Use UNKNOWN only when the message genuinely does not map to any intent.
 4. **AMENITY_BY_NAME takes priority over TRAVEL_TO_HOTEL.** If the message mentions a specific amenity or facility ("take me to the pool", "go to the lobby", "let's visit the conference room"), classify as AMENITY_BY_NAME, not TRAVEL_TO_HOTEL. TRAVEL_TO_HOTEL only applies when the destination is "the hotel" generically.
+5. **AMENITY_BY_NAME takes priority over BOOK when "book"/"reserve" has an amenity object.** "Book a conference room" → AMENITY_BY_NAME (conference), not BOOK. "Reserve the spa" → AMENITY_BY_NAME (spa). "Book a table at the restaurant" → AMENITY_BY_NAME (restaurant). BOOK is only correct when the object of the verb is the stay itself — "book it", "book the room", "book the suite", "book this one". When in doubt, prefer AMENITY_BY_NAME — the user is asking for that amenity, the system will surface it, and from there they can book if they want.
 
 ## Surrounding-area routing (LOCATION → LOCATE_INTEREST_POINTS)
 
