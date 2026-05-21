@@ -66,6 +66,8 @@ export function renderSpeech(key: SpeechKey, args?: SpeechArgs): string {
       return DEFAULT_SPEECH.exteriorView
     case "backToOtherRooms":
       return DEFAULT_SPEECH.backToOtherRooms
+    case "backToRoom":
+      return DEFAULT_SPEECH.backToRoom
     case "backToHotelOverview":
       return DEFAULT_SPEECH.backToHotelOverview
     case "amenityBackToHotel":

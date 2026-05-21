@@ -62,7 +62,7 @@ export type JourneyState =
   | { stage: "DESTINATION_SELECT" }
   | { stage: "VIRTUAL_LOUNGE"; subState: "asking" | "exploring" }
   | { stage: "HOTEL_EXPLORATION"; subState: "announcing" | "awaiting_intent" | "panel_open"; lastProposal?: LastProposal; suggestedAmenityName?: string }
-  | { stage: "ROOM_SELECTED"; awaiting: "view_choice"; unitSelected: boolean; lastProposal?: LastProposal }
+  | { stage: "ROOM_SELECTED"; awaiting: "view_choice"; unitSelected: boolean; lastProposal?: LastProposal; viewMode?: "interior" | "exterior" }
   | {
       stage: "AMENITY_VIEWING"
       currentAmenity: AmenityRef
@@ -150,6 +150,7 @@ export type SpeechKey =
   | "steppingInside"
   | "exteriorView"
   | "backToOtherRooms"
+  | "backToRoom"
   | "backToHotelOverview"
   | "amenityBackToHotel"
   | "amenityFallbackPrompt"

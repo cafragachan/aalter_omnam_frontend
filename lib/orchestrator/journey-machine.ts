@@ -40,6 +40,7 @@ export const DEFAULT_SPEECH = {
   steppingInside: "Taking you inside now. Have a look around, and tell me when you're ready to book.",
   exteriorView: "Here's the exterior view. Would you like to book this one or view something else?",
   backToOtherRooms: "Certainly. I'll show you the other available rooms.",
+  backToRoom: "Stepping back inside the room.",
   backToHotelOverview: "Of course. Returning to the hotel overview now.",
   amenityBackToHotel: "Back at the hotel overview. What would you like to explore next?",
   amenitySuggestFallback: (suggestedNext: string) => `Certainly. I'll take you to the ${suggestedNext} now.`,
@@ -791,7 +792,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           effects.push({ type: "SPEAK_INTENT", key: "steppingInside" })
           effects.push({ type: "UE5_COMMAND", command: "unitView", value: "interior" })
           effects.push({ type: "FADE_TRANSITION" })
-          return { nextState: { ...state, lastProposal: "book" }, effects }
+          return { nextState: { ...state, lastProposal: "book", viewMode: "interior" }, effects }
 
         case "EXTERIOR":
           if (!state.unitSelected) {
@@ -800,7 +801,7 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           }
           effects.push({ type: "SPEAK_INTENT", key: "exteriorView" })
           effects.push({ type: "UE5_COMMAND", command: "unitView", value: "exterior" })
-          return { nextState: { ...state, lastProposal: "book" }, effects }
+          return { nextState: { ...state, lastProposal: "book", viewMode: "exterior" }, effects }
 
         case "BOOK":
           effects.push({ type: "SPEAK_INTENT", key: "openingBookingPage" })
@@ -808,6 +809,14 @@ export function journeyReducer(state: JourneyState, action: JourneyAction): Jour
           return { nextState: { stage: "ROOM_SELECTED", awaiting: "view_choice", unitSelected: state.unitSelected }, effects }
 
         case "BACK":
+          // From the exterior view, step back into the room rather than
+          // jumping all the way out to room selection.
+          if (state.viewMode === "exterior") {
+            effects.push({ type: "SPEAK_INTENT", key: "backToRoom" })
+            effects.push({ type: "UE5_COMMAND", command: "unitView", value: "interior" })
+            effects.push({ type: "FADE_TRANSITION" })
+            return { nextState: { ...state, viewMode: "interior", lastProposal: "book" }, effects }
+          }
           effects.push({ type: "SPEAK_INTENT", key: "backToOtherRooms" })
           effects.push({ type: "RESET_TO_DEFAULT" })
           effects.push({ type: "FADE_TRANSITION" })
