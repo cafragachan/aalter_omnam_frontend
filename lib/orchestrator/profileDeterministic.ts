@@ -470,6 +470,11 @@ function readySpeech(profile: DeterministicProfileInput["profile"]): string {
   return `Wonderful - I have ${dates}, ${guests}, and a ${profile.travelPurpose ?? "personalized"} stay. Would you like to stop by the virtual lounge first, or go straight to the hotel?`
 }
 
+// Each parser below runs opportunistically rather than only when its field is the current
+// awaiting target. Internal guards (dependency checks + the 0.85 confidence gate on apply)
+// make every parser a no-op when its prerequisites are missing, so one-shot dumps like
+// "May 10-15, 4 adults, all in one room, family vacation" fill every confidently-statable
+// field in a single pass instead of dribbling questions out turn by turn.
 export function evaluateDeterministicProfileTurn(input: DeterministicProfileInput): DeterministicProfileResult {
   const text = clean(input.latestMessage)
   if (!text) return { handled: false, confidence: 0, reasons: ["empty_message"] }
@@ -499,13 +504,13 @@ export function evaluateDeterministicProfileTurn(input: DeterministicProfileInpu
   }
 
   const profileAfterParty = mergeProfile(profileAfterDates, updates)
-  if (!clarifyingSpeech && input.awaiting === "guest_breakdown" && !profileAfterParty.guestComposition) {
+  if (!clarifyingSpeech && !profileAfterParty.guestComposition) {
     const parsed = parseGuestBreakdown(text, profileAfterParty.familySize)
     if (parsed.confidence >= 0.85) apply(parsed)
   }
 
   const profileAfterBreakdown = mergeProfile(profileAfterParty, updates)
-  if (!clarifyingSpeech && input.awaiting === "children_ages") {
+  if (!clarifyingSpeech) {
     const parsed = parseChildrenAges(text, profileAfterBreakdown.guestComposition)
     if (parsed.confidence >= 0.85 || parsed.clarifyingSpeech) apply(parsed)
   }
@@ -517,7 +522,7 @@ export function evaluateDeterministicProfileTurn(input: DeterministicProfileInpu
   }
 
   const profileAfterPurpose = mergeProfile(profileAfterAges, updates)
-  if (!clarifyingSpeech && input.awaiting === "room_distribution") {
+  if (!clarifyingSpeech) {
     const parsed = parseRoomAllocation(text, profileAfterPurpose.familySize)
     if (parsed.confidence >= 0.85 || parsed.clarifyingSpeech) apply(parsed)
   }
