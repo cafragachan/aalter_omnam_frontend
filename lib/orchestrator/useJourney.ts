@@ -10,7 +10,7 @@ import { useLiveAvatarContext as useHeyGenLiveAvatarContext } from "@/lib/liveav
 import { MessageSender } from "@/lib/liveavatar/types"
 import { useGuestIntelligence } from "@/lib/guest-intelligence"
 import { classifyIntent, type UserIntent } from "./intents"
-import { orchestrateLLM } from "./orchestrateLLM"
+import { orchestrateLLM, PADDING_TOOL_RESULT_NAMES, type PaddingToolResult } from "./orchestrateLLM"
 import { buildAmenityNarrative, intentToShortcutTarget, profileCollectionAwaiting } from "./journey-machine"
 import type { ProfileAwaiting } from "./profileFastPath"
 import { evaluateDeterministicProfileTurn } from "./profileDeterministic"
@@ -287,16 +287,14 @@ export function useJourney(options: UseJourneyOptions) {
   // --- Pre-generated speech ref (Phase 4: orchestrate fills this before processIntent) ---
   const preGeneratedSpeechRef = useRef<string | null>(null)
 
-  // --- Experiment: action-dispatch flag (URL ?actionTest=1) ---
-  // Read once at mount. When true AND stage === AMENITY_VIEWING AND the
-  // utterance contains "book", the unified turn pipeline bypasses the
-  // deterministic gate and requests action-dispatch tools from the server.
-  // See plan `inherited-beaming-gray.md` and the experiment branch in the
-  // orchestrate result handler below.
-  const actionTestExperimentRef = useRef<boolean>(
-    typeof window !== "undefined" &&
-      new URLSearchParams(window.location.search).get("actionTest") === "1",
-  )
+  // --- Action-dispatch surface: AMENITY_VIEWING `book` ---
+  // Phase 1a (shipped 2026-05-23): the URL `?actionTest=1` gate was removed
+  // and this surface is now the default behavior for every session. When the
+  // stage is AMENITY_VIEWING AND the utterance contains "book", the unified
+  // turn pipeline bypasses the deterministic gate and requests action-dispatch
+  // tools from the server. Fixes the "book it" → opens-rooms-panel bug
+  // canonically by handing the disambiguation to the LLM. See plan
+  // `inherited-beaming-gray.md`.
 
   // --- Speech-mutex turn id for utterance-driven SPEAK_INTENT effects ---
   //
@@ -362,7 +360,9 @@ export function useJourney(options: UseJourneyOptions) {
     // ---- Experiment: action-dispatch (AMENITY_VIEWING `book` surface) ----
     // Set when this turn was routed through the experiment path. The t5
     // latency-emit effect uses these to print a console.table row.
-    experimentTool?: "navigate_to_amenity_action" | "open_rooms_panel_action" | "speak_only_action"
+    // Type is `string` (not the 3-name union) since the schema-scale test
+    // adds ~14 padding tools that can also land here.
+    experimentTool?: string
     experimentUtterance?: string
   }
   const turnTimingRef = useRef<TurnTiming | null>(null)
@@ -1931,14 +1931,13 @@ export function useJourney(options: UseJourneyOptions) {
       // Reset idle detection on turn-start so the 12s reengage can't
       // fire over a response that's about to land.
       resetIdleTimer()
-      // Experiment: action-dispatch (AMENITY_VIEWING `book` surface).
-      // When the URL flag is on AND we're in AMENITY_VIEWING AND the
-      // utterance mentions "book", bypass the deterministic gate so the
-      // BOOK regex doesn't short-circuit to the rooms panel — let the LLM
-      // decide via the experimental action tools. See plan
+      // Action-dispatch surface: AMENITY_VIEWING `book`.
+      // Phase 1a (shipped 2026-05-23): always-on. Bypasses the deterministic
+      // gate so the BOOK regex doesn't short-circuit to the rooms panel —
+      // the LLM picks among navigate_to_amenity / open_rooms_panel /
+      // speak_only via the action-dispatch tools instead. See plan
       // `inherited-beaming-gray.md`.
       const isExperimentTurn =
-        actionTestExperimentRef.current &&
         currentState.stage === "AMENITY_VIEWING" &&
         /\bbook\b/i.test(latestMessage)
       const deterministic = isExperimentTurn
@@ -2157,6 +2156,47 @@ export function useJourney(options: UseJourneyOptions) {
           return
         }
 
+        // ---- Schema-scale test: padding-tool handler -------------------
+        // The model picked one of the ~14 padding tools. None of these are
+        // implemented for the AMENITY_VIEWING `book` surface — they exist
+        // purely as schema ballast to measure how a bigger action union
+        // affects LLM latency and tool-pick accuracy. Treat every pick as a
+        // data point: log it loudly, stash on the timing ref for the
+        // console.table row, and speak Ava's text without any state change.
+        if ((PADDING_TOOL_RESULT_NAMES as readonly string[]).includes(result.tool)) {
+          const paddingResult = result as PaddingToolResult
+          if (turnTimingRef.current) {
+            // Reuse the experiment fields so the console.table row prints
+            // for padding picks too. The `tool` cell will show the padding
+            // tool name — that's the signal for false-positive detection.
+            turnTimingRef.current.experimentTool = paddingResult.tool
+            turnTimingRef.current.experimentUtterance = turnMessageSlice
+          }
+          // eslint-disable-next-line no-console
+          console.warn("[ACTION-EXP] padding tool picked (schema-scale test)", {
+            tool: paddingResult.tool,
+            utterance: turnMessageSlice,
+            lightingMode: paddingResult.lightingMode,
+            category: paddingResult.category,
+            hotelSlug: paddingResult.hotelSlug,
+            speech: paddingResult.speech.slice(0, 100),
+          })
+          logTurn({
+            stage,
+            latestMessage: turnMessageSlice,
+            regexIntent: regexIntent.type,
+            llmIntent: paddingResult.tool,
+            action: { type: "USER_INTENT", intent: paddingResult.tool },
+            speech: paddingResult.speech,
+            latencyMs,
+            pathway: "experiment-action-dispatch",
+          })
+          if (!claimSpeech(utteranceTurnId, "experiment")) return
+          interrupt()
+          repeat(paddingResult.speech).catch(() => undefined)
+          return
+        }
+
         // Route via decision_envelope.action when the envelope carries a
         // USER_INTENT. PROFILE_TURN_RESULT envelopes fall through to the
         // tool-based dispatch below — those have dedicated handlers that
@@ -2325,6 +2365,18 @@ export function useJourney(options: UseJourneyOptions) {
         // here means the server responded with the legacy tool shape but the
         // envelope was missing or malformed. Log [ENVELOPE-FALLBACK] and
         // dispatch on the tool's intent.
+        //
+        // Type guard: the experiment and padding branches above return early,
+        // so only navigate_and_speak can plausibly land here — but TS can't
+        // narrow the union without an explicit check now that the result type
+        // includes the experiment + padding variants.
+        if (result.tool !== "navigate_and_speak") {
+          // eslint-disable-next-line no-console
+          console.warn("[ENVELOPE-FALLBACK] unexpected tool reached fallthrough", {
+            tool: result.tool,
+          })
+          return
+        }
         // eslint-disable-next-line no-console
         console.log("[ENVELOPE-FALLBACK]", {
           reason: envelope ? "non-USER_INTENT envelope action" : "envelope missing",

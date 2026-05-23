@@ -81,6 +81,42 @@ export type ProfileUpdates = {
 
 export type ProfileTurnDecision = "ask_next" | "clarify" | "ready"
 
+// Padding tools surfaced for the schema-scale test. All share the same
+// client-side handler — log + speak fallback. Kept as a separate type so the
+// generic handler can pattern-match against the union without touching the
+// primary action-dispatch tools above. The optional arg fields are populated
+// on the wire when the model picked an arg-bearing padding tool.
+export const PADDING_TOOL_RESULT_NAMES = [
+  "travel_to_hotel",
+  "return_to_virtual_lounge",
+  "show_hotel_overview",
+  "list_amenities",
+  "step_into_unit",
+  "step_out_of_unit",
+  "back_to_rooms_panel",
+  "open_booking_url",
+  "change_lighting",
+  "locate_interest_points",
+  "open_map",
+  "confirm_end_experience",
+  "confirm_return_to_lounge",
+  "end_experience",
+  "select_hotel",
+  "download_user_data",
+] as const
+export type PaddingToolResultName = typeof PADDING_TOOL_RESULT_NAMES[number]
+
+export type PaddingToolResult = {
+  tool: PaddingToolResultName
+  speech: string
+  /** change_lighting only */
+  lightingMode?: "daylight" | "sunset" | "night"
+  /** locate_interest_points only */
+  category?: string
+  /** select_hotel only */
+  hotelSlug?: string
+}
+
 export type OrchestrateResult = (
   | { tool: "navigate_and_speak"; intent: UserIntent; speech: string }
   | { tool: "no_action_speak"; speech: string }
@@ -97,6 +133,8 @@ export type OrchestrateResult = (
   | { tool: "navigate_to_amenity_action"; amenityId: string; speech: string }
   | { tool: "open_rooms_panel_action"; speech: string }
   | { tool: "speak_only_action"; speech: string }
+  // ---- Schema-scale test padding tools. Single client handler.
+  | PaddingToolResult
 ) & { decision_envelope?: TurnDecision; telemetry?: OrchestrateTelemetry }
 
 // ---------------------------------------------------------------------------
@@ -316,6 +354,8 @@ export async function orchestrateLLM(
       // Experiment: action-dispatch tools carry amenityId on
       // navigate_to_amenity_action.
       amenityId?: string
+      // Schema-scale test padding tools: select_hotel carries hotelSlug.
+      hotelSlug?: string
       // Phase 1 envelope. Optional on the wire — server always emits it,
       // but we treat missing/invalid as soft-warn, not fatal.
       decision_envelope?: unknown
@@ -412,6 +452,19 @@ export async function orchestrateLLM(
     }
     if (data.tool === "speak_only_action") {
       return withMeta({ tool: "speak_only_action" as const, speech: data.speech })
+    }
+
+    // Schema-scale test: any of the padding tools. Surface arg fields for
+    // log fidelity; client uses a single generic handler.
+    if ((PADDING_TOOL_RESULT_NAMES as readonly string[]).includes(data.tool)) {
+      const paddingResult: PaddingToolResult = {
+        tool: data.tool as PaddingToolResultName,
+        speech: data.speech,
+      }
+      if (data.lightingMode) paddingResult.lightingMode = data.lightingMode
+      if (data.category) paddingResult.category = data.category
+      if (data.hotelSlug) paddingResult.hotelSlug = data.hotelSlug
+      return withMeta(paddingResult)
     }
 
     return null

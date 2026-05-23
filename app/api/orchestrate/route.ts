@@ -108,6 +108,74 @@ const SpeakOnlyActionSchema = z.object({
   text: z.string().min(1).max(500),
 })
 
+// ---------------------------------------------------------------------------
+// Schema-scale test: 14 additional padding tools modelled on the draft action
+// union from the broader refactor plan. They share a generic shape (some carry
+// a small arg, all carry `text`). Wired into the experiment tool list to
+// measure whether a larger schema:
+//   • degrades LLM latency (more tokens to parse)
+//   • degrades tool-pick accuracy on the original 3 tools
+//   • produces false positives (LLM wrongly picks a padding tool)
+// All padding tools share the same client handler: log + speak `text` + no
+// state change. They exist purely as schema-cost ballast.
+// ---------------------------------------------------------------------------
+const TextOnlyPaddingSchema = z.object({
+  text: z.string().min(1).max(500),
+})
+const ChangeLightingPaddingSchema = z.object({
+  mode: z.enum(["daylight", "sunset", "night"]),
+  text: z.string().min(1).max(500),
+})
+const LocateInterestPointsPaddingSchema = z.object({
+  category: z.string().min(1).max(120),
+  text: z.string().min(1).max(500),
+})
+const SelectHotelPaddingSchema = z.object({
+  hotelSlug: z.string().min(1).max(64),
+  text: z.string().min(1).max(500),
+})
+
+// Padding tool names — listed once so we can drive the schema map, the tool
+// builder, the prompt block, and the client parser from the same source.
+const PADDING_TOOL_NAMES = [
+  "travel_to_hotel",
+  "return_to_virtual_lounge",
+  "show_hotel_overview",
+  "list_amenities",
+  "step_into_unit",
+  "step_out_of_unit",
+  "back_to_rooms_panel",
+  "open_booking_url",
+  "change_lighting",
+  "locate_interest_points",
+  "open_map",
+  "confirm_end_experience",
+  "confirm_return_to_lounge",
+  "end_experience",
+  "select_hotel",
+  "download_user_data",
+] as const
+type PaddingToolName = typeof PADDING_TOOL_NAMES[number]
+
+const PADDING_TOOL_SCHEMAS: Record<PaddingToolName, z.ZodTypeAny> = {
+  travel_to_hotel: TextOnlyPaddingSchema,
+  return_to_virtual_lounge: TextOnlyPaddingSchema,
+  show_hotel_overview: TextOnlyPaddingSchema,
+  list_amenities: TextOnlyPaddingSchema,
+  step_into_unit: TextOnlyPaddingSchema,
+  step_out_of_unit: TextOnlyPaddingSchema,
+  back_to_rooms_panel: TextOnlyPaddingSchema,
+  open_booking_url: TextOnlyPaddingSchema,
+  change_lighting: ChangeLightingPaddingSchema,
+  locate_interest_points: LocateInterestPointsPaddingSchema,
+  open_map: TextOnlyPaddingSchema,
+  confirm_end_experience: TextOnlyPaddingSchema,
+  confirm_return_to_lounge: TextOnlyPaddingSchema,
+  end_experience: TextOnlyPaddingSchema,
+  select_hotel: SelectHotelPaddingSchema,
+  download_user_data: TextOnlyPaddingSchema,
+}
+
 const TOOL_SCHEMAS: Record<string, z.ZodTypeAny> = {
   navigate_and_speak: NavigateAndSpeakSchema,
   no_action_speak: NoActionSpeakSchema,
@@ -115,6 +183,7 @@ const TOOL_SCHEMAS: Record<string, z.ZodTypeAny> = {
   navigate_to_amenity_action: NavigateToAmenityActionSchema,
   open_rooms_panel_action: OpenRoomsPanelActionSchema,
   speak_only_action: SpeakOnlyActionSchema,
+  ...PADDING_TOOL_SCHEMAS,
 }
 
 // ---------------------------------------------------------------------------
@@ -1013,7 +1082,21 @@ When in doubt between (1) and (2), prefer **speak_only_action** with a brief cla
 - Always include \`text\`. Empty / missing \`text\` is invalid.
 - For navigate_to_amenity_action, \`amenityId\` MUST exactly match one of the ids listed above.
 - Never invent amenities. Never use "rooms" as an amenityId.
-- Speech in 1-2 sentences. No preamble like "Sure, " unless it sounds natural.`
+- Speech in 1-2 sentences. No preamble like "Sure, " unless it sounds natural.
+
+### Other tools available (schema-scale test — usually NOT what you want here)
+
+Many other action tools exist in the schema. They are appropriate for other stages or other intents, but the current turn was routed here because the guest is in AMENITY_VIEWING and said something about booking. **Default to one of the three primary tools above.** Reach for a different tool only if the guest's utterance unambiguously belongs to it.
+
+- \`change_lighting({ mode, text })\` — only if the guest explicitly asks for daylight / sunset / night.
+- \`return_to_virtual_lounge({ text })\` — only if the guest explicitly says "back to the lounge" or similar. Not the same as "back" alone.
+- \`confirm_end_experience({ text })\` — only on explicit farewell ("I'm done", "goodbye").
+- \`locate_interest_points({ category, text })\` — only when the guest asks about places NEAR the property, not amenities INSIDE it.
+- \`open_map({ text })\` — only on explicit map request.
+- \`show_hotel_overview({ text })\` — only if the guest wants the camera pulled out to the hotel overview.
+- \`travel_to_hotel\`, \`step_into_unit\`, \`step_out_of_unit\`, \`back_to_rooms_panel\`, \`open_booking_url\`, \`list_amenities\`, \`select_hotel\`, \`download_user_data\`, \`end_experience\`, \`confirm_return_to_lounge\` — illegal in AMENITY_VIEWING or off-topic for any plausible "book" utterance. Do not pick.
+
+If in doubt between a primary tool and any of the above, pick the primary tool.`
     } else {
       amenityViewingBlock = `\n\n## AMENITY_VIEWING stage guidance (current stage)
 
@@ -1639,9 +1722,86 @@ function buildTools() {
 // gated for AMENITY_VIEWING + experiment === "action-dispatch". The prompt's
 // amenityViewingBlock (experiment branch) instructs the model on how to pick
 // among these. See plan `inherited-beaming-gray.md`.
+//
+// Schema-scale test: padding tools (~14) are appended below to measure
+// latency + accuracy degradation when the model has to choose from ~17 tools
+// instead of 3. The padding tools are NOT appropriate for the AMENITY_VIEWING
+// `book` surface — selecting one is a false positive. Some (change_lighting,
+// return_to_virtual_lounge) ARE legitimate picks for unrelated utterances
+// that may slip through the client-side `\bbook\b` gate.
 // ---------------------------------------------------------------------------
+
+// Per-padding-tool descriptions surfaced both in the tool builder (for the
+// LLM to see) and in the prompt block (for the LLM to know they exist). Kept
+// in one place so the two stay in sync.
+const PADDING_TOOL_DESCRIPTIONS: Record<PaddingToolName, string> = {
+  travel_to_hotel: "Transition the guest from the virtual lounge into the hotel. Only legal from VIRTUAL_LOUNGE.",
+  return_to_virtual_lounge: "Take the guest from the hotel back out to the virtual lounge. Always requires explicit user intent.",
+  show_hotel_overview: "Reset the camera to the hotel-wide overview. Used when the guest wants to step back from a detail.",
+  list_amenities: "Speak a data-grounded list of the property's amenities.",
+  step_into_unit: "Enter the interior view of the currently selected unit. Only legal from ROOM_SELECTED.",
+  step_out_of_unit: "Switch to the exterior view of the currently selected unit. Only legal from ROOM_SELECTED.",
+  back_to_rooms_panel: "From a selected unit's view, return to the rooms grid for picking another unit.",
+  open_booking_url: "Open the external booking page for the currently selected room. Only legal when a unit is selected.",
+  change_lighting: "Change the property's lighting mode (daylight / sunset / night).",
+  locate_interest_points: "Drop nearby points-of-interest of a given category on the map (restaurants, hiking, etc.). Only legal from HOTEL_EXPLORATION.",
+  open_map: "Show the location/map panel for the property.",
+  confirm_end_experience: "Ask the guest to confirm ending the experience. Use when they signal goodbye.",
+  confirm_return_to_lounge: "Ask the guest to confirm returning to the virtual lounge.",
+  end_experience: "Actually terminate the session. Use only after explicit confirmation.",
+  select_hotel: "Pick a hotel from the destination grid. Only legal from DESTINATION_SELECT.",
+  download_user_data: "Trigger a user-data download. Admin/dev command, rarely invoked by guests.",
+}
+
+const PADDING_PARAMETER_SCHEMAS: Record<PaddingToolName, Record<string, unknown>> = {
+  travel_to_hotel: { text: { type: "string", description: "Ava's spoken response (1-2 sentences)." } },
+  return_to_virtual_lounge: { text: { type: "string", description: "Ava's spoken response (1-2 sentences)." } },
+  show_hotel_overview: { text: { type: "string", description: "Ava's spoken response (1-2 sentences)." } },
+  list_amenities: { text: { type: "string", description: "Ava's spoken response (1-2 sentences)." } },
+  step_into_unit: { text: { type: "string", description: "Ava's spoken response (1-2 sentences)." } },
+  step_out_of_unit: { text: { type: "string", description: "Ava's spoken response (1-2 sentences)." } },
+  back_to_rooms_panel: { text: { type: "string", description: "Ava's spoken response (1-2 sentences)." } },
+  open_booking_url: { text: { type: "string", description: "Ava's spoken response (1-2 sentences)." } },
+  change_lighting: {
+    mode: { type: "string", enum: ["daylight", "sunset", "night"], description: "Lighting mode to switch to." },
+    text: { type: "string", description: "Ava's spoken response (1-2 sentences)." },
+  },
+  locate_interest_points: {
+    category: { type: "string", description: "Places-API query (e.g. 'romantic restaurants', 'hiking trails')." },
+    text: { type: "string", description: "Ava's spoken response (1-2 sentences)." },
+  },
+  open_map: { text: { type: "string", description: "Ava's spoken response (1-2 sentences)." } },
+  confirm_end_experience: { text: { type: "string", description: "Ava's spoken response (1-2 sentences)." } },
+  confirm_return_to_lounge: { text: { type: "string", description: "Ava's spoken response (1-2 sentences)." } },
+  end_experience: { text: { type: "string", description: "Ava's spoken response (1-2 sentences)." } },
+  select_hotel: {
+    hotelSlug: { type: "string", description: "Slug of the hotel to select from the destination grid." },
+    text: { type: "string", description: "Ava's spoken response (1-2 sentences)." },
+  },
+  download_user_data: { text: { type: "string", description: "Ava's spoken response (1-2 sentences)." } },
+}
+
+const PADDING_REQUIRED_FIELDS: Record<PaddingToolName, string[]> = {
+  travel_to_hotel: ["text"],
+  return_to_virtual_lounge: ["text"],
+  show_hotel_overview: ["text"],
+  list_amenities: ["text"],
+  step_into_unit: ["text"],
+  step_out_of_unit: ["text"],
+  back_to_rooms_panel: ["text"],
+  open_booking_url: ["text"],
+  change_lighting: ["mode", "text"],
+  locate_interest_points: ["category", "text"],
+  open_map: ["text"],
+  confirm_end_experience: ["text"],
+  confirm_return_to_lounge: ["text"],
+  end_experience: ["text"],
+  select_hotel: ["hotelSlug", "text"],
+  download_user_data: ["text"],
+}
+
 function buildActionDispatchExperimentTools(): OpenAITool[] {
-  return [
+  const coreTools: OpenAITool[] = [
     {
       type: "function" as const,
       function: {
@@ -1705,6 +1865,21 @@ function buildActionDispatchExperimentTools(): OpenAITool[] {
       },
     },
   ]
+
+  const paddingTools: OpenAITool[] = PADDING_TOOL_NAMES.map((name) => ({
+    type: "function" as const,
+    function: {
+      name,
+      description: PADDING_TOOL_DESCRIPTIONS[name],
+      parameters: {
+        type: "object",
+        properties: PADDING_PARAMETER_SCHEMAS[name],
+        required: PADDING_REQUIRED_FIELDS[name],
+      },
+    },
+  }))
+
+  return [...coreTools, ...paddingTools]
 }
 
 // ---------------------------------------------------------------------------
@@ -2255,6 +2430,15 @@ export async function POST(request: Request) {
         if (functionName === "navigate_to_amenity_action") {
           responseBody.amenityId = result.amenityId
         }
+      } else if ((PADDING_TOOL_NAMES as readonly string[]).includes(functionName)) {
+        // Schema-scale padding tool. The client's generic padding handler
+        // logs it as a false-positive (or correct-but-unimplemented pick)
+        // and speaks `text` without state changes. We surface arg-bearing
+        // fields too so the client log captures what the model intended.
+        responseBody.speech = result.text
+        if (typeof result.mode === "string") responseBody.lightingMode = result.mode
+        if (typeof result.category === "string") responseBody.category = result.category
+        if (typeof result.hotelSlug === "string") responseBody.hotelSlug = result.hotelSlug
       } else {
         // no_action_speak
         responseBody.speech = cleanSpeech(result.speech)
