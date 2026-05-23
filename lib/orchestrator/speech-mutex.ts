@@ -36,6 +36,7 @@ export type SpeechSource =
   | "llm_profile"            // LLM profile_turn direct speech
   | "llm_fallback"           // LLM degraded-mode fallback
   | "room_planner"           // /api/room-planner result speech
+  | "experiment"             // action-dispatch experiment (AMENITY_VIEWING `book` surface)
 
 let _currentTurnId = 0
 let _claimedBy: SpeechSource | null = null

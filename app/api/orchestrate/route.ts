@@ -90,10 +90,31 @@ const ProfileTurnSchema = z.object({
   speech: z.string().min(1).max(500),
 })
 
+// ---------------------------------------------------------------------------
+// Experiment: action-dispatch tools (AMENITY_VIEWING `book` surface only).
+// Gated by RequestBody.experiment === "action-dispatch". When active, the
+// model picks ONE of these three instead of navigate_and_speak/no_action_speak.
+// Each tool's `text` is the spoken response Ava will say. See plan
+// `inherited-beaming-gray.md` and useJourney.ts gate logic.
+// ---------------------------------------------------------------------------
+const NavigateToAmenityActionSchema = z.object({
+  amenityId: z.string().min(1).max(64),
+  text: z.string().min(1).max(500),
+})
+const OpenRoomsPanelActionSchema = z.object({
+  text: z.string().min(1).max(500),
+})
+const SpeakOnlyActionSchema = z.object({
+  text: z.string().min(1).max(500),
+})
+
 const TOOL_SCHEMAS: Record<string, z.ZodTypeAny> = {
   navigate_and_speak: NavigateAndSpeakSchema,
   no_action_speak: NoActionSpeakSchema,
   profile_turn: ProfileTurnSchema,
+  navigate_to_amenity_action: NavigateToAmenityActionSchema,
+  open_rooms_panel_action: OpenRoomsPanelActionSchema,
+  speak_only_action: SpeakOnlyActionSchema,
 }
 
 // ---------------------------------------------------------------------------
@@ -124,6 +145,16 @@ interface JourneyContext {
   lastProposal?: string
   suggestedAmenityName?: string
   suggestedNext?: string
+  /**
+   * The amenity the guest is currently inside (AMENITY_VIEWING only).
+   * Today the existing prompt block at the AMENITY_VIEWING branch reuses
+   * `suggestedAmenityName` as a hack — but for AMENITY_VIEWING that field is
+   * actually undefined (the JourneyState.AMENITY_VIEWING variant carries
+   * `currentAmenity` + `suggestedNext`, not `suggestedAmenityName`).
+   * This dedicated field lets the action-dispatch experiment ground the LLM
+   * in the actual currently-viewed amenity.
+   */
+  currentAmenity?: { id: string; name: string }
 }
 
 interface RequestBody {
@@ -201,6 +232,14 @@ interface RequestBody {
    * client and server timing blocks for the same turn can't be correlated.
    */
   turnId?: string
+  /**
+   * Experiment opt-in. When "action-dispatch", the server swaps the
+   * navigate_and_speak / no_action_speak tools for the three experimental
+   * action tools (navigate_to_amenity_action / open_rooms_panel_action /
+   * speak_only_action) and uses a dedicated AMENITY_VIEWING prompt block.
+   * Gated client-side to AMENITY_VIEWING + /\bbook\b/ — see useJourney.ts.
+   */
+  experiment?: "action-dispatch"
 }
 
 // ---------------------------------------------------------------------------
@@ -929,11 +968,56 @@ This property has no bookable amenity spaces to tour. If the guest asks, acknowl
   // when the avatar's speech had invited "want to know more?".
   let amenityViewingBlock = ""
   if (body.journeyContext.stage === "AMENITY_VIEWING") {
-    const currentAmenity = body.journeyContext.suggestedAmenityName // reused slot; server doesn't have currentAmenity; leave generic
+    const currentAmenityName =
+      body.journeyContext.currentAmenity?.name ?? body.journeyContext.suggestedAmenityName
     const suggestedNext = body.journeyContext.suggestedNext
-    amenityViewingBlock = `\n\n## AMENITY_VIEWING stage guidance (current stage)
 
-The guest is touring a specific amenity space right now.${suggestedNext ? ` The next unvisited amenity the client wants to surface is: **${suggestedNext}**.` : " No further unvisited amenity is queued."}${currentAmenity ? ` (Context: recently referenced amenity "${currentAmenity}".)` : ""}
+    if (body.experiment === "action-dispatch") {
+      // Experiment branch — the action-dispatch tools entirely replace the
+      // navigate_and_speak/no_action_speak guidance. See plan
+      // `inherited-beaming-gray.md`. Gated client-side to AMENITY_VIEWING +
+      // /\bbook\b/ utterances only.
+      const currentAmenityId = body.journeyContext.currentAmenity?.id ?? "unknown"
+      const activeAmenitiesList = (body.hotelAmenitiesActive ?? [])
+        .map((a) => `  - id="${a.id}", name="${a.name}"`)
+        .join("\n") || "  (none)"
+      amenityViewingBlock = `\n\n## AMENITY_VIEWING — action-dispatch experiment (current stage)
+
+The guest is currently inside the amenity space: **${currentAmenityName ?? "unknown"}** (id="${currentAmenityId}").
+${suggestedNext ? `Next unvisited amenity queued: **${suggestedNext}**.` : "No further unvisited amenity queued."}
+
+Active amenities the guest can navigate to:
+${activeAmenitiesList}
+
+### Tool contract for this turn (CRITICAL)
+
+You have exactly THREE tools available. Pick ONE. Every tool requires a \`text\` field — that is Ava's spoken response (1-2 sentences, natural, in character).
+
+- **navigate_to_amenity_action({ amenityId, text })** — the guest wants to LEAVE the current amenity (${currentAmenityName ?? "unknown"}) and visit a DIFFERENT one. \`amenityId\` MUST be from the Active amenities list above. Speech briefly names where you're taking them.
+- **open_rooms_panel_action({ text })** — the guest wants to see HOTEL ROOMS for their stay (i.e., bedrooms / suites to sleep in). Use only when their request is clearly about overnight accommodation, not about the amenity space they're in.
+- **speak_only_action({ text })** — clarify, describe, or answer without changing scenes. Use this whenever the request is ambiguous, refers to "it"/"this" without obvious antecedent, or asks about the current amenity itself.
+
+### Resolving "book" utterances (the core test)
+
+The verb "book" is ambiguous in this stage. Decide based on what is being booked:
+
+1. "I'd like to book it" / "can I book this?" while in **${currentAmenityName ?? "an amenity"}** → the guest likely means the AMENITY SPACE itself (e.g., booking the conference room for a meeting). The platform does NOT support amenity bookings directly. Emit **speak_only_action** that clarifies and offers a useful next step (e.g., "The ${currentAmenityName ?? "space"} is bookable through our events team — would you like to see hotel rooms for your stay, or shall I show you something else?").
+
+2. "Book a room" / "I want to book a room here" / "let's book the room" → this is about HOTEL ROOMS (sleeping accommodation). Emit **open_rooms_panel_action**.
+
+3. "Book me into the spa" / "take me to book the conference" → the verb is being used loosely to mean "take me to". If the named amenity is in the Active list, emit **navigate_to_amenity_action** with that amenityId.
+
+When in doubt between (1) and (2), prefer **speak_only_action** with a brief clarifying question — losing one turn to clarify beats sending the guest to the wrong scene.
+
+### Hard rules
+- Always include \`text\`. Empty / missing \`text\` is invalid.
+- For navigate_to_amenity_action, \`amenityId\` MUST exactly match one of the ids listed above.
+- Never invent amenities. Never use "rooms" as an amenityId.
+- Speech in 1-2 sentences. No preamble like "Sure, " unless it sounds natural.`
+    } else {
+      amenityViewingBlock = `\n\n## AMENITY_VIEWING stage guidance (current stage)
+
+The guest is touring a specific amenity space right now.${suggestedNext ? ` The next unvisited amenity the client wants to surface is: **${suggestedNext}**.` : " No further unvisited amenity is queued."}${currentAmenityName ? ` (Context: currently viewing amenity "${currentAmenityName}".)` : ""}
 
 ### Intent contract for this stage (critical)
 
@@ -956,6 +1040,7 @@ When in doubt, prefer speech that proposes advancement to suggestedNext (if avai
 ### Hard don'ts
 
 - Do NOT emit bare \`USER_INTENT: AFFIRMATIVE\` in this stage. It's ambiguous without a binding prior proposal, and the reducer will not auto-advance on it anymore. Either commit to AMENITY_BY_NAME (advance) or no_action_speak (stay).`
+    }
   }
 
   // VIRTUAL_LOUNGE stage-specific guidance.
@@ -1550,6 +1635,79 @@ function buildTools() {
 }
 
 // ---------------------------------------------------------------------------
+// Experiment: action-dispatch tool list. Only exposed when the request is
+// gated for AMENITY_VIEWING + experiment === "action-dispatch". The prompt's
+// amenityViewingBlock (experiment branch) instructs the model on how to pick
+// among these. See plan `inherited-beaming-gray.md`.
+// ---------------------------------------------------------------------------
+function buildActionDispatchExperimentTools(): OpenAITool[] {
+  return [
+    {
+      type: "function" as const,
+      function: {
+        name: "navigate_to_amenity_action",
+        description:
+          "Leave the current amenity and navigate the guest to a different amenity space. Requires a valid amenityId from the Active amenities list provided in the prompt.",
+        parameters: {
+          type: "object",
+          properties: {
+            amenityId: {
+              type: "string",
+              description:
+                "The id of the target amenity. Must match exactly one of the ids in the Active amenities list.",
+            },
+            text: {
+              type: "string",
+              description:
+                "Ava's spoken response: 1-2 natural sentences acknowledging the navigation, naming the destination.",
+            },
+          },
+          required: ["amenityId", "text"],
+        },
+      },
+    },
+    {
+      type: "function" as const,
+      function: {
+        name: "open_rooms_panel_action",
+        description:
+          "Open the hotel rooms panel so the guest can browse overnight accommodation. Use only when the request is clearly about sleeping rooms / suites, not about the amenity space the guest is currently inside.",
+        parameters: {
+          type: "object",
+          properties: {
+            text: {
+              type: "string",
+              description:
+                "Ava's spoken response: 1-2 natural sentences acknowledging that you're bringing up the rooms.",
+            },
+          },
+          required: ["text"],
+        },
+      },
+    },
+    {
+      type: "function" as const,
+      function: {
+        name: "speak_only_action",
+        description:
+          "Speak without changing scenes. Use to clarify ambiguous requests (especially 'book it' / 'book this' while in an amenity), to describe the current amenity, or to ask a brief follow-up question.",
+        parameters: {
+          type: "object",
+          properties: {
+            text: {
+              type: "string",
+              description:
+                "Ava's spoken response: 1-2 natural sentences. Clarifying questions should be specific and offer a useful next step.",
+            },
+          },
+          required: ["text"],
+        },
+      },
+    },
+  ]
+}
+
+// ---------------------------------------------------------------------------
 // TurnDecision builder
 //
 // Normalizes whichever tool fired into the authoritative wire shape the
@@ -1760,10 +1918,21 @@ export async function POST(request: Request) {
     // hotel / surrounding area"); the prompt's "Skip-ahead exception" block
     // governs when to pick which. Room-plan changes are handled by the
     // dedicated client-side planner (/api/room-planner), not this route.
-    const tools = isProfileCollection
-      ? buildProfileCollectionTools()
-      : buildTools()
-    const toolChoice = "auto" as const
+    // Experiment: when `experiment === "action-dispatch"` AND stage is
+    // AMENITY_VIEWING, swap in the 3 experimental action tools and tell the
+    // model it MUST pick one ("required" tool_choice). Outside that surface
+    // the existing tool list is unchanged.
+    const isActionDispatchExperiment =
+      body.experiment === "action-dispatch" &&
+      body.journeyContext.stage === "AMENITY_VIEWING"
+    const tools = isActionDispatchExperiment
+      ? buildActionDispatchExperimentTools()
+      : isProfileCollection
+        ? buildProfileCollectionTools()
+        : buildTools()
+    const toolChoice = isActionDispatchExperiment
+      ? ("required" as const)
+      : ("auto" as const)
 
     // Build journey context block for user message
     const jc = body.journeyContext
@@ -2072,6 +2241,20 @@ export async function POST(request: Request) {
         responseBody.profileUpdates = result.profileUpdates ?? {}
         responseBody.decision = result.decision
         responseBody.speech = cleanSpeech(result.speech)
+      } else if (
+        functionName === "navigate_to_amenity_action" ||
+        functionName === "open_rooms_panel_action" ||
+        functionName === "speak_only_action"
+      ) {
+        // Experiment tools: the `text` field carries Ava's speech (renamed
+        // from `speech` to make the action shape distinct from legacy tools).
+        // Surface as `speech` on the wire so client-side latency / log code
+        // doesn't need a special case. Skip the decision_envelope build below
+        // (the client branches directly on `responseBody.tool`).
+        responseBody.speech = result.text
+        if (functionName === "navigate_to_amenity_action") {
+          responseBody.amenityId = result.amenityId
+        }
       } else {
         // no_action_speak
         responseBody.speech = cleanSpeech(result.speech)

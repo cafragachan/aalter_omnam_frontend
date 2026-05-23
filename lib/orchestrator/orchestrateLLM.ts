@@ -91,6 +91,12 @@ export type OrchestrateResult = (
       decision: ProfileTurnDecision
       speech: string
     }
+  // ---- Experiment: action-dispatch tools (AMENITY_VIEWING `book` surface).
+  // The `text` field on the wire is renamed to `speech` server-side, so client
+  // code can treat them uniformly with the legacy speech-carrying tools.
+  | { tool: "navigate_to_amenity_action"; amenityId: string; speech: string }
+  | { tool: "open_rooms_panel_action"; speech: string }
+  | { tool: "speak_only_action"; speech: string }
 ) & { decision_envelope?: TurnDecision; telemetry?: OrchestrateTelemetry }
 
 // ---------------------------------------------------------------------------
@@ -195,6 +201,13 @@ export interface OrchestrateInput {
    * the same turn. Required for the latency log to render correctly.
    */
   turnId?: string
+  /**
+   * Experiment opt-in. When "action-dispatch" AND the server-side stage is
+   * AMENITY_VIEWING, the server swaps in three experimental action tools
+   * (navigate_to_amenity_action / open_rooms_panel_action / speak_only_action)
+   * and `tool_choice: "required"`. See plan `inherited-beaming-gray.md`.
+   */
+  experiment?: "action-dispatch"
 }
 
 // ---------------------------------------------------------------------------
@@ -211,7 +224,16 @@ export async function orchestrateLLM(
 ): Promise<OrchestrateResult | null> {
   const { message, state, signal, turnId, ...rest } = input
 
-  const journeyContext: Record<string, string | undefined> = {
+  // Loosened from Record<string, string | undefined> to allow the optional
+  // currentAmenity object below (typed { id, name } on the wire).
+  const journeyContext: {
+    stage: string
+    subState?: string
+    lastProposal?: string
+    suggestedAmenityName?: string
+    suggestedNext?: string
+    currentAmenity?: { id: string; name: string }
+  } = {
     stage: state.stage,
   }
 
@@ -226,6 +248,17 @@ export async function orchestrateLLM(
   }
   if ("suggestedNext" in state && state.suggestedNext) {
     journeyContext.suggestedNext = state.suggestedNext
+  }
+  // AMENITY_VIEWING carries currentAmenity in its state shape. The server's
+  // existing prompt was reusing `suggestedAmenityName` as a hack — pass the
+  // real value so the action-dispatch experiment can ground the LLM in the
+  // actual currently-viewed amenity. The server reads
+  // `journeyContext.currentAmenity` directly.
+  if ("currentAmenity" in state && state.currentAmenity) {
+    journeyContext.currentAmenity = {
+      id: state.currentAmenity.id,
+      name: state.currentAmenity.name,
+    }
   }
 
   // Latency log: capture wall-clock at fetch boundary points. Used by the
@@ -263,6 +296,7 @@ export async function orchestrateLLM(
         conversationHistory: rest.conversationHistory,
         regexHint: rest.regexHint,
         turnId,
+        experiment: rest.experiment,
       }),
       signal,
     })
@@ -279,6 +313,9 @@ export async function orchestrateLLM(
       reasoning?: string
       profileUpdates?: ProfileUpdates
       decision?: ProfileTurnDecision
+      // Experiment: action-dispatch tools carry amenityId on
+      // navigate_to_amenity_action.
+      amenityId?: string
       // Phase 1 envelope. Optional on the wire — server always emits it,
       // but we treat missing/invalid as soft-warn, not fatal.
       decision_envelope?: unknown
@@ -357,6 +394,24 @@ export async function orchestrateLLM(
 
     if (data.tool === "no_action_speak") {
       return withMeta({ tool: "no_action_speak" as const, speech: data.speech })
+    }
+
+    // Experiment: action-dispatch tools. Speech is already on `data.speech`
+    // (server renamed from the tool's `text` field). Skip envelope (server
+    // emits a NO_ACTION stub for these; client dispatches on `result.tool`).
+    if (data.tool === "navigate_to_amenity_action") {
+      if (!data.amenityId) return null
+      return withMeta({
+        tool: "navigate_to_amenity_action" as const,
+        amenityId: data.amenityId,
+        speech: data.speech,
+      })
+    }
+    if (data.tool === "open_rooms_panel_action") {
+      return withMeta({ tool: "open_rooms_panel_action" as const, speech: data.speech })
+    }
+    if (data.tool === "speak_only_action") {
+      return withMeta({ tool: "speak_only_action" as const, speech: data.speech })
     }
 
     return null

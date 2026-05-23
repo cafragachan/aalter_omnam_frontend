@@ -287,6 +287,17 @@ export function useJourney(options: UseJourneyOptions) {
   // --- Pre-generated speech ref (Phase 4: orchestrate fills this before processIntent) ---
   const preGeneratedSpeechRef = useRef<string | null>(null)
 
+  // --- Experiment: action-dispatch flag (URL ?actionTest=1) ---
+  // Read once at mount. When true AND stage === AMENITY_VIEWING AND the
+  // utterance contains "book", the unified turn pipeline bypasses the
+  // deterministic gate and requests action-dispatch tools from the server.
+  // See plan `inherited-beaming-gray.md` and the experiment branch in the
+  // orchestrate result handler below.
+  const actionTestExperimentRef = useRef<boolean>(
+    typeof window !== "undefined" &&
+      new URLSearchParams(window.location.search).get("actionTest") === "1",
+  )
+
   // --- Speech-mutex turn id for utterance-driven SPEAK_INTENT effects ---
   //
   // The SPEAK_INTENT executor in executeEffects has no way to tell whether
@@ -348,6 +359,11 @@ export function useJourney(options: UseJourneyOptions) {
     speech?: string | null
     /** Which dispatch path produced this turn. */
     pathway?: string
+    // ---- Experiment: action-dispatch (AMENITY_VIEWING `book` surface) ----
+    // Set when this turn was routed through the experiment path. The t5
+    // latency-emit effect uses these to print a console.table row.
+    experimentTool?: "navigate_to_amenity_action" | "open_rooms_panel_action" | "speak_only_action"
+    experimentUtterance?: string
   }
   const turnTimingRef = useRef<TurnTiming | null>(null)
   // Marker for the previous turn's USER_TRANSCRIPTION wall-clock time. Used
@@ -1272,6 +1288,48 @@ export function useJourney(options: UseJourneyOptions) {
       },
       serverTimings: t.serverTimings ?? null,
     })
+    // Experiment: action-dispatch latency capture. Print one console.table
+    // row per experiment turn so it's easy to paste into a sheet. Fields are
+    // chosen to match the success criteria in plan inherited-beaming-gray.md:
+    // utterance / tool / llm round-trip / felt latency from user-speak-end
+    // to first audio frame.
+    //
+    // first_audio_ms cascade — pick the best source that's actually populated:
+    //   1. `speak_end_perf` — perf.now diff (monotonic, most accurate). Often
+    //      undefined when HeyGen's USER_SPEAK_ENDED event fires after the
+    //      transcription lands (see the late-fire guard around line 354).
+    //   2. `speak_end_wall` — Date.now diff using the wall-clock pair. Same
+    //      semantic meaning as (1), just on a different clock. Usually present
+    //      even when (1) isn't.
+    //   3. `transcription` — perf.now from t0 (transcription land) to t5
+    //      (first audio). Overstates by ~100-300 ms of STT finalization but is
+    //      always available, so the column is never null.
+    if (t.experimentTool) {
+      const llmMs =
+        t.t2 !== undefined && t.t3 !== undefined ? Math.round(t.t3 - t.t2) : null
+      let firstAudioMs: number
+      let audioSrc: "speak_end_perf" | "speak_end_wall" | "transcription"
+      if (t.userSpeakEndedAt !== undefined) {
+        firstAudioMs = Math.round(t5 - t.userSpeakEndedAt)
+        audioSrc = "speak_end_perf"
+      } else if (t.userSpeakEndedAtMs !== undefined) {
+        firstAudioMs = Math.round(avatarSpeakStartedAtMs - t.userSpeakEndedAtMs)
+        audioSrc = "speak_end_wall"
+      } else {
+        firstAudioMs = Math.round(t5 - t.t0)
+        audioSrc = "transcription"
+      }
+      // eslint-disable-next-line no-console
+      console.table([
+        {
+          utterance: t.experimentUtterance ?? "",
+          tool: t.experimentTool,
+          llm_ms: llmMs,
+          first_audio_ms: firstAudioMs,
+          audio_src: audioSrc,
+        },
+      ])
+    }
     turnTimingRef.current = null
   }, [isAvatarTalking, lastAvatarSpeakStartedAtMsRef, sessionIdRef])
 
@@ -1873,10 +1931,22 @@ export function useJourney(options: UseJourneyOptions) {
       // Reset idle detection on turn-start so the 12s reengage can't
       // fire over a response that's about to land.
       resetIdleTimer()
-      const deterministic = evaluateDeterministicExplorationTurn({
-        latestMessage,
-        state: currentState,
-      })
+      // Experiment: action-dispatch (AMENITY_VIEWING `book` surface).
+      // When the URL flag is on AND we're in AMENITY_VIEWING AND the
+      // utterance mentions "book", bypass the deterministic gate so the
+      // BOOK regex doesn't short-circuit to the rooms panel — let the LLM
+      // decide via the experimental action tools. See plan
+      // `inherited-beaming-gray.md`.
+      const isExperimentTurn =
+        actionTestExperimentRef.current &&
+        currentState.stage === "AMENITY_VIEWING" &&
+        /\bbook\b/i.test(latestMessage)
+      const deterministic = isExperimentTurn
+        ? { handled: false as const, confidence: 0, reasons: ["experiment_bypass"] }
+        : evaluateDeterministicExplorationTurn({
+            latestMessage,
+            state: currentState,
+          })
       if (deterministic.handled) {
         if (unifiedTurnAbortRef.current === controller) {
           unifiedTurnAbortRef.current = null
@@ -1974,6 +2044,7 @@ export function useJourney(options: UseJourneyOptions) {
           conversationHistory,
           signal: controller.signal,
           turnId: turnTimingRef.current?.turnId,
+          experiment: isExperimentTurn ? "action-dispatch" : undefined,
         })
         markTurnTiming("t3")
         if (turnTimingRef.current && result?.telemetry) {
@@ -2008,6 +2079,81 @@ export function useJourney(options: UseJourneyOptions) {
           })
           speechTurnIdForEffectsRef.current = utteranceTurnId
           processIntent(regexIntent, latestMessage, currentState, stage)
+          return
+        }
+
+        // ---- Experiment: action-dispatch result branch ------------------
+        // When the experiment fired, the server returns one of three new
+        // tools. Map each to existing dispatch primitives without going
+        // through the envelope or reducer-canonical-speech path. Stash
+        // metadata on turnTimingRef so the t5 latency-emit effect can print
+        // a console.table row when the avatar's first audio frame plays.
+        if (
+          result.tool === "navigate_to_amenity_action" ||
+          result.tool === "open_rooms_panel_action" ||
+          result.tool === "speak_only_action"
+        ) {
+          if (turnTimingRef.current) {
+            turnTimingRef.current.experimentTool = result.tool
+            turnTimingRef.current.experimentUtterance = turnMessageSlice
+          }
+          logTurn({
+            stage,
+            latestMessage: turnMessageSlice,
+            regexIntent: regexIntent.type,
+            llmIntent: result.tool,
+            action: { type: "USER_INTENT", intent: result.tool },
+            speech: result.speech,
+            latencyMs,
+            pathway: "experiment-action-dispatch",
+          })
+
+          if (result.tool === "speak_only_action") {
+            // Pure speech, no state change. Claim mutex; if a higher-priority
+            // producer already spoke this turn (none expected in the
+            // experiment surface), suppress.
+            if (!claimSpeech(utteranceTurnId, "experiment")) {
+              return
+            }
+            interrupt()
+            repeat(result.speech).catch(() => undefined)
+            return
+          }
+
+          if (result.tool === "open_rooms_panel_action") {
+            // Hand off to the existing ROOMS dispatch path so the reducer
+            // closes the amenity panel, opens rooms, sends UE5 commands, and
+            // kicks the room planner exactly as today.
+            preGeneratedSpeechRef.current = result.speech
+            speechTurnIdForEffectsRef.current = utteranceTurnId
+            processIntent({ type: "ROOMS" }, latestMessage, currentState, stage)
+            return
+          }
+
+          // navigate_to_amenity_action — look up the amenity by id from the
+          // amenities prop. If the LLM hallucinated an id that doesn't
+          // resolve, degrade gracefully to a speak-only response so the
+          // guest hears something instead of a silent failure.
+          const targetAmenity = amenities.find((a) => a.id === result.amenityId)
+          if (!targetAmenity) {
+            // eslint-disable-next-line no-console
+            console.warn("[ACTION-EXP] navigate_to_amenity_action with unknown amenityId", {
+              amenityId: result.amenityId,
+              knownIds: amenities.map((a) => a.id),
+            })
+            if (!claimSpeech(utteranceTurnId, "experiment")) return
+            interrupt()
+            repeat(result.speech).catch(() => undefined)
+            return
+          }
+          preGeneratedSpeechRef.current = result.speech
+          speechTurnIdForEffectsRef.current = utteranceTurnId
+          processIntent(
+            { type: "AMENITY_BY_NAME", amenityName: targetAmenity.name },
+            latestMessage,
+            currentState,
+            stage,
+          )
           return
         }
 
