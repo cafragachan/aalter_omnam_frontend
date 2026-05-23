@@ -81,11 +81,18 @@ export type ProfileUpdates = {
 
 export type ProfileTurnDecision = "ask_next" | "clarify" | "ready"
 
-// Padding tools surfaced for the schema-scale test. All share the same
-// client-side handler — log + speak fallback. Kept as a separate type so the
-// generic handler can pattern-match against the union without touching the
-// primary action-dispatch tools above. The optional arg fields are populated
-// on the wire when the model picked an arg-bearing padding tool.
+// Full action-dispatch tool names — everything beyond the 3 primary tools
+// declared in OrchestrateResult. Each maps to an existing reducer dispatch
+// path client-side (see plan `vast-rolling-adleman.md`).
+//
+// History: this list started as 14 "padding tools" used for schema-cost
+// measurement during Phase 1a. With the `?fullActionDispatch=1` migration they
+// became real implementations; the PADDING_ prefix is kept on type names to
+// minimize cross-file churn. Two tools dropped vs Phase 1a:
+//   • `confirm_return_to_lounge` → replaced by `lounge_return_affirm` / `..._cancel`.
+//   • `end_experience` → replaced by `end_experience_affirm` / `..._cancel`.
+// Five tools added: end_experience_affirm/cancel, lounge_return_affirm/cancel,
+// explore_lounge_action.
 export const PADDING_TOOL_RESULT_NAMES = [
   "travel_to_hotel",
   "return_to_virtual_lounge",
@@ -99,8 +106,11 @@ export const PADDING_TOOL_RESULT_NAMES = [
   "locate_interest_points",
   "open_map",
   "confirm_end_experience",
-  "confirm_return_to_lounge",
-  "end_experience",
+  "end_experience_affirm",
+  "end_experience_cancel",
+  "lounge_return_affirm",
+  "lounge_return_cancel",
+  "explore_lounge_action",
   "select_hotel",
   "download_user_data",
 ] as const
@@ -271,6 +281,7 @@ export async function orchestrateLLM(
     suggestedAmenityName?: string
     suggestedNext?: string
     currentAmenity?: { id: string; name: string }
+    viewMode?: "interior" | "exterior"
   } = {
     stage: state.stage,
   }
@@ -297,6 +308,12 @@ export async function orchestrateLLM(
       id: state.currentAmenity.id,
       name: state.currentAmenity.name,
     }
+  }
+  // ROOM_SELECTED carries viewMode (interior / exterior / undefined) — the
+  // action-dispatch ROOM_SELECTED prompt block uses this to ground
+  // step_into_unit / step_out_of_unit / back_to_rooms_panel decisions.
+  if ("viewMode" in state && state.viewMode) {
+    journeyContext.viewMode = state.viewMode
   }
 
   // Latency log: capture wall-clock at fetch boundary points. Used by the

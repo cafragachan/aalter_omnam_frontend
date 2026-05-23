@@ -109,15 +109,22 @@ const SpeakOnlyActionSchema = z.object({
 })
 
 // ---------------------------------------------------------------------------
-// Schema-scale test: 14 additional padding tools modelled on the draft action
-// union from the broader refactor plan. They share a generic shape (some carry
-// a small arg, all carry `text`). Wired into the experiment tool list to
-// measure whether a larger schema:
-//   • degrades LLM latency (more tokens to parse)
-//   • degrades tool-pick accuracy on the original 3 tools
-//   • produces false positives (LLM wrongly picks a padding tool)
-// All padding tools share the same client handler: log + speak `text` + no
-// state change. They exist purely as schema-cost ballast.
+// Full action-dispatch migration — additional action tools beyond the 3 primary
+// ones above. Each is a thin wrapper that maps to an existing reducer dispatch
+// path client-side (see plan `vast-rolling-adleman.md`).
+//
+// History: this list started as 14 "padding tools" used purely for schema-cost
+// measurement during Phase 1a. With the `?fullActionDispatch=1` migration they
+// became real implementations; the PADDING_ prefix is kept on the
+// schema/description/parameter maps to minimize cross-file churn (orchestrateLLM
+// still imports PADDING_TOOL_RESULT_NAMES). Two tools dropped vs. Phase 1a:
+//   • `confirm_return_to_lounge` — RETURN_TO_LOUNGE intent already escalates
+//     to LOUNGE_CONFIRMING in the reducer; LLM never needs to "ask to confirm"
+//     explicitly. Replaced by the dedicated affirm/cancel pair below.
+//   • `end_experience` — same logic: END_EXPERIENCE escalates to END_CONFIRMING.
+//     Replaced by `end_experience_affirm` / `end_experience_cancel`.
+// Five tools added: `end_experience_affirm`, `end_experience_cancel`,
+// `lounge_return_affirm`, `lounge_return_cancel`, `explore_lounge_action`.
 // ---------------------------------------------------------------------------
 const TextOnlyPaddingSchema = z.object({
   text: z.string().min(1).max(500),
@@ -135,8 +142,9 @@ const SelectHotelPaddingSchema = z.object({
   text: z.string().min(1).max(500),
 })
 
-// Padding tool names — listed once so we can drive the schema map, the tool
-// builder, the prompt block, and the client parser from the same source.
+// Full action-dispatch tool names (everything except the 3 primary tools
+// declared above). Drives the schema map, prompt block, and client parser
+// from a single source. See header comment for the deltas vs. Phase 1a.
 const PADDING_TOOL_NAMES = [
   "travel_to_hotel",
   "return_to_virtual_lounge",
@@ -150,8 +158,11 @@ const PADDING_TOOL_NAMES = [
   "locate_interest_points",
   "open_map",
   "confirm_end_experience",
-  "confirm_return_to_lounge",
-  "end_experience",
+  "end_experience_affirm",
+  "end_experience_cancel",
+  "lounge_return_affirm",
+  "lounge_return_cancel",
+  "explore_lounge_action",
   "select_hotel",
   "download_user_data",
 ] as const
@@ -170,8 +181,11 @@ const PADDING_TOOL_SCHEMAS: Record<PaddingToolName, z.ZodTypeAny> = {
   locate_interest_points: LocateInterestPointsPaddingSchema,
   open_map: TextOnlyPaddingSchema,
   confirm_end_experience: TextOnlyPaddingSchema,
-  confirm_return_to_lounge: TextOnlyPaddingSchema,
-  end_experience: TextOnlyPaddingSchema,
+  end_experience_affirm: TextOnlyPaddingSchema,
+  end_experience_cancel: TextOnlyPaddingSchema,
+  lounge_return_affirm: TextOnlyPaddingSchema,
+  lounge_return_cancel: TextOnlyPaddingSchema,
+  explore_lounge_action: TextOnlyPaddingSchema,
   select_hotel: SelectHotelPaddingSchema,
   download_user_data: TextOnlyPaddingSchema,
 }
@@ -224,6 +238,13 @@ interface JourneyContext {
    * in the actual currently-viewed amenity.
    */
   currentAmenity?: { id: string; name: string }
+  /**
+   * Current view mode within ROOM_SELECTED ("interior" | "exterior" |
+   * undefined). Used by the action-dispatch ROOM_SELECTED prompt block so
+   * the LLM can ground `step_into_unit` / `step_out_of_unit` / `back_to_rooms_panel`
+   * decisions in what the guest is currently looking at.
+   */
+  viewMode?: "interior" | "exterior"
 }
 
 interface RequestBody {
@@ -647,6 +668,243 @@ Skip-ahead mapping:
 For skip-ahead speech, acknowledge briefly and lead in. Do not ask another profile question.${regexHint}`
 }
 
+// ---------------------------------------------------------------------------
+// Per-stage action-dispatch prompt blocks. Returns "" for stages outside the
+// migrated set. Each block teaches the LLM which subset of tools is legal in
+// the current stage and gives worked examples for the tricky cases. See plan
+// `vast-rolling-adleman.md` and the source handoff `action-dispatch-full-
+// migration-handoff.md` section 5 for the per-stage specs.
+// ---------------------------------------------------------------------------
+function buildActionDispatchPromptBlock(body: RequestBody): string {
+  const stage = body.journeyContext.stage
+  if (!MIGRATED_STAGES_FOR_EXPERIMENT.has(stage)) return ""
+
+  const activeAmenitiesList = (body.hotelAmenitiesActive ?? [])
+    .map((a) => `  - id="${a.id}", name="${a.name}"`)
+    .join("\n") || "  (none)"
+
+  if (stage === "AMENITY_VIEWING") {
+    const currentAmenityName =
+      body.journeyContext.currentAmenity?.name ?? body.journeyContext.suggestedAmenityName ?? "unknown"
+    const currentAmenityId = body.journeyContext.currentAmenity?.id ?? "unknown"
+    const suggestedNext = body.journeyContext.suggestedNext
+
+    return `\n\n## AMENITY_VIEWING — action-dispatch (current stage)
+
+The guest is currently inside the amenity space: **${currentAmenityName}** (id="${currentAmenityId}").
+${suggestedNext ? `Next unvisited amenity queued: **${suggestedNext}**.` : "No further unvisited amenity queued."}
+
+Active amenities the guest can navigate to:
+${activeAmenitiesList}
+
+### Tool contract
+
+Pick exactly ONE tool. Every tool requires a \`text\` field — Ava's spoken response (1-2 natural sentences).
+
+- **navigate_to_amenity_action({ amenityId, text })** — guest wants to LEAVE the current amenity and visit a DIFFERENT one. \`amenityId\` MUST exactly match an id in the Active amenities list above.
+- **open_rooms_panel_action({ text })** — guest wants to see HOTEL ROOMS for their stay (i.e., bedrooms / suites to sleep in). Use only when the request is clearly about overnight accommodation.
+- **list_amenities({ text })** — guest asks "what amenities do you have?" or similar listing question. Your \`text\` will be replaced by a canonical data-grounded listing — keep it brief.
+- **show_hotel_overview({ text })** — guest wants the camera pulled back to the hotel overview.
+- **change_lighting({ mode, text })** — daylight / sunset / night. Map evocative phrases ("golden hour" → sunset, "starlight" → night, "brighter" → daylight).
+- **return_to_virtual_lounge({ text })** — explicit "back to the virtual lounge" request. The system will then ask the guest to confirm.
+- **confirm_end_experience({ text })** — guest signals goodbye / "I'm done". The system asks for confirmation.
+- **speak_only_action({ text })** — clarify, describe the current amenity, or answer factual questions without changing scenes. Default when ambiguous.
+- **download_user_data({ text })** — admin command, rare.
+
+### Resolving "book" utterances
+
+The verb "book" is ambiguous here. Decide based on what is being booked:
+
+1. "I'd like to book it" / "can I book this?" while in **${currentAmenityName}** → likely the AMENITY SPACE itself. The platform does NOT support amenity bookings. Emit **speak_only_action** clarifying and offering a next step.
+2. "Book a room" / "I want to book a room" → about HOTEL ROOMS (sleeping accommodation). Emit **open_rooms_panel_action**.
+3. "Book me into the spa" / "take me to book the conference" → the verb is loosely "take me to". Emit **navigate_to_amenity_action** with the named amenity's id.
+
+When in doubt between (1) and (2), prefer **speak_only_action** with a brief clarifying question.
+
+### Hard rules
+- \`text\` is required. Empty is invalid.
+- For navigate_to_amenity_action, \`amenityId\` MUST be one of the ids above.
+- Never invent amenities. Never use "rooms" as an amenityId.
+- 1-2 sentences. No filler preamble.`
+  }
+
+  if (stage === "HOTEL_EXPLORATION") {
+    return `\n\n## HOTEL_EXPLORATION — action-dispatch (current stage)
+
+The guest is at the hotel overview. They can ask to see rooms, amenities, location, change lighting, navigate to a specific amenity, or end / leave.
+
+Active amenities the guest can navigate to:
+${activeAmenitiesList}
+
+### Tool contract
+
+Pick exactly ONE tool. Every tool requires a \`text\` field — Ava's spoken response (1-2 natural sentences).
+
+- **navigate_to_amenity_action({ amenityId, text })** — guest wants to enter a specific amenity space. \`amenityId\` MUST be from the Active amenities list above.
+- **open_rooms_panel_action({ text })** — guest wants to see sleeping rooms / suites.
+- **list_amenities({ text })** — guest asks "what amenities do you have?" / listing question. Your text will be replaced by a canonical data-grounded listing.
+- **show_hotel_overview({ text })** — guest wants to return to / see the hotel overview ("go back", "show me the hotel").
+- **open_map({ text })** — guest wants to see the location / surrounding area (generic; no specific category).
+- **locate_interest_points({ category, text })** — guest asks about a specific category nearby ("kitesurfing", "romantic restaurants", "hiking trails"). \`category\` is a Places-API query.
+- **change_lighting({ mode, text })** — daylight / sunset / night.
+- **return_to_virtual_lounge({ text })** — explicit "back to the virtual lounge" request.
+- **confirm_end_experience({ text })** — guest signals goodbye.
+- **speak_only_action({ text })** — clarify, describe, or answer a factual property question without changing scenes. Default when ambiguous.
+- **download_user_data({ text })** — admin command, rare.
+
+### Worked examples
+
+- "Show me the rooms" → \`open_rooms_panel_action({ text: "Bringing up the rooms now." })\`
+- "Take me to the spa" → \`navigate_to_amenity_action({ amenityId: "<spa id>", text: "Right this way to the spa." })\`
+- "What amenities do you have?" → \`list_amenities({ text: "Here's what we offer..." })\`
+- "Change to sunset" → \`change_lighting({ mode: "sunset", text: "Golden hour it is." })\`
+- "What's nearby?" → \`open_map({ text: "Here's the area. Tell me what you'd like to see nearby." })\`
+- "Good restaurants?" → \`locate_interest_points({ category: "restaurants", text: "Let me find nearby restaurants." })\`
+- "I'm done" → \`confirm_end_experience({ text: "It was a pleasure. Would you like to end the experience?" })\`
+- "Tell me about this place" → \`speak_only_action({ text: "<grounded description>" })\`
+
+### Hard rules
+- Always include \`text\`. 1-2 sentences.
+- For navigate_to_amenity_action, \`amenityId\` MUST exactly match an id above.
+- Never invent amenities.`
+  }
+
+  if (stage === "ROOM_SELECTED") {
+    const viewMode = body.journeyContext.viewMode
+    const viewModeLabel = viewMode ?? "default (overview)"
+    const room = body.selectedRoom
+    const roomHeader = room
+      ? `**${room.name}** (occupancy ${room.occupancy}, $${room.price}/night)`
+      : "(no room currently selected — guest should pick a unit first)"
+
+    return `\n\n## ROOM_SELECTED — action-dispatch (current stage)
+
+The guest has selected a room: ${roomHeader}
+Current view: **${viewModeLabel}**
+
+### Tool contract
+
+Pick exactly ONE tool. Every tool requires a \`text\` field.
+
+- **step_into_unit({ text })** — switch to interior view. "go inside", "show me the room", "take me in".
+- **step_out_of_unit({ text })** — switch to exterior view. "show me the view", "outside", "balcony view".
+- **back_to_rooms_panel({ text })** — "go back", "show other rooms". If guest is currently in **exterior** view, the system steps back to interior. Otherwise opens the rooms panel.
+- **open_booking_url({ text })** — guest commits to booking THIS room. "book it", "I'll take it", "let's reserve".
+- **change_lighting({ mode, text })** — daylight / sunset / night.
+- **open_rooms_panel_action({ text })** — guest wants to compare other rooms / different options.
+- **show_hotel_overview({ text })** — guest wants to leave the room view entirely.
+- **return_to_virtual_lounge({ text })** — explicit lounge request.
+- **confirm_end_experience({ text })** — goodbye.
+- **speak_only_action({ text })** — clarify, describe THIS room, answer questions about its features.
+- **download_user_data({ text })** — admin, rare.
+
+### Worked examples
+
+- "Take me inside" → \`step_into_unit({ text: "Stepping inside now." })\`
+- "Show me the view" → \`step_out_of_unit({ text: "Here's the view from the terrace." })\`
+- "Book it" → \`open_booking_url({ text: "Opening the booking page now." })\`
+- "What's the bed like?" → \`speak_only_action({ text: "<answer from selectedRoom.bedding>" })\`
+- "Go back" while in **exterior** view → \`back_to_rooms_panel({ text: "Stepping back inside." })\` (reducer auto-routes to interior)
+- "Show me another room" → \`open_rooms_panel_action({ text: "Of course — here are the other rooms." })\`
+
+### Hard rules
+- \`step_into_unit\` / \`step_out_of_unit\` require a selected unit (one is selected — see the room header above).
+- 1-2 sentences. No filler.`
+  }
+
+  if (stage === "VIRTUAL_LOUNGE") {
+    const sub = body.journeyContext.subState ?? "exploring"
+    return `\n\n## VIRTUAL_LOUNGE — action-dispatch (current stage)
+
+The guest is in the virtual lounge — a pre-hotel space showcasing artwork and retail. They have NOT yet entered the hotel. The lounge has NO hotel amenities (pool / spa / restaurant / lobby etc); those are inside the hotel and inaccessible from here.
+
+Current sub-state: **${sub}**
+
+### Tool contract
+
+Pick exactly ONE tool. Every tool requires a \`text\` field.
+
+- **travel_to_hotel({ text })** — guest is ready to enter the hotel. "let's go", "take me to the hotel", "I'm ready", "ready when you are".
+- **explore_lounge_action({ text })** — guest said yes / sure / okay AFTER the avatar offered the lounge (only meaningful in sub-state "asking"). Confirms staying to explore the lounge.
+- **navigate_to_amenity_action({ amenityId, text })** — guest implicitly wants to leave the lounge AND see a specific amenity. The system travels to the hotel first, then navigates to the amenity (~3.5s gap). \`amenityId\` from the Active list below.
+- **open_rooms_panel_action({ text })** — guest wants to see hotel rooms. Triggers travel-then-open-rooms.
+- **open_map({ text })** — guest wants the surrounding area. Triggers travel-then-open-map.
+- **show_hotel_overview({ text })** — guest wants the hotel overview. Equivalent to travel_to_hotel.
+- **speak_only_action({ text })** — guest wants to stay longer, asks about the art / retail, or says something off-topic. ALWAYS speak — never leave a turn silent.
+- **confirm_end_experience({ text })** — explicit farewell.
+- **download_user_data({ text })** — admin, rare.
+
+Active amenities (only relevant if the guest names one):
+${activeAmenitiesList}
+
+### Sub-state guidance
+
+When sub-state is "asking", the avatar just asked: "would you like to explore the virtual lounge first, or go straight to the hotel?"
+- "yes" / "sure" / "show me" / "okay" → \`explore_lounge_action({ text: "Take your time in the lounge..." })\`
+- "no" / "let's go to the hotel" / "I'm ready" → \`travel_to_hotel({ text: "Right this way to the hotel." })\`
+
+When sub-state is "exploring":
+- Any move-on phrasing ("I'm ready", "let's continue", "okay I'm done") → \`travel_to_hotel\`
+- Lounge-content questions ("tell me about this piece") → \`speak_only_action\`
+- Specific hotel content ("show me the pool", "let me see the rooms") → \`navigate_to_amenity_action\` / \`open_rooms_panel_action\` (system handles the travel-then-navigate sequence)
+
+### Hard rules
+- Never invent hotel amenities while in the lounge. Use one of the IDs above for navigate_to_amenity_action.
+- Never produce a silent turn. Every action carries spoken text.`
+  }
+
+  if (stage === "DESTINATION_SELECT") {
+    return `\n\n## DESTINATION_SELECT — action-dispatch (current stage)
+
+The guest is looking at the destination grid (which hotels are available). This stage is primarily UI-driven — the guest taps a card to pick a hotel. Voice plays a supporting role.
+
+### Tool contract
+
+- **select_hotel({ hotelSlug, text })** — guest names a hotel by name. Use the slug if you recognize it; otherwise prefer \`speak_only_action\` and let the UI handle the selection.
+- **speak_only_action({ text })** — guest asks a question, makes small talk, or says something not about hotel selection.
+- **confirm_end_experience({ text })** — explicit farewell.
+- **download_user_data({ text })** — admin, rare.
+
+### Hard rules
+- Only pick \`select_hotel\` when the guest names a hotel unambiguously. Otherwise speak_only_action.
+- 1-2 sentences.`
+  }
+
+  if (stage === "END_CONFIRMING") {
+    return `\n\n## END_CONFIRMING — action-dispatch (current stage)
+
+The avatar just asked: "Would you like to end your experience now?"
+
+### Tool contract
+
+- **end_experience_affirm({ text })** — guest confirmed (yes / "I'm done" / "goodbye"). Speak a warm farewell.
+- **end_experience_cancel({ text })** — guest changed their mind (no / "actually no" / "let's keep going"). Speak a brief acknowledgment.
+- **speak_only_action({ text })** — off-topic or unrelated reply; speak briefly without ending. (The reducer ignores other actions in this stage.)
+
+### Hard rules
+- Only pick affirm / cancel when the guest's reply is clearly yes or no.
+- Speech 1-2 sentences.`
+  }
+
+  if (stage === "LOUNGE_CONFIRMING") {
+    return `\n\n## LOUNGE_CONFIRMING — action-dispatch (current stage)
+
+The avatar just asked: "Return to the virtual lounge? You'll leave the hotel for now."
+
+### Tool contract
+
+- **lounge_return_affirm({ text })** — guest confirmed they want to go back to the lounge. Speak a brief acknowledgment.
+- **lounge_return_cancel({ text })** — guest changed their mind / wants to stay in the hotel.
+- **speak_only_action({ text })** — off-topic reply; speak briefly without transitioning.
+
+### Hard rules
+- Only pick affirm / cancel when the guest's reply is clearly yes or no.
+- Speech 1-2 sentences.`
+  }
+
+  return ""
+}
+
 function buildSystemPrompt(body: RequestBody, reconstructed: ReconstructedProfile): string {
   const isProfileCollection = body.journeyContext.stage === "PROFILE_COLLECTION"
   if (isProfileCollection) return buildProfileCollectionPrompt(body)
@@ -1035,70 +1293,18 @@ This property has no bookable amenity spaces to tour. If the guest asks, acknowl
   // The client reducer used to auto-advance on AFFIRMATIVE when
   // suggestedNext was set; that produced a "said yes, got teleported" UX
   // when the avatar's speech had invited "want to know more?".
+  //
+  // When `body.experiment === "action-dispatch"` we skip this block entirely
+  // — the unified `experimentBlock` (below) provides the per-stage tool
+  // contract and supersedes both intent-classification and tool-selection
+  // guidance for that turn.
   let amenityViewingBlock = ""
-  if (body.journeyContext.stage === "AMENITY_VIEWING") {
+  if (body.journeyContext.stage === "AMENITY_VIEWING" && body.experiment !== "action-dispatch") {
     const currentAmenityName =
       body.journeyContext.currentAmenity?.name ?? body.journeyContext.suggestedAmenityName
     const suggestedNext = body.journeyContext.suggestedNext
 
-    if (body.experiment === "action-dispatch") {
-      // Experiment branch — the action-dispatch tools entirely replace the
-      // navigate_and_speak/no_action_speak guidance. See plan
-      // `inherited-beaming-gray.md`. Gated client-side to AMENITY_VIEWING +
-      // /\bbook\b/ utterances only.
-      const currentAmenityId = body.journeyContext.currentAmenity?.id ?? "unknown"
-      const activeAmenitiesList = (body.hotelAmenitiesActive ?? [])
-        .map((a) => `  - id="${a.id}", name="${a.name}"`)
-        .join("\n") || "  (none)"
-      amenityViewingBlock = `\n\n## AMENITY_VIEWING — action-dispatch experiment (current stage)
-
-The guest is currently inside the amenity space: **${currentAmenityName ?? "unknown"}** (id="${currentAmenityId}").
-${suggestedNext ? `Next unvisited amenity queued: **${suggestedNext}**.` : "No further unvisited amenity queued."}
-
-Active amenities the guest can navigate to:
-${activeAmenitiesList}
-
-### Tool contract for this turn (CRITICAL)
-
-You have exactly THREE tools available. Pick ONE. Every tool requires a \`text\` field — that is Ava's spoken response (1-2 sentences, natural, in character).
-
-- **navigate_to_amenity_action({ amenityId, text })** — the guest wants to LEAVE the current amenity (${currentAmenityName ?? "unknown"}) and visit a DIFFERENT one. \`amenityId\` MUST be from the Active amenities list above. Speech briefly names where you're taking them.
-- **open_rooms_panel_action({ text })** — the guest wants to see HOTEL ROOMS for their stay (i.e., bedrooms / suites to sleep in). Use only when their request is clearly about overnight accommodation, not about the amenity space they're in.
-- **speak_only_action({ text })** — clarify, describe, or answer without changing scenes. Use this whenever the request is ambiguous, refers to "it"/"this" without obvious antecedent, or asks about the current amenity itself.
-
-### Resolving "book" utterances (the core test)
-
-The verb "book" is ambiguous in this stage. Decide based on what is being booked:
-
-1. "I'd like to book it" / "can I book this?" while in **${currentAmenityName ?? "an amenity"}** → the guest likely means the AMENITY SPACE itself (e.g., booking the conference room for a meeting). The platform does NOT support amenity bookings directly. Emit **speak_only_action** that clarifies and offers a useful next step (e.g., "The ${currentAmenityName ?? "space"} is bookable through our events team — would you like to see hotel rooms for your stay, or shall I show you something else?").
-
-2. "Book a room" / "I want to book a room here" / "let's book the room" → this is about HOTEL ROOMS (sleeping accommodation). Emit **open_rooms_panel_action**.
-
-3. "Book me into the spa" / "take me to book the conference" → the verb is being used loosely to mean "take me to". If the named amenity is in the Active list, emit **navigate_to_amenity_action** with that amenityId.
-
-When in doubt between (1) and (2), prefer **speak_only_action** with a brief clarifying question — losing one turn to clarify beats sending the guest to the wrong scene.
-
-### Hard rules
-- Always include \`text\`. Empty / missing \`text\` is invalid.
-- For navigate_to_amenity_action, \`amenityId\` MUST exactly match one of the ids listed above.
-- Never invent amenities. Never use "rooms" as an amenityId.
-- Speech in 1-2 sentences. No preamble like "Sure, " unless it sounds natural.
-
-### Other tools available (schema-scale test — usually NOT what you want here)
-
-Many other action tools exist in the schema. They are appropriate for other stages or other intents, but the current turn was routed here because the guest is in AMENITY_VIEWING and said something about booking. **Default to one of the three primary tools above.** Reach for a different tool only if the guest's utterance unambiguously belongs to it.
-
-- \`change_lighting({ mode, text })\` — only if the guest explicitly asks for daylight / sunset / night.
-- \`return_to_virtual_lounge({ text })\` — only if the guest explicitly says "back to the lounge" or similar. Not the same as "back" alone.
-- \`confirm_end_experience({ text })\` — only on explicit farewell ("I'm done", "goodbye").
-- \`locate_interest_points({ category, text })\` — only when the guest asks about places NEAR the property, not amenities INSIDE it.
-- \`open_map({ text })\` — only on explicit map request.
-- \`show_hotel_overview({ text })\` — only if the guest wants the camera pulled out to the hotel overview.
-- \`travel_to_hotel\`, \`step_into_unit\`, \`step_out_of_unit\`, \`back_to_rooms_panel\`, \`open_booking_url\`, \`list_amenities\`, \`select_hotel\`, \`download_user_data\`, \`end_experience\`, \`confirm_return_to_lounge\` — illegal in AMENITY_VIEWING or off-topic for any plausible "book" utterance. Do not pick.
-
-If in doubt between a primary tool and any of the above, pick the primary tool.`
-    } else {
-      amenityViewingBlock = `\n\n## AMENITY_VIEWING stage guidance (current stage)
+    amenityViewingBlock = `\n\n## AMENITY_VIEWING stage guidance (current stage)
 
 The guest is touring a specific amenity space right now.${suggestedNext ? ` The next unvisited amenity the client wants to surface is: **${suggestedNext}**.` : " No further unvisited amenity is queued."}${currentAmenityName ? ` (Context: currently viewing amenity "${currentAmenityName}".)` : ""}
 
@@ -1123,7 +1329,6 @@ When in doubt, prefer speech that proposes advancement to suggestedNext (if avai
 ### Hard don'ts
 
 - Do NOT emit bare \`USER_INTENT: AFFIRMATIVE\` in this stage. It's ambiguous without a binding prior proposal, and the reducer will not auto-advance on it anymore. Either commit to AMENITY_BY_NAME (advance) or no_action_speak (stay).`
-    }
   }
 
   // VIRTUAL_LOUNGE stage-specific guidance.
@@ -1138,7 +1343,7 @@ When in doubt, prefer speech that proposes advancement to suggestedNext (if avai
   // into `no_action_speak` so the `=on` handler's speech path keeps the
   // avatar audible.
   let virtualLoungeBlock = ""
-  if (body.journeyContext.stage === "VIRTUAL_LOUNGE") {
+  if (body.journeyContext.stage === "VIRTUAL_LOUNGE" && body.experiment !== "action-dispatch") {
     const sub = body.journeyContext.subState ?? "exploring"
     virtualLoungeBlock = `\n\n## VIRTUAL_LOUNGE stage guidance (current stage)
 
@@ -1207,6 +1412,14 @@ The transcript above is ground truth. The "Reconstructed profile" block is assem
 
 When you detect a correction or supplement (e.g., "we're 6 not 8", "switch to May 15–20", "actually mom is joining too"), ALSO set the \`profileUpdates\` field on whichever tool you're calling this turn with the corrected field(s). Only include fields that actually changed from the reconstructed profile; omit everything else. This is how mid-journey corrections get persisted — don't just mention the correction in speech and move on.`
   }
+
+  // Action-dispatch experiment per-stage block. When set, supersedes the
+  // legacy intent-classification + tool-selection guidance in the system
+  // prompt. The legacy amenityViewingBlock / virtualLoungeBlock are gated
+  // off above for these turns; the experiment block is the sole source of
+  // tool guidance.
+  const experimentBlock =
+    body.experiment === "action-dispatch" ? buildActionDispatchPromptBlock(body) : ""
 
   return `You are Ava, an AI concierge for a luxury hotel metaverse experience. Given a user message and journey context, you must do TWO things in a single call: (1) classify what the user wants, and (2) generate a natural spoken response.
 
@@ -1280,7 +1493,7 @@ Every tool call MUST include a "speech" field — a natural spoken response for 
 
 ## Profile Corrections (all stages)
 
-If during any turn the user corrects or supplements profile data (examples: "we're 6 not 8", "actually mom is joining too", "switch to May 15–20", "call me Lisa not Cesar"), set the optional \`profileUpdates\` field on whichever tool you're calling with the corrected field(s). Do NOT use \`profile_turn\` for mid-exploration corrections — only use \`profileUpdates\` on the tool that fits the user's primary intent (usually \`navigate_and_speak\` or \`no_action_speak\`). Only include fields that changed — omit everything else. Profile writes are idempotent and safe to emit alongside any action.${regexHintBlock}${roomBlock}${selectedRoomBlock}${hotelOverviewBlock}${hotelAmenitiesBlock}${selectedAmenityBlock}${guestBlock}${transcriptReconstructionBlock}${virtualLoungeBlock}${amenityViewingBlock}${profileCollectionBlock}`
+If during any turn the user corrects or supplements profile data (examples: "we're 6 not 8", "actually mom is joining too", "switch to May 15–20", "call me Lisa not Cesar"), set the optional \`profileUpdates\` field on whichever tool you're calling with the corrected field(s). Do NOT use \`profile_turn\` for mid-exploration corrections — only use \`profileUpdates\` on the tool that fits the user's primary intent (usually \`navigate_and_speak\` or \`no_action_speak\`). Only include fields that changed — omit everything else. Profile writes are idempotent and safe to emit alongside any action.${regexHintBlock}${roomBlock}${selectedRoomBlock}${hotelOverviewBlock}${hotelAmenitiesBlock}${selectedAmenityBlock}${guestBlock}${transcriptReconstructionBlock}${virtualLoungeBlock}${amenityViewingBlock}${experimentBlock}${profileCollectionBlock}`
 }
 
 // ---------------------------------------------------------------------------
@@ -1736,19 +1949,22 @@ function buildTools() {
 // in one place so the two stay in sync.
 const PADDING_TOOL_DESCRIPTIONS: Record<PaddingToolName, string> = {
   travel_to_hotel: "Transition the guest from the virtual lounge into the hotel. Only legal from VIRTUAL_LOUNGE.",
-  return_to_virtual_lounge: "Take the guest from the hotel back out to the virtual lounge. Always requires explicit user intent.",
+  return_to_virtual_lounge: "Take the guest from the hotel back out to the virtual lounge. The system will then ask them to confirm.",
   show_hotel_overview: "Reset the camera to the hotel-wide overview. Used when the guest wants to step back from a detail.",
-  list_amenities: "Speak a data-grounded list of the property's amenities.",
+  list_amenities: "Speak a data-grounded list of the property's amenities. (System replaces your text with a canonical listing — keep your `text` short.)",
   step_into_unit: "Enter the interior view of the currently selected unit. Only legal from ROOM_SELECTED.",
   step_out_of_unit: "Switch to the exterior view of the currently selected unit. Only legal from ROOM_SELECTED.",
-  back_to_rooms_panel: "From a selected unit's view, return to the rooms grid for picking another unit.",
+  back_to_rooms_panel: "From a selected unit's view, return to the rooms grid (or step back to interior if currently in exterior view).",
   open_booking_url: "Open the external booking page for the currently selected room. Only legal when a unit is selected.",
   change_lighting: "Change the property's lighting mode (daylight / sunset / night).",
   locate_interest_points: "Drop nearby points-of-interest of a given category on the map (restaurants, hiking, etc.). Only legal from HOTEL_EXPLORATION.",
   open_map: "Show the location/map panel for the property.",
-  confirm_end_experience: "Ask the guest to confirm ending the experience. Use when they signal goodbye.",
-  confirm_return_to_lounge: "Ask the guest to confirm returning to the virtual lounge.",
-  end_experience: "Actually terminate the session. Use only after explicit confirmation.",
+  confirm_end_experience: "Signal that the guest wants to end the experience. The reducer escalates to END_CONFIRMING and asks the guest to confirm.",
+  end_experience_affirm: "From END_CONFIRMING — the guest confirmed they want to end the experience. Use when the guest just said yes after the avatar asked for confirmation.",
+  end_experience_cancel: "From END_CONFIRMING — the guest changed their mind and wants to stay. Use when the guest just said no after the avatar asked for confirmation.",
+  lounge_return_affirm: "From LOUNGE_CONFIRMING — the guest confirmed they want to return to the virtual lounge.",
+  lounge_return_cancel: "From LOUNGE_CONFIRMING — the guest decided to stay in the hotel.",
+  explore_lounge_action: "From VIRTUAL_LOUNGE.asking — the guest agreed to explore the lounge first (before entering the hotel). Use when the guest said yes / sure to the avatar's offer of exploring the lounge.",
   select_hotel: "Pick a hotel from the destination grid. Only legal from DESTINATION_SELECT.",
   download_user_data: "Trigger a user-data download. Admin/dev command, rarely invoked by guests.",
 }
@@ -1772,8 +1988,11 @@ const PADDING_PARAMETER_SCHEMAS: Record<PaddingToolName, Record<string, unknown>
   },
   open_map: { text: { type: "string", description: "Ava's spoken response (1-2 sentences)." } },
   confirm_end_experience: { text: { type: "string", description: "Ava's spoken response (1-2 sentences)." } },
-  confirm_return_to_lounge: { text: { type: "string", description: "Ava's spoken response (1-2 sentences)." } },
-  end_experience: { text: { type: "string", description: "Ava's spoken response (1-2 sentences)." } },
+  end_experience_affirm: { text: { type: "string", description: "Ava's spoken farewell (1-2 sentences)." } },
+  end_experience_cancel: { text: { type: "string", description: "Ava's spoken response acknowledging the guest decided to stay (1-2 sentences)." } },
+  lounge_return_affirm: { text: { type: "string", description: "Ava's spoken response confirming the lounge return (1-2 sentences)." } },
+  lounge_return_cancel: { text: { type: "string", description: "Ava's spoken response acknowledging the guest will stay in the hotel (1-2 sentences)." } },
+  explore_lounge_action: { text: { type: "string", description: "Ava's spoken response welcoming the guest into the lounge (1-2 sentences)." } },
   select_hotel: {
     hotelSlug: { type: "string", description: "Slug of the hotel to select from the destination grid." },
     text: { type: "string", description: "Ava's spoken response (1-2 sentences)." },
@@ -1794,92 +2013,198 @@ const PADDING_REQUIRED_FIELDS: Record<PaddingToolName, string[]> = {
   locate_interest_points: ["category", "text"],
   open_map: ["text"],
   confirm_end_experience: ["text"],
-  confirm_return_to_lounge: ["text"],
-  end_experience: ["text"],
+  end_experience_affirm: ["text"],
+  end_experience_cancel: ["text"],
+  lounge_return_affirm: ["text"],
+  lounge_return_cancel: ["text"],
+  explore_lounge_action: ["text"],
   select_hotel: ["hotelSlug", "text"],
   download_user_data: ["text"],
 }
 
-function buildActionDispatchExperimentTools(): OpenAITool[] {
-  const coreTools: OpenAITool[] = [
-    {
-      type: "function" as const,
-      function: {
-        name: "navigate_to_amenity_action",
-        description:
-          "Leave the current amenity and navigate the guest to a different amenity space. Requires a valid amenityId from the Active amenities list provided in the prompt.",
-        parameters: {
-          type: "object",
-          properties: {
-            amenityId: {
-              type: "string",
-              description:
-                "The id of the target amenity. Must match exactly one of the ids in the Active amenities list.",
-            },
-            text: {
-              type: "string",
-              description:
-                "Ava's spoken response: 1-2 natural sentences acknowledging the navigation, naming the destination.",
-            },
-          },
-          required: ["amenityId", "text"],
-        },
-      },
-    },
-    {
-      type: "function" as const,
-      function: {
-        name: "open_rooms_panel_action",
-        description:
-          "Open the hotel rooms panel so the guest can browse overnight accommodation. Use only when the request is clearly about sleeping rooms / suites, not about the amenity space the guest is currently inside.",
-        parameters: {
-          type: "object",
-          properties: {
-            text: {
-              type: "string",
-              description:
-                "Ava's spoken response: 1-2 natural sentences acknowledging that you're bringing up the rooms.",
-            },
-          },
-          required: ["text"],
-        },
-      },
-    },
-    {
-      type: "function" as const,
-      function: {
-        name: "speak_only_action",
-        description:
-          "Speak without changing scenes. Use to clarify ambiguous requests (especially 'book it' / 'book this' while in an amenity), to describe the current amenity, or to ask a brief follow-up question.",
-        parameters: {
-          type: "object",
-          properties: {
-            text: {
-              type: "string",
-              description:
-                "Ava's spoken response: 1-2 natural sentences. Clarifying questions should be specific and offer a useful next step.",
-            },
-          },
-          required: ["text"],
-        },
-      },
-    },
-  ]
+// ---------------------------------------------------------------------------
+// Per-stage legal-tool sets. The action-dispatch surface filters the full
+// action union down to the subset that makes sense for each stage so the LLM
+// doesn't have to reason against the whole 22-tool list every turn.
+//
+// AMENITY_VIEWING keeps the full Phase 1a surface plus the new hotel-content
+// actions (the `?fullActionDispatch=1` flag broadens the gate so every
+// utterance — not just `\bbook\b` ones — lands here). The always-on Phase 1a
+// `book` regex path still hits this branch with the same legal set.
+// ---------------------------------------------------------------------------
+type ExperimentToolName =
+  | "navigate_to_amenity_action"
+  | "open_rooms_panel_action"
+  | "speak_only_action"
+  | PaddingToolName
 
-  const paddingTools: OpenAITool[] = PADDING_TOOL_NAMES.map((name) => ({
+const STAGE_LEGAL_TOOLS: Record<string, ReadonlySet<ExperimentToolName>> = {
+  HOTEL_EXPLORATION: new Set<ExperimentToolName>([
+    "navigate_to_amenity_action",
+    "open_rooms_panel_action",
+    "speak_only_action",
+    "show_hotel_overview",
+    "list_amenities",
+    "open_map",
+    "locate_interest_points",
+    "change_lighting",
+    "return_to_virtual_lounge",
+    "confirm_end_experience",
+    "download_user_data",
+  ]),
+  AMENITY_VIEWING: new Set<ExperimentToolName>([
+    "navigate_to_amenity_action",
+    "open_rooms_panel_action",
+    "speak_only_action",
+    "show_hotel_overview",
+    "list_amenities",
+    "change_lighting",
+    "return_to_virtual_lounge",
+    "confirm_end_experience",
+    "download_user_data",
+  ]),
+  ROOM_SELECTED: new Set<ExperimentToolName>([
+    "speak_only_action",
+    "step_into_unit",
+    "step_out_of_unit",
+    "back_to_rooms_panel",
+    "open_booking_url",
+    "change_lighting",
+    "open_rooms_panel_action",
+    "show_hotel_overview",
+    "return_to_virtual_lounge",
+    "confirm_end_experience",
+    "download_user_data",
+  ]),
+  VIRTUAL_LOUNGE: new Set<ExperimentToolName>([
+    "travel_to_hotel",
+    "explore_lounge_action",
+    "speak_only_action",
+    "navigate_to_amenity_action",
+    "open_rooms_panel_action",
+    "open_map",
+    "show_hotel_overview",
+    "confirm_end_experience",
+    "download_user_data",
+  ]),
+  DESTINATION_SELECT: new Set<ExperimentToolName>([
+    "select_hotel",
+    "speak_only_action",
+    "confirm_end_experience",
+    "download_user_data",
+  ]),
+  END_CONFIRMING: new Set<ExperimentToolName>([
+    "end_experience_affirm",
+    "end_experience_cancel",
+    "speak_only_action",
+  ]),
+  LOUNGE_CONFIRMING: new Set<ExperimentToolName>([
+    "lounge_return_affirm",
+    "lounge_return_cancel",
+    "speak_only_action",
+  ]),
+}
+
+const MIGRATED_STAGES_FOR_EXPERIMENT: ReadonlySet<string> = new Set(
+  Object.keys(STAGE_LEGAL_TOOLS),
+)
+
+const CORE_EXPERIMENT_TOOLS: Record<
+  "navigate_to_amenity_action" | "open_rooms_panel_action" | "speak_only_action",
+  OpenAITool
+> = {
+  navigate_to_amenity_action: {
     type: "function" as const,
     function: {
-      name,
-      description: PADDING_TOOL_DESCRIPTIONS[name],
+      name: "navigate_to_amenity_action",
+      description:
+        "Leave the current scene and navigate the guest to a specific amenity space. Requires a valid amenityId from the Active amenities list provided in the prompt.",
       parameters: {
         type: "object",
-        properties: PADDING_PARAMETER_SCHEMAS[name],
-        required: PADDING_REQUIRED_FIELDS[name],
+        properties: {
+          amenityId: {
+            type: "string",
+            description:
+              "The id of the target amenity. Must match exactly one of the ids in the Active amenities list.",
+          },
+          text: {
+            type: "string",
+            description:
+              "Ava's spoken response: 1-2 natural sentences acknowledging the navigation, naming the destination.",
+          },
+        },
+        required: ["amenityId", "text"],
       },
     },
-  }))
+  },
+  open_rooms_panel_action: {
+    type: "function" as const,
+    function: {
+      name: "open_rooms_panel_action",
+      description:
+        "Open the hotel rooms panel so the guest can browse overnight accommodation. Use only when the request is clearly about sleeping rooms / suites, not about the amenity space the guest is currently inside.",
+      parameters: {
+        type: "object",
+        properties: {
+          text: {
+            type: "string",
+            description:
+              "Ava's spoken response: 1-2 natural sentences acknowledging that you're bringing up the rooms.",
+          },
+        },
+        required: ["text"],
+      },
+    },
+  },
+  speak_only_action: {
+    type: "function" as const,
+    function: {
+      name: "speak_only_action",
+      description:
+        "Speak without changing scenes. Use to clarify ambiguous requests, describe the current scene, answer factual property questions, or hold the turn when the guest's utterance doesn't match any other tool.",
+      parameters: {
+        type: "object",
+        properties: {
+          text: {
+            type: "string",
+            description:
+              "Ava's spoken response: 1-2 natural sentences. Clarifying questions should be specific and offer a useful next step.",
+          },
+        },
+        required: ["text"],
+      },
+    },
+  },
+}
 
-  return [...coreTools, ...paddingTools]
+function buildActionDispatchToolsForStage(stage: string): OpenAITool[] {
+  const allowed = STAGE_LEGAL_TOOLS[stage]
+  if (!allowed) return []
+
+  const tools: OpenAITool[] = []
+  // Core tools first (preserves Phase 1a's tool ordering for AMENITY_VIEWING).
+  for (const name of ["navigate_to_amenity_action", "open_rooms_panel_action", "speak_only_action"] as const) {
+    if (allowed.has(name)) tools.push(CORE_EXPERIMENT_TOOLS[name])
+  }
+  // Remaining tools — defined in PADDING_TOOL_NAMES order so the schema layout
+  // is stable across stages.
+  for (const name of PADDING_TOOL_NAMES) {
+    if (allowed.has(name)) {
+      tools.push({
+        type: "function" as const,
+        function: {
+          name,
+          description: PADDING_TOOL_DESCRIPTIONS[name],
+          parameters: {
+            type: "object",
+            properties: PADDING_PARAMETER_SCHEMAS[name],
+            required: PADDING_REQUIRED_FIELDS[name],
+          },
+        },
+      })
+    }
+  }
+  return tools
 }
 
 // ---------------------------------------------------------------------------
@@ -2093,15 +2418,19 @@ export async function POST(request: Request) {
     // hotel / surrounding area"); the prompt's "Skip-ahead exception" block
     // governs when to pick which. Room-plan changes are handled by the
     // dedicated client-side planner (/api/room-planner), not this route.
-    // Experiment: when `experiment === "action-dispatch"` AND stage is
-    // AMENITY_VIEWING, swap in the 3 experimental action tools and tell the
-    // model it MUST pick one ("required" tool_choice). Outside that surface
-    // the existing tool list is unchanged.
+    // Experiment: when `experiment === "action-dispatch"` AND stage is in the
+    // migrated set (HOTEL_EXPLORATION / AMENITY_VIEWING / ROOM_SELECTED /
+    // VIRTUAL_LOUNGE / DESTINATION_SELECT / END_CONFIRMING / LOUNGE_CONFIRMING),
+    // swap in the per-stage action tool subset and tell the model it MUST pick
+    // one ("required" tool_choice). Phase 1a's always-on `\bbook\b` surface in
+    // AMENITY_VIEWING is preserved (client sends `experiment: "action-dispatch"`
+    // for that case unchanged); the new `?fullActionDispatch=1` URL flag
+    // broadens the client-side gate to every utterance in every migrated stage.
     const isActionDispatchExperiment =
       body.experiment === "action-dispatch" &&
-      body.journeyContext.stage === "AMENITY_VIEWING"
+      MIGRATED_STAGES_FOR_EXPERIMENT.has(body.journeyContext.stage)
     const tools = isActionDispatchExperiment
-      ? buildActionDispatchExperimentTools()
+      ? buildActionDispatchToolsForStage(body.journeyContext.stage)
       : isProfileCollection
         ? buildProfileCollectionTools()
         : buildTools()
@@ -2421,20 +2750,21 @@ export async function POST(request: Request) {
         functionName === "open_rooms_panel_action" ||
         functionName === "speak_only_action"
       ) {
-        // Experiment tools: the `text` field carries Ava's speech (renamed
-        // from `speech` to make the action shape distinct from legacy tools).
-        // Surface as `speech` on the wire so client-side latency / log code
-        // doesn't need a special case. Skip the decision_envelope build below
-        // (the client branches directly on `responseBody.tool`).
+        // Primary action-dispatch tools. The `text` field carries Ava's
+        // speech (renamed from `speech` to make the action shape distinct
+        // from legacy tools). Surface as `speech` on the wire so client-side
+        // latency / log code doesn't need a special case. The client
+        // branches directly on `responseBody.tool` for these.
         responseBody.speech = result.text
         if (functionName === "navigate_to_amenity_action") {
           responseBody.amenityId = result.amenityId
         }
       } else if ((PADDING_TOOL_NAMES as readonly string[]).includes(functionName)) {
-        // Schema-scale padding tool. The client's generic padding handler
-        // logs it as a false-positive (or correct-but-unimplemented pick)
-        // and speaks `text` without state changes. We surface arg-bearing
-        // fields too so the client log captures what the model intended.
+        // Full action-dispatch surface (former padding tools + new
+        // affirm/cancel/explore actions). All carry `text`; some carry
+        // additional args (mode for change_lighting, category for
+        // locate_interest_points, hotelSlug for select_hotel). Marshal
+        // them onto the wire uniformly; client switches on `responseBody.tool`.
         responseBody.speech = result.text
         if (typeof result.mode === "string") responseBody.lightingMode = result.mode
         if (typeof result.category === "string") responseBody.category = result.category

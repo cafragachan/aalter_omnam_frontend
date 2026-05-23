@@ -287,14 +287,35 @@ export function useJourney(options: UseJourneyOptions) {
   // --- Pre-generated speech ref (Phase 4: orchestrate fills this before processIntent) ---
   const preGeneratedSpeechRef = useRef<string | null>(null)
 
-  // --- Action-dispatch surface: AMENITY_VIEWING `book` ---
+  // --- Action-dispatch surface: AMENITY_VIEWING `book` (Phase 1a, always on) ---
   // Phase 1a (shipped 2026-05-23): the URL `?actionTest=1` gate was removed
   // and this surface is now the default behavior for every session. When the
   // stage is AMENITY_VIEWING AND the utterance contains "book", the unified
   // turn pipeline bypasses the deterministic gate and requests action-dispatch
-  // tools from the server. Fixes the "book it" → opens-rooms-panel bug
-  // canonically by handing the disambiguation to the LLM. See plan
-  // `inherited-beaming-gray.md`.
+  // tools from the server. See plan `inherited-beaming-gray.md`.
+  //
+  // --- Full action-dispatch migration: `?fullActionDispatch=1` ---
+  // When the URL flag is set, every utterance in a migrated stage routes
+  // through action-dispatch (not just AMENITY_VIEWING + `book`). Read once
+  // at mount; never mutated after. See plan `vast-rolling-adleman.md`.
+  const fullActionDispatchRef = useRef<boolean>(
+    typeof window !== "undefined" &&
+      new URLSearchParams(window.location.search).get("fullActionDispatch") === "1",
+  )
+
+  // Stages the broadened gate applies to. Must match the server's
+  // MIGRATED_STAGES_FOR_EXPERIMENT in app/api/orchestrate/route.ts. Reading
+  // the URL flag without this set would let the client think it's "on" for
+  // stages the server doesn't recognize, producing a silent 503 path.
+  const MIGRATED_STAGES_FOR_CLIENT: ReadonlySet<JourneyState["stage"]> = new Set([
+    "HOTEL_EXPLORATION",
+    "AMENITY_VIEWING",
+    "ROOM_SELECTED",
+    "VIRTUAL_LOUNGE",
+    "DESTINATION_SELECT",
+    "END_CONFIRMING",
+    "LOUNGE_CONFIRMING",
+  ])
 
   // --- Speech-mutex turn id for utterance-driven SPEAK_INTENT effects ---
   //
@@ -1931,15 +1952,20 @@ export function useJourney(options: UseJourneyOptions) {
       // Reset idle detection on turn-start so the 12s reengage can't
       // fire over a response that's about to land.
       resetIdleTimer()
-      // Action-dispatch surface: AMENITY_VIEWING `book`.
-      // Phase 1a (shipped 2026-05-23): always-on. Bypasses the deterministic
-      // gate so the BOOK regex doesn't short-circuit to the rooms panel —
-      // the LLM picks among navigate_to_amenity / open_rooms_panel /
-      // speak_only via the action-dispatch tools instead. See plan
-      // `inherited-beaming-gray.md`.
+      // Action-dispatch routing. Two paths into the experiment:
+      //   1. Phase 1a (always-on, shipped 2026-05-23) — AMENITY_VIEWING +
+      //      `\bbook\b`. Bypasses the deterministic gate so the BOOK regex
+      //      doesn't short-circuit to the rooms panel — the LLM picks among
+      //      navigate_to_amenity / open_rooms_panel / speak_only.
+      //   2. Full migration (`?fullActionDispatch=1`) — every utterance in
+      //      any migrated stage routes through the experiment. Lets the user
+      //      walk the entire journey on action-dispatch before committing to
+      //      the broader deletion-and-cleanup refactor. See plan
+      //      `vast-rolling-adleman.md`.
+      const stageOnNewArch = MIGRATED_STAGES_FOR_CLIENT.has(currentState.stage)
       const isExperimentTurn =
-        currentState.stage === "AMENITY_VIEWING" &&
-        /\bbook\b/i.test(latestMessage)
+        (currentState.stage === "AMENITY_VIEWING" && /\bbook\b/i.test(latestMessage)) ||
+        (fullActionDispatchRef.current && stageOnNewArch)
       const deterministic = isExperimentTurn
         ? { handled: false as const, confidence: 0, reasons: ["experiment_bypass"] }
         : evaluateDeterministicExplorationTurn({
@@ -2081,120 +2107,242 @@ export function useJourney(options: UseJourneyOptions) {
           return
         }
 
-        // ---- Experiment: action-dispatch result branch ------------------
-        // When the experiment fired, the server returns one of three new
-        // tools. Map each to existing dispatch primitives without going
-        // through the envelope or reducer-canonical-speech path. Stash
-        // metadata on turnTimingRef so the t5 latency-emit effect can print
-        // a console.table row when the avatar's first audio frame plays.
+        // ---- Action-dispatch result branch ------------------------------
+        // When the experiment fired (Phase 1a always-on or
+        // ?fullActionDispatch=1), the server returns one of the action
+        // tools. Map each to an existing dispatch primitive — actions are
+        // thin wrappers around processIntent / dispatchListAmenities /
+        // direct dispatch. Reducer-canonical-speech path is bypassed: the
+        // LLM is the speech authority for every action-dispatch turn
+        // (`preGeneratedSpeechRef` set before processIntent), EXCEPT
+        // list_amenities where the canonical data-grounded listing wins.
+        //
+        // Stash metadata on turnTimingRef so the t5 latency-emit effect
+        // can print a console.table row when the avatar's first audio
+        // frame plays.
         if (
           result.tool === "navigate_to_amenity_action" ||
           result.tool === "open_rooms_panel_action" ||
-          result.tool === "speak_only_action"
+          result.tool === "speak_only_action" ||
+          (PADDING_TOOL_RESULT_NAMES as readonly string[]).includes(result.tool)
         ) {
+          const actionResult = result as
+            | { tool: "navigate_to_amenity_action"; amenityId: string; speech: string }
+            | { tool: "open_rooms_panel_action"; speech: string }
+            | { tool: "speak_only_action"; speech: string }
+            | PaddingToolResult
+          const actionTool = actionResult.tool
+          const actionSpeech = actionResult.speech
+
           if (turnTimingRef.current) {
-            turnTimingRef.current.experimentTool = result.tool
+            turnTimingRef.current.experimentTool = actionTool
             turnTimingRef.current.experimentUtterance = turnMessageSlice
           }
           logTurn({
             stage,
             latestMessage: turnMessageSlice,
             regexIntent: regexIntent.type,
-            llmIntent: result.tool,
-            action: { type: "USER_INTENT", intent: result.tool },
-            speech: result.speech,
+            llmIntent: actionTool,
+            action: { type: "USER_INTENT", intent: actionTool },
+            speech: actionSpeech,
             latencyMs,
             pathway: "experiment-action-dispatch",
           })
 
-          if (result.tool === "speak_only_action") {
-            // Pure speech, no state change. Claim mutex; if a higher-priority
-            // producer already spoke this turn (none expected in the
-            // experiment surface), suppress.
-            if (!claimSpeech(utteranceTurnId, "experiment")) {
-              return
-            }
-            interrupt()
-            repeat(result.speech).catch(() => undefined)
-            return
-          }
-
-          if (result.tool === "open_rooms_panel_action") {
-            // Hand off to the existing ROOMS dispatch path so the reducer
-            // closes the amenity panel, opens rooms, sends UE5 commands, and
-            // kicks the room planner exactly as today.
-            preGeneratedSpeechRef.current = result.speech
+          // Local helper — most actions follow the same 3-step pattern:
+          // stash LLM speech as the canonical authority, claim the mutex
+          // turn id, and hand the intent to the existing reducer ladder
+          // via processIntent.
+          const dispatchViaIntent = (intent: UserIntent): void => {
+            preGeneratedSpeechRef.current = actionSpeech
             speechTurnIdForEffectsRef.current = utteranceTurnId
-            processIntent({ type: "ROOMS" }, latestMessage, currentState, stage)
-            return
+            processIntent(intent, latestMessage, currentState, stage)
           }
-
-          // navigate_to_amenity_action — look up the amenity by id from the
-          // amenities prop. If the LLM hallucinated an id that doesn't
-          // resolve, degrade gracefully to a speak-only response so the
-          // guest hears something instead of a silent failure.
-          const targetAmenity = amenities.find((a) => a.id === result.amenityId)
-          if (!targetAmenity) {
-            // eslint-disable-next-line no-console
-            console.warn("[ACTION-EXP] navigate_to_amenity_action with unknown amenityId", {
-              amenityId: result.amenityId,
-              knownIds: amenities.map((a) => a.id),
-            })
+          // Speak-only / fallback path. Claims mutex; suppresses if a
+          // higher-priority producer already spoke this turn (uncommon
+          // for action-dispatch since there's only one producer per turn).
+          const speakOnly = (text: string): void => {
             if (!claimSpeech(utteranceTurnId, "experiment")) return
             interrupt()
-            repeat(result.speech).catch(() => undefined)
-            return
+            repeat(text).catch(() => undefined)
           }
-          preGeneratedSpeechRef.current = result.speech
-          speechTurnIdForEffectsRef.current = utteranceTurnId
-          processIntent(
-            { type: "AMENITY_BY_NAME", amenityName: targetAmenity.name },
-            latestMessage,
-            currentState,
-            stage,
-          )
-          return
-        }
 
-        // ---- Schema-scale test: padding-tool handler -------------------
-        // The model picked one of the ~14 padding tools. None of these are
-        // implemented for the AMENITY_VIEWING `book` surface — they exist
-        // purely as schema ballast to measure how a bigger action union
-        // affects LLM latency and tool-pick accuracy. Treat every pick as a
-        // data point: log it loudly, stash on the timing ref for the
-        // console.table row, and speak Ava's text without any state change.
-        if ((PADDING_TOOL_RESULT_NAMES as readonly string[]).includes(result.tool)) {
-          const paddingResult = result as PaddingToolResult
-          if (turnTimingRef.current) {
-            // Reuse the experiment fields so the console.table row prints
-            // for padding picks too. The `tool` cell will show the padding
-            // tool name — that's the signal for false-positive detection.
-            turnTimingRef.current.experimentTool = paddingResult.tool
-            turnTimingRef.current.experimentUtterance = turnMessageSlice
+          switch (actionTool) {
+            case "speak_only_action":
+              speakOnly(actionSpeech)
+              return
+
+            case "open_rooms_panel_action":
+              dispatchViaIntent({ type: "ROOMS" })
+              return
+
+            case "navigate_to_amenity_action": {
+              // Look up amenity by id. If unresolved, degrade to speak-only
+              // so the guest hears something instead of a silent failure.
+              const targetAmenity = amenities.find(
+                (a) => a.id === (actionResult as { amenityId: string }).amenityId,
+              )
+              if (!targetAmenity) {
+                // eslint-disable-next-line no-console
+                console.warn("[ACTION-EXP] navigate_to_amenity_action with unknown amenityId", {
+                  amenityId: (actionResult as { amenityId: string }).amenityId,
+                  knownIds: amenities.map((a) => a.id),
+                })
+                speakOnly(actionSpeech)
+                return
+              }
+              // processIntent handles both: HE/AV (direct nav via
+              // navigateToAmenityByName intercept) and VL (pre-hotel
+              // shortcut: travel + Phase 2 nav after 3.5s).
+              dispatchViaIntent({ type: "AMENITY_BY_NAME", amenityName: targetAmenity.name })
+              return
+            }
+
+            case "show_hotel_overview":
+              dispatchViaIntent({ type: "HOTEL_EXPLORE" })
+              return
+
+            case "list_amenities":
+              // Canonical data-grounded listing wins over LLM speech here —
+              // see plan note #4 in vast-rolling-adleman.md. DO NOT set
+              // preGeneratedSpeechRef. The reducer's LIST_AMENITIES
+              // SPEAK_INTENT renders amenityListing from real hotel data.
+              speechTurnIdForEffectsRef.current = utteranceTurnId
+              dispatchListAmenities()
+              return
+
+            case "open_map":
+              dispatchViaIntent({ type: "LOCATION" })
+              return
+
+            case "locate_interest_points": {
+              const category = (actionResult as PaddingToolResult).category
+              if (!category) {
+                // eslint-disable-next-line no-console
+                console.warn("[ACTION-EXP] locate_interest_points missing category", {
+                  utterance: turnMessageSlice,
+                })
+                speakOnly(actionSpeech)
+                return
+              }
+              dispatchViaIntent({ type: "LOCATE_INTEREST_POINTS", category })
+              return
+            }
+
+            case "change_lighting": {
+              const mode = (actionResult as PaddingToolResult).lightingMode
+              if (!mode) {
+                // eslint-disable-next-line no-console
+                console.warn("[ACTION-EXP] change_lighting missing mode", {
+                  utterance: turnMessageSlice,
+                })
+                speakOnly(actionSpeech)
+                return
+              }
+              dispatchViaIntent({ type: "LIGHTING_SET", mode })
+              return
+            }
+
+            case "step_into_unit":
+              dispatchViaIntent({ type: "INTERIOR" })
+              return
+
+            case "step_out_of_unit":
+              dispatchViaIntent({ type: "EXTERIOR" })
+              return
+
+            case "back_to_rooms_panel":
+              // Reducer's ROOM_SELECTED BACK handler is viewMode-aware: from
+              // exterior view it steps back to interior; otherwise opens the
+              // rooms panel. Single action covers both via the existing logic.
+              dispatchViaIntent({ type: "BACK" })
+              return
+
+            case "open_booking_url":
+              dispatchViaIntent({ type: "BOOK" })
+              return
+
+            case "travel_to_hotel":
+              dispatchViaIntent({ type: "TRAVEL_TO_HOTEL" })
+              return
+
+            case "return_to_virtual_lounge":
+              // Reducer escalates RETURN_TO_LOUNGE → LOUNGE_CONFIRMING and
+              // speaks the canonical loungeConfirm. LLM speech is preserved
+              // via preGen on the way in.
+              dispatchViaIntent({ type: "RETURN_TO_LOUNGE" })
+              return
+
+            case "confirm_end_experience":
+              // Reducer escalates END_EXPERIENCE → END_CONFIRMING.
+              dispatchViaIntent({ type: "END_EXPERIENCE" })
+              return
+
+            case "end_experience_affirm":
+            case "lounge_return_affirm":
+              dispatchViaIntent({ type: "AFFIRMATIVE" })
+              return
+
+            case "end_experience_cancel":
+            case "lounge_return_cancel":
+              dispatchViaIntent({ type: "NEGATIVE" })
+              return
+
+            case "explore_lounge_action":
+              // VIRTUAL_LOUNGE.asking + AFFIRMATIVE → exploring sub-state
+              // with loungeExploreAck speech. The reducer is the canonical
+              // speaker here, but LLM warmth is fine to preserve via preGen.
+              dispatchViaIntent({ type: "AFFIRMATIVE" })
+              return
+
+            case "select_hotel": {
+              // DESTINATION_SELECT voice path. Look up hotel metadata from
+              // the catalog if available; fall back to the slug for the
+              // descriptive fields. Today the destination grid is mostly
+              // tap-driven, so this branch is rare but graceful.
+              const hotelSlug = (actionResult as PaddingToolResult).hotelSlug
+              if (!hotelSlug) {
+                // eslint-disable-next-line no-console
+                console.warn("[ACTION-EXP] select_hotel missing hotelSlug", {
+                  utterance: turnMessageSlice,
+                })
+                speakOnly(actionSpeech)
+                return
+              }
+              const catalog = catalogRef.current
+              const hotelName = catalog?.hotelName ?? hotelSlug
+              const location = catalog?.hotelLocation ?? ""
+              const description = catalog?.hotelDescription ?? ""
+              preGeneratedSpeechRef.current = actionSpeech
+              speechTurnIdForEffectsRef.current = utteranceTurnId
+              dispatch({
+                type: "HOTEL_PICKED",
+                slug: hotelSlug,
+                hotelName,
+                location,
+                description,
+              })
+              return
+            }
+
+            case "download_user_data":
+              dispatchViaIntent({ type: "DOWNLOAD_DATA" })
+              return
+
+            default: {
+              // Schema drift safety net — a tool name landed here that we
+              // don't explicitly handle. Speak the LLM's text so the turn
+              // isn't silent, and log loudly so future schema additions
+              // without a client handler are easy to spot.
+              // eslint-disable-next-line no-console
+              console.warn("[ACTION-EXP] unhandled action-dispatch tool", {
+                tool: actionTool,
+                utterance: turnMessageSlice,
+              })
+              speakOnly(actionSpeech)
+              return
+            }
           }
-          // eslint-disable-next-line no-console
-          console.warn("[ACTION-EXP] padding tool picked (schema-scale test)", {
-            tool: paddingResult.tool,
-            utterance: turnMessageSlice,
-            lightingMode: paddingResult.lightingMode,
-            category: paddingResult.category,
-            hotelSlug: paddingResult.hotelSlug,
-            speech: paddingResult.speech.slice(0, 100),
-          })
-          logTurn({
-            stage,
-            latestMessage: turnMessageSlice,
-            regexIntent: regexIntent.type,
-            llmIntent: paddingResult.tool,
-            action: { type: "USER_INTENT", intent: paddingResult.tool },
-            speech: paddingResult.speech,
-            latencyMs,
-            pathway: "experiment-action-dispatch",
-          })
-          if (!claimSpeech(utteranceTurnId, "experiment")) return
-          interrupt()
-          repeat(paddingResult.speech).catch(() => undefined)
-          return
         }
 
         // Route via decision_envelope.action when the envelope carries a
