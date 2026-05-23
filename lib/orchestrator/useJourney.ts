@@ -2170,10 +2170,24 @@ export function useJourney(options: UseJourneyOptions) {
           switch (actionTool) {
             case "speak_only_action":
               speakOnly(actionSpeech)
+              // Room planner regression fix: when the rooms panel is
+              // visible and the LLM picked speak-only ("two penthouses
+              // and one standard"), the panel's plan was previously
+              // re-evaluated via the legacy envelope-dispatch kick. The
+              // experiment switch returns before reaching that point, so
+              // mirror the kick here. The planner reads the transcript
+              // itself; gate (isRoomsPanelVisible + allowlist) is
+              // unchanged — "UNKNOWN" passes the allowlist so the kick
+              // fires only when the panel is open.
+              maybeKickRoomPlanner("UNKNOWN", latestMessage, utteranceTurnId)
               return
 
             case "open_rooms_panel_action":
               dispatchViaIntent({ type: "ROOMS" })
+              // Same regression fix as speak_only_action — explicit kick
+              // so room-composition utterances ("show me 2 penthouses,
+              // 1 standard") that ride on this action update the panel.
+              maybeKickRoomPlanner("ROOMS", latestMessage, utteranceTurnId)
               return
 
             case "navigate_to_amenity_action": {

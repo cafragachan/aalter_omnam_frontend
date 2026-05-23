@@ -705,11 +705,20 @@ Pick exactly ONE tool. Every tool requires a \`text\` field — Ava's spoken res
 - **open_rooms_panel_action({ text })** — guest wants to see HOTEL ROOMS for their stay (i.e., bedrooms / suites to sleep in). Use only when the request is clearly about overnight accommodation.
 - **list_amenities({ text })** — guest asks "what amenities do you have?" or similar listing question. Your \`text\` will be replaced by a canonical data-grounded listing — keep it brief.
 - **show_hotel_overview({ text })** — guest wants the camera pulled back to the hotel overview.
+- **open_map({ text })** — guest wants to see the surrounding area / location / what's around the property (generic; no specific category).
+- **locate_interest_points({ category, text })** — guest asks about a specific category nearby ("kitesurfing", "romantic restaurants", "hiking trails"). \`category\` is a Places-API query.
 - **change_lighting({ mode, text })** — daylight / sunset / night. Map evocative phrases ("golden hour" → sunset, "starlight" → night, "brighter" → daylight).
 - **return_to_virtual_lounge({ text })** — explicit "back to the virtual lounge" request. The system will then ask the guest to confirm.
 - **confirm_end_experience({ text })** — guest signals goodbye / "I'm done". The system asks for confirmation.
 - **speak_only_action({ text })** — clarify, describe the current amenity, or answer factual questions without changing scenes. Default when ambiguous.
 - **download_user_data({ text })** — admin command, rare.
+
+### Worked examples for the "leave the amenity" cases
+
+- "Show me the surrounding area" / "what's outside?" → \`open_map({ text: "Here's the area around us." })\`
+- "Any good restaurants nearby?" / "kitesurfing spots?" → \`locate_interest_points({ category: "restaurants", text: "Let me find some nearby." })\`
+- "Take me to the pool instead" → \`navigate_to_amenity_action({ amenityId: "<pool id>", text: "Right this way." })\`
+- "Back to the hotel overview" → \`show_hotel_overview({ text: "Of course." })\`
 
 ### Resolving "book" utterances
 
@@ -782,6 +791,9 @@ Pick exactly ONE tool. Every tool requires a \`text\` field — Ava's spoken res
 The guest has selected a room: ${roomHeader}
 Current view: **${viewModeLabel}**
 
+Active amenities the guest can navigate to (without going back to the hotel overview first):
+${activeAmenitiesList}
+
 ### Tool contract
 
 Pick exactly ONE tool. Every tool requires a \`text\` field.
@@ -791,8 +803,11 @@ Pick exactly ONE tool. Every tool requires a \`text\` field.
 - **back_to_rooms_panel({ text })** — "go back", "show other rooms". If guest is currently in **exterior** view, the system steps back to interior. Otherwise opens the rooms panel.
 - **open_booking_url({ text })** — guest commits to booking THIS room. "book it", "I'll take it", "let's reserve".
 - **change_lighting({ mode, text })** — daylight / sunset / night.
+- **navigate_to_amenity_action({ amenityId, text })** — guest wants to leave the room and visit a specific amenity ("take me to the pool", "show me the lobby"). \`amenityId\` MUST be from the Active amenities list above.
 - **open_rooms_panel_action({ text })** — guest wants to compare other rooms / different options.
 - **show_hotel_overview({ text })** — guest wants to leave the room view entirely.
+- **open_map({ text })** — guest wants to see the surrounding area / what's nearby (generic; no specific category).
+- **locate_interest_points({ category, text })** — guest asks about a specific category nearby ("restaurants", "hiking trails"). \`category\` is a Places-API query.
 - **return_to_virtual_lounge({ text })** — explicit lounge request.
 - **confirm_end_experience({ text })** — goodbye.
 - **speak_only_action({ text })** — clarify, describe THIS room, answer questions about its features.
@@ -806,9 +821,13 @@ Pick exactly ONE tool. Every tool requires a \`text\` field.
 - "What's the bed like?" → \`speak_only_action({ text: "<answer from selectedRoom.bedding>" })\`
 - "Go back" while in **exterior** view → \`back_to_rooms_panel({ text: "Stepping back inside." })\` (reducer auto-routes to interior)
 - "Show me another room" → \`open_rooms_panel_action({ text: "Of course — here are the other rooms." })\`
+- "Take me to the pool" → \`navigate_to_amenity_action({ amenityId: "<pool id>", text: "Right this way to the pool." })\`
+- "Show me the surrounding area" → \`open_map({ text: "Here's the area around the property." })\`
+- "Any good restaurants nearby?" → \`locate_interest_points({ category: "restaurants", text: "Let me drop some nearby spots on the map." })\`
 
 ### Hard rules
 - \`step_into_unit\` / \`step_out_of_unit\` require a selected unit (one is selected — see the room header above).
+- For \`navigate_to_amenity_action\`, \`amenityId\` MUST exactly match one of the ids in the Active amenities list above.
 - 1-2 sentences. No filler.`
   }
 
@@ -2058,6 +2077,8 @@ const STAGE_LEGAL_TOOLS: Record<string, ReadonlySet<ExperimentToolName>> = {
     "speak_only_action",
     "show_hotel_overview",
     "list_amenities",
+    "open_map",
+    "locate_interest_points",
     "change_lighting",
     "return_to_virtual_lounge",
     "confirm_end_experience",
@@ -2070,8 +2091,11 @@ const STAGE_LEGAL_TOOLS: Record<string, ReadonlySet<ExperimentToolName>> = {
     "back_to_rooms_panel",
     "open_booking_url",
     "change_lighting",
+    "navigate_to_amenity_action",
     "open_rooms_panel_action",
     "show_hotel_overview",
+    "open_map",
+    "locate_interest_points",
     "return_to_virtual_lounge",
     "confirm_end_experience",
     "download_user_data",
