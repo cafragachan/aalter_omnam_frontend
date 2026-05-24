@@ -690,10 +690,27 @@ export function useJourney(options: UseJourneyOptions) {
   const isRoomsPanelVisibleRef = options.isRoomsPanelVisibleRef
   const maybeKickRoomPlanner = useCallback(
     (intentTag: string, latestMessage: string, utteranceTurnId: number) => {
-      if (!requestRoomPlanRef?.current) return
-      if (!isRoomsPanelVisibleRef?.current) return
-      if (!ROOM_PLANNER_ALLOWLIST.current.has(intentTag)) return
-      void requestRoomPlanRef.current("user_message", latestMessage, utteranceTurnId)
+      // Temporary diagnostic — full-migration regression where users report
+      // the rooms panel not updating after composition utterances ("2
+      // penthouses, 1 standard"). Logs which gate (if any) is blocking
+      // the planner kick so we can pinpoint the break without round-tripping
+      // through a fresh test session. Safe to remove once stable.
+      const hasPlanner = !!requestRoomPlanRef?.current
+      const panelVisible = !!isRoomsPanelVisibleRef?.current
+      const allowlistOk = ROOM_PLANNER_ALLOWLIST.current.has(intentTag)
+      // eslint-disable-next-line no-console
+      console.log("[ROOM_PLANNER_KICK]", {
+        intentTag,
+        hasPlanner,
+        panelVisible,
+        allowlistOk,
+        utteranceTurnId,
+        message: latestMessage.slice(0, 80),
+      })
+      if (!hasPlanner) return
+      if (!panelVisible) return
+      if (!allowlistOk) return
+      void requestRoomPlanRef.current!("user_message", latestMessage, utteranceTurnId)
     },
     [requestRoomPlanRef, isRoomsPanelVisibleRef],
   )
