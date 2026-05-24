@@ -1244,12 +1244,20 @@ function HomePageContent({
     if (!wasOpen && showRoomsPanel) {
       // UE5 drops `selectedRoom` state when it leaves the rooms scene, so a
       // fresh open must re-emit the payload even if the stored plan is
-      // identical to last time. Clearing the dedup ref lets the sync effect
-      // above fire on the next planner landing (or on the existing plan).
+      // identical to last time. Re-send synchronously from the existing plan
+      // (if any) instead of relying on the planner round-trip — the planner
+      // may skip (user-edited plan) or fail, in which case the sync effect
+      // above never re-fires because `currentRoomPlan`'s reference is stable.
       lastSelectedRoomPayloadRef.current = null
+      const entries = currentRoomPlan?.rooms ?? []
+      if (entries.length > 0) {
+        const payload = Array.from(new Set(entries.map((r) => r.roomId))).join(",")
+        lastSelectedRoomPayloadRef.current = payload
+        selectRoomUE5(payload)
+      }
       void requestRoomPlanRef.current("panel_opened")
     }
-  }, [showRoomsPanel])
+  }, [showRoomsPanel, currentRoomPlan, selectRoomUE5])
 
   // Phase 8: forward UE5 unit-selection events from the bridge directly to
   // useJourney. The ref indirection is needed because `useUE5Bridge` is called
