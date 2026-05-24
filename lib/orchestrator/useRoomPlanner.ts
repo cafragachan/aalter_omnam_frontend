@@ -98,15 +98,6 @@ export function useRoomPlanner(): {
     ): Promise<void> => {
       const snapshot = stateRef.current
       const hotelSlug = snapshot.app.selectedHotel
-      // eslint-disable-next-line no-console
-      console.warn("[ROOM_PLANNER_REQUEST]", {
-        trigger,
-        hotelSlug,
-        latestMessage: latestMessage?.slice(0, 80),
-        utteranceTurnId,
-        hasCurrentPlan: !!snapshot.currentRoomPlan,
-        currentPlanSource: snapshot.currentRoomPlan?.source,
-      })
       if (!hotelSlug) {
         console.warn("[ROOM_PLANNER] requestPlan called with no selected hotel")
         return
@@ -209,14 +200,6 @@ export function useRoomPlanner(): {
         }
 
         const data = (await res.json()) as RoomPlannerResponse
-        // eslint-disable-next-line no-console
-        console.warn("[ROOM_PLANNER_RESPONSE]", {
-          trigger,
-          plan: data.plan,
-          totalPerNight: data.totalPerNight,
-          capacityOk: data.capacityOk,
-          speech: data.speech?.slice(0, 100),
-        })
         // Build the store slice. `capacity` is derived the same way the server
         // computed it (sum of occupancy * quantity) — but we don't have room
         // occupancies on the client catalog in a guaranteed-complete shape,

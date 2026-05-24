@@ -690,26 +690,10 @@ export function useJourney(options: UseJourneyOptions) {
   const isRoomsPanelVisibleRef = options.isRoomsPanelVisibleRef
   const maybeKickRoomPlanner = useCallback(
     (intentTag: string, latestMessage: string, utteranceTurnId: number) => {
-      // Temporary diagnostic (use warn so it shows under default DevTools
-      // filters that hide log-level entries). Tracking the full-migration
-      // regression where the rooms panel doesn't update after composition
-      // utterances. Safe to remove once we've confirmed the chain.
-      const hasPlanner = !!requestRoomPlanRef?.current
-      const panelVisible = !!isRoomsPanelVisibleRef?.current
-      const allowlistOk = ROOM_PLANNER_ALLOWLIST.current.has(intentTag)
-      // eslint-disable-next-line no-console
-      console.warn("[ROOM_PLANNER_KICK]", {
-        intentTag,
-        hasPlanner,
-        panelVisible,
-        allowlistOk,
-        utteranceTurnId,
-        message: latestMessage.slice(0, 80),
-      })
-      if (!hasPlanner) return
-      if (!panelVisible) return
-      if (!allowlistOk) return
-      void requestRoomPlanRef.current!("user_message", latestMessage, utteranceTurnId)
+      if (!requestRoomPlanRef?.current) return
+      if (!isRoomsPanelVisibleRef?.current) return
+      if (!ROOM_PLANNER_ALLOWLIST.current.has(intentTag)) return
+      void requestRoomPlanRef.current("user_message", latestMessage, utteranceTurnId)
     },
     [requestRoomPlanRef, isRoomsPanelVisibleRef],
   )
@@ -1982,18 +1966,6 @@ export function useJourney(options: UseJourneyOptions) {
       const isExperimentTurn =
         (currentState.stage === "AMENITY_VIEWING" && /\bbook\b/i.test(latestMessage)) ||
         (fullActionDispatchRef.current && stageOnNewArch)
-      // Beacon: warn-level so it shows even under default DevTools filters.
-      // Confirms (a) the new build is loaded and (b) the experiment gate is
-      // making the right decision for this turn. Remove once the rooms-panel
-      // regression is closed.
-      // eslint-disable-next-line no-console
-      console.warn("[TURN_GATE]", {
-        stage: currentState.stage,
-        flag: fullActionDispatchRef.current,
-        stageOnNewArch,
-        isExperimentTurn,
-        message: latestMessage.slice(0, 80),
-      })
       const deterministic = isExperimentTurn
         ? { handled: false as const, confidence: 0, reasons: ["experiment_bypass"] }
         : evaluateDeterministicExplorationTurn({
