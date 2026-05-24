@@ -785,14 +785,26 @@ Pick exactly ONE tool. Every tool requires a \`text\` field — Ava's spoken res
     const roomHeader = room
       ? `**${room.name}** (occupancy ${room.occupancy}, $${room.price}/night)`
       : "(no room currently selected — guest should pick a unit first)"
+    const lastProposal = body.journeyContext.lastProposal
+    const lastProposalLabel = lastProposal ?? "(none)"
+    const yesNoGuidance =
+      lastProposal === "explore_room"
+        ? `\n### Resolving "yes" / "no" THIS TURN (avatar just asked "Would you like to explore this room?")\n- Guest says **yes / sure / okay / let's do it** → \`step_into_unit({ text: "Stepping inside now." })\`\n- Guest says **no / not yet / show me other options** → \`speak_only_action({ text: "Would you like to book this room, view another, or explore other options?" })\``
+        : lastProposal === "book"
+          ? `\n### Resolving "yes" / "no" THIS TURN (avatar just asked about booking)\n- Guest says **yes / let's do it / book it** → \`open_booking_url({ text: "Opening the booking page now." })\`\n- Guest says **no / hold on** → \`speak_only_action({ text: "Take your time. Would you like to view another room or step back outside?" })\``
+          : lastProposal === "post_decline_room"
+            ? `\n### Resolving the guest's reply (avatar just offered book / another / other options)\n- "Book it" → \`open_booking_url\`\n- "Another room" / "show me others" → \`open_rooms_panel_action\`\n- "Other options" / "something else" → \`show_hotel_overview\`\n- Anything else → \`speak_only_action\` with a brief re-prompt`
+            : `\n### Resolving bare "yes" / "no" without a standing proposal\n- No specific proposal is pending. Use \`speak_only_action\` to ask what the guest would like to do next — don't auto-route to step_into_unit or open_booking_url.`
 
     return `\n\n## ROOM_SELECTED — action-dispatch (current stage)
 
 The guest has selected a room: ${roomHeader}
 Current view: **${viewModeLabel}**
+Last avatar proposal: **${lastProposalLabel}** (drives how to resolve bare yes / no this turn)
 
 Active amenities the guest can navigate to (without going back to the hotel overview first):
 ${activeAmenitiesList}
+${yesNoGuidance}
 
 ### Tool contract
 
