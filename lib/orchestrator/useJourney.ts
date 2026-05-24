@@ -690,16 +690,15 @@ export function useJourney(options: UseJourneyOptions) {
   const isRoomsPanelVisibleRef = options.isRoomsPanelVisibleRef
   const maybeKickRoomPlanner = useCallback(
     (intentTag: string, latestMessage: string, utteranceTurnId: number) => {
-      // Temporary diagnostic — full-migration regression where users report
-      // the rooms panel not updating after composition utterances ("2
-      // penthouses, 1 standard"). Logs which gate (if any) is blocking
-      // the planner kick so we can pinpoint the break without round-tripping
-      // through a fresh test session. Safe to remove once stable.
+      // Temporary diagnostic (use warn so it shows under default DevTools
+      // filters that hide log-level entries). Tracking the full-migration
+      // regression where the rooms panel doesn't update after composition
+      // utterances. Safe to remove once we've confirmed the chain.
       const hasPlanner = !!requestRoomPlanRef?.current
       const panelVisible = !!isRoomsPanelVisibleRef?.current
       const allowlistOk = ROOM_PLANNER_ALLOWLIST.current.has(intentTag)
       // eslint-disable-next-line no-console
-      console.log("[ROOM_PLANNER_KICK]", {
+      console.warn("[ROOM_PLANNER_KICK]", {
         intentTag,
         hasPlanner,
         panelVisible,
@@ -1983,6 +1982,18 @@ export function useJourney(options: UseJourneyOptions) {
       const isExperimentTurn =
         (currentState.stage === "AMENITY_VIEWING" && /\bbook\b/i.test(latestMessage)) ||
         (fullActionDispatchRef.current && stageOnNewArch)
+      // Beacon: warn-level so it shows even under default DevTools filters.
+      // Confirms (a) the new build is loaded and (b) the experiment gate is
+      // making the right decision for this turn. Remove once the rooms-panel
+      // regression is closed.
+      // eslint-disable-next-line no-console
+      console.warn("[TURN_GATE]", {
+        stage: currentState.stage,
+        flag: fullActionDispatchRef.current,
+        stageOnNewArch,
+        isExperimentTurn,
+        message: latestMessage.slice(0, 80),
+      })
       const deterministic = isExperimentTurn
         ? { handled: false as const, confidence: 0, reasons: ["experiment_bypass"] }
         : evaluateDeterministicExplorationTurn({

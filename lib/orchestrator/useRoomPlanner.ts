@@ -99,7 +99,7 @@ export function useRoomPlanner(): {
       const snapshot = stateRef.current
       const hotelSlug = snapshot.app.selectedHotel
       // eslint-disable-next-line no-console
-      console.log("[ROOM_PLANNER_REQUEST]", {
+      console.warn("[ROOM_PLANNER_REQUEST]", {
         trigger,
         hotelSlug,
         latestMessage: latestMessage?.slice(0, 80),
@@ -210,7 +210,7 @@ export function useRoomPlanner(): {
 
         const data = (await res.json()) as RoomPlannerResponse
         // eslint-disable-next-line no-console
-        console.log("[ROOM_PLANNER_RESPONSE]", {
+        console.warn("[ROOM_PLANNER_RESPONSE]", {
           trigger,
           plan: data.plan,
           totalPerNight: data.totalPerNight,
