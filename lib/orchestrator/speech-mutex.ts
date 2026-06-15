@@ -4,9 +4,9 @@
 // Why this exists:
 //   On a single user utterance, multiple async pathways can independently
 //   reach `repeat()` on the HeyGen avatar:
-//     • the deterministic exploration path → reducer SPEAK_INTENT
-//     • the LLM envelope dispatch → reducer SPEAK_INTENT
-//     • the LLM `no_action_speak` / `profile_turn` direct speech
+//     • the action-dispatch tool result → reducer SPEAK_INTENT (or direct)
+//     • the LLM `profile_turn` direct speech (PROFILE_COLLECTION only)
+//     • the deterministic profile fast-path direct speech (PC only)
 //     • the Room Planner result speech
 //   With no coordination, two or three of them collide: the avatar gets
 //   `interrupt(); repeat(A); interrupt(); repeat(B);` within ~1s and the
@@ -28,15 +28,12 @@
 // ---------------------------------------------------------------------------
 
 export type SpeechSource =
-  | "deterministic"          // exploration deterministic path → reducer SPEAK_INTENT
-  | "deterministic_profile"  // profile fast-path direct speech
+  | "deterministic_profile"  // PC profile fast-path direct speech
   | "reducer"                // generic reducer SPEAK_INTENT (utterance-driven)
-  | "llm_envelope"           // LLM decision_envelope → reducer SPEAK_INTENT
-  | "llm_no_action"          // LLM no_action_speak direct speech
-  | "llm_profile"            // LLM profile_turn direct speech
-  | "llm_fallback"           // LLM degraded-mode fallback
+  | "llm_envelope"           // LLM speech consumed by reducer SPEAK_INTENT (preGeneratedSpeechRef)
+  | "llm_profile"            // LLM profile_turn direct speech (PC)
   | "room_planner"           // /api/room-planner result speech
-  | "experiment"             // action-dispatch experiment (AMENITY_VIEWING `book` surface)
+  | "experiment"             // action-dispatch speak_only_action direct speech
 
 let _currentTurnId = 0
 let _claimedBy: SpeechSource | null = null

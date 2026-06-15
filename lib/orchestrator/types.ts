@@ -3,45 +3,6 @@ import type { UserIntent } from "./intents"
 import type { AvatarDerivedProfile } from "@/lib/liveavatar/useUserProfile"
 
 // ---------------------------------------------------------------------------
-// TurnDecision envelope
-//
-// Normalized view of whatever the orchestrator decided this turn, regardless
-// of which tool fired (navigate_and_speak, profile_turn, no_action_speak).
-// The client dispatches directly off this envelope's `action`.
-// ---------------------------------------------------------------------------
-
-export type TurnDecisionAction =
-  // NOTE: `intent` here is the raw intent *tag* as a string (matches the
-  // server wire format in app/api/orchestrate/route.ts → buildTurnDecision).
-  // This is NOT a full UserIntent object — callers must reconstruct the
-  // UserIntent union before handing it to processIntent / the reducer.
-  // `amenityName` is surfaced alongside for AMENITY_BY_NAME; `lightingMode`
-  // for LIGHTING_SET; `params` is retained for any future intent-specific
-  // payload we choose to ship.
-  | { type: "USER_INTENT"; intent: string; amenityName?: string; lightingMode?: "daylight" | "sunset" | "night"; params?: Record<string, unknown> }
-  | {
-      type: "PROFILE_TURN_RESULT"
-      decision: "ask_next" | "clarify" | "ready"
-      awaiting?: string
-      profileUpdates?: Record<string, unknown>
-    }
-  | { type: "NO_ACTION" }
-  | null
-
-export type TurnDecisionProposal = {
-  kind: "rooms" | "amenity" | "location" | "interior" | "exterior" | "hotel" | "other"
-  targetId?: string
-  label?: string
-}
-
-export type TurnDecision = {
-  action: TurnDecisionAction
-  speech: string
-  reasoning?: string
-  proposal?: TurnDecisionProposal
-}
-
-// ---------------------------------------------------------------------------
 // Journey State — rich internal state (superset of the 4 public JourneyStages)
 // ---------------------------------------------------------------------------
 

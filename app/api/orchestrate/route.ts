@@ -12,38 +12,23 @@ import type {
 } from "@/lib/firebase/types"
 
 // ---------------------------------------------------------------------------
-// Intent enum — mirrors UserIntent from lib/orchestrator/intents.ts
+// PROFILE_COLLECTION skip-ahead intents — the narrow subset of UserIntent the
+// LLM can emit via navigate_and_speak when the guest asks to skip ahead from
+// PC ("show me the rooms", "take me to the hotel"). Non-PC stages use the
+// action-dispatch tools instead and never reach this enum.
 // ---------------------------------------------------------------------------
 
-const INTENT_VALUES = [
+const PROFILE_COLLECTION_SKIP_INTENTS = [
   "ROOMS",
   "AMENITIES",
   "AMENITY_BY_NAME",
   "LOCATION",
-  "INTERIOR",
-  "EXTERIOR",
-  "BACK",
   "HOTEL_EXPLORE",
-  "DOWNLOAD_DATA",
+  "TRAVEL_TO_HOTEL",
   "BOOK",
   "AFFIRMATIVE",
-  "NEGATIVE",
-  "TRAVEL_TO_HOTEL",
-  "OTHER_OPTIONS",
-  "ROOM_TOGETHER",
-  "ROOM_SEPARATE",
-  "ROOM_AUTO",
-  "ROOM_PLAN_CHEAPER",
-  "ROOM_PLAN_COMPACT",
-  "RETURN_TO_LOUNGE",
-  "END_EXPERIENCE",
-  "LIGHTING_CHANGE",
-  "LIGHTING_SET",
-  "LOCATE_INTEREST_POINTS",
-  "UNKNOWN",
 ] as const
 
-const LIGHTING_MODE_VALUES = ["daylight", "sunset", "night"] as const
 
 // ---------------------------------------------------------------------------
 // Zod schemas for tool argument validation
@@ -64,19 +49,13 @@ const ProfileUpdatesSchema = z.object({
   roomAllocation: z.array(z.number().int().positive()).optional(),
 }).partial()
 
+// PROFILE_COLLECTION's only non-profile_turn tool. The LLM emits this when
+// the guest asks to skip ahead during onboarding ("show me the rooms",
+// "take me to the hotel"). Non-PC stages use action-dispatch tools instead
+// and never reach this schema.
 const NavigateAndSpeakSchema = z.object({
-  intent: z.enum(INTENT_VALUES),
+  intent: z.enum(PROFILE_COLLECTION_SKIP_INTENTS),
   amenityName: z.string().optional(),
-  lightingMode: z.enum(LIGHTING_MODE_VALUES).optional(),
-  // Free-text Places-API query used when intent is LOCATE_INTEREST_POINTS
-  // (e.g. "kitesurfing", "romantic restaurants in Bellagio"). Capped to keep
-  // pathological inputs out of the downstream Places call.
-  category: z.string().min(1).max(120).optional(),
-  speech: z.string().min(1).max(500),
-  profileUpdates: ProfileUpdatesSchema.optional(),
-})
-
-const NoActionSpeakSchema = z.object({
   speech: z.string().min(1).max(500),
   profileUpdates: ProfileUpdatesSchema.optional(),
 })
@@ -145,7 +124,7 @@ const SelectHotelPaddingSchema = z.object({
 // Full action-dispatch tool names (everything except the 3 primary tools
 // declared above). Drives the schema map, prompt block, and client parser
 // from a single source. See header comment for the deltas vs. Phase 1a.
-const PADDING_TOOL_NAMES = [
+const ACTION_TOOL_NAMES = [
   "travel_to_hotel",
   "return_to_virtual_lounge",
   "show_hotel_overview",
@@ -166,9 +145,9 @@ const PADDING_TOOL_NAMES = [
   "select_hotel",
   "download_user_data",
 ] as const
-type PaddingToolName = typeof PADDING_TOOL_NAMES[number]
+type ActionToolName = typeof ACTION_TOOL_NAMES[number]
 
-const PADDING_TOOL_SCHEMAS: Record<PaddingToolName, z.ZodTypeAny> = {
+const ACTION_TOOL_SCHEMAS: Record<ActionToolName, z.ZodTypeAny> = {
   travel_to_hotel: TextOnlyPaddingSchema,
   return_to_virtual_lounge: TextOnlyPaddingSchema,
   show_hotel_overview: TextOnlyPaddingSchema,
@@ -191,13 +170,14 @@ const PADDING_TOOL_SCHEMAS: Record<PaddingToolName, z.ZodTypeAny> = {
 }
 
 const TOOL_SCHEMAS: Record<string, z.ZodTypeAny> = {
+  // PROFILE_COLLECTION tools
   navigate_and_speak: NavigateAndSpeakSchema,
-  no_action_speak: NoActionSpeakSchema,
   profile_turn: ProfileTurnSchema,
+  // Action-dispatch tools (every non-PC turn)
   navigate_to_amenity_action: NavigateToAmenityActionSchema,
   open_rooms_panel_action: OpenRoomsPanelActionSchema,
   speak_only_action: SpeakOnlyActionSchema,
-  ...PADDING_TOOL_SCHEMAS,
+  ...ACTION_TOOL_SCHEMAS,
 }
 
 // ---------------------------------------------------------------------------
@@ -322,14 +302,6 @@ interface RequestBody {
    * client and server timing blocks for the same turn can't be correlated.
    */
   turnId?: string
-  /**
-   * Experiment opt-in. When "action-dispatch", the server swaps the
-   * navigate_and_speak / no_action_speak tools for the three experimental
-   * action tools (navigate_to_amenity_action / open_rooms_panel_action /
-   * speak_only_action) and uses a dedicated AMENITY_VIEWING prompt block.
-   * Gated client-side to AMENITY_VIEWING + /\bbook\b/ — see useJourney.ts.
-   */
-  experiment?: "action-dispatch"
 }
 
 // ---------------------------------------------------------------------------
@@ -669,15 +641,14 @@ For skip-ahead speech, acknowledge briefly and lead in. Do not ask another profi
 }
 
 // ---------------------------------------------------------------------------
-// Per-stage action-dispatch prompt blocks. Returns "" for stages outside the
-// migrated set. Each block teaches the LLM which subset of tools is legal in
-// the current stage and gives worked examples for the tricky cases. See plan
-// `vast-rolling-adleman.md` and the source handoff `action-dispatch-full-
-// migration-handoff.md` section 5 for the per-stage specs.
+// Per-stage action-dispatch prompt blocks. Returns "" for stages outside
+// ACTION_DISPATCH_STAGES (currently only PROFILE_COLLECTION and the gated-off
+// DESTINATION_SELECT). Each block teaches the LLM which subset of tools is
+// legal in the current stage and gives worked examples for the tricky cases.
 // ---------------------------------------------------------------------------
-function buildActionDispatchPromptBlock(body: RequestBody): string {
+function buildStagePromptBlock(body: RequestBody): string {
   const stage = body.journeyContext.stage
-  if (!MIGRATED_STAGES_FOR_EXPERIMENT.has(stage)) return ""
+  if (!ACTION_DISPATCH_STAGES.has(stage)) return ""
 
   const activeAmenitiesList = (body.hotelAmenitiesActive ?? [])
     .map((a) => `  - id="${a.id}", name="${a.name}"`)
@@ -1190,14 +1161,8 @@ Guest said "8 guests" and "4 are children":
 ${collectedSummary}`
   }
 
-  // Phase 3: surface the client-side regex-classifier hint when present. The
-  // LLM is free to override but should prefer the hint on clear matches. In
-  // PROFILE_COLLECTION the hint is also a strong signal that the guest may be
-  // asking to skip ahead (see the skip-ahead exception block).
-  let regexHintBlock = ""
-  if (body.regexHint && body.regexHint !== "UNKNOWN") {
-    regexHintBlock = `\n\nRegex classifier hint (use as a tiebreaker; override only if the conversation makes it clear the hint is wrong): ${body.regexHint}`
-  }
+  // (regexHintBlock removed with the legacy intent-classifier prompt — PC has
+  // its own embedded regex-hint surfacing in buildProfileCollectionPrompt.)
 
   // Hotel-overview block — grounds the LLM's answers to "tell me about this
   // hotel" / "where is it?" / "what makes this place special?". Renders for
@@ -1314,93 +1279,10 @@ This property has no bookable amenity spaces to tour. If the guest asks, acknowl
     }
   }
 
-  // AMENITY_VIEWING stage-specific guidance.
-  //
-  // The guest has just been navigated to one of the hotel's amenity spaces
-  // (pool / lobby / conference room). The journey state computes a
-  // `suggestedNext` amenity mechanically (first unvisited one). The LLM is
-  // the sole authority on what a guest's "yes" means in this stage —
-  // whether they want to stay for more details or advance to suggestedNext.
-  // The client reducer used to auto-advance on AFFIRMATIVE when
-  // suggestedNext was set; that produced a "said yes, got teleported" UX
-  // when the avatar's speech had invited "want to know more?".
-  //
-  // When `body.experiment === "action-dispatch"` we skip this block entirely
-  // — the unified `experimentBlock` (below) provides the per-stage tool
-  // contract and supersedes both intent-classification and tool-selection
-  // guidance for that turn.
-  let amenityViewingBlock = ""
-  if (body.journeyContext.stage === "AMENITY_VIEWING" && body.experiment !== "action-dispatch") {
-    const currentAmenityName =
-      body.journeyContext.currentAmenity?.name ?? body.journeyContext.suggestedAmenityName
-    const suggestedNext = body.journeyContext.suggestedNext
-
-    amenityViewingBlock = `\n\n## AMENITY_VIEWING stage guidance (current stage)
-
-The guest is touring a specific amenity space right now.${suggestedNext ? ` The next unvisited amenity the client wants to surface is: **${suggestedNext}**.` : " No further unvisited amenity is queued."}${currentAmenityName ? ` (Context: currently viewing amenity "${currentAmenityName}".)` : ""}
-
-### Intent contract for this stage (critical)
-
-Your tool choice and intent tag MUST match what your speech proposes. The reducer will NOT guess. Pick ONE of the three patterns below per turn.
-
-1. **Advance to the next amenity** — when the guest clearly wants to move on (either they named another amenity, or they said "yes" after you offered suggestedNext): emit \`navigate_and_speak\` with \`intent: "AMENITY_BY_NAME"\` and \`amenityName: "${suggestedNext ?? "<name>"}"\`. Your speech should mention that amenity by name so the guest hears what they're being taken to.
-
-2. **Stay and elaborate on the current amenity** — when the guest wants more details, asks a question about the current amenity, or says "yes" after you offered "want to know more about this?": emit \`no_action_speak\` with 1-3 sentences of actual content about the current amenity. Do NOT emit AFFIRMATIVE / AMENITY_BY_NAME here — you are not navigating, you are elaborating.
-
-3. **Back to hotel overview / other navigation** — use \`navigate_and_speak\` with the matching intent (\`BACK\`, \`HOTEL_EXPLORE\`, \`ROOMS\`, \`LOCATION\`, etc).
-
-### Self-consistency rule
-
-Before emitting, sanity-check: does the speech you're about to produce invite the same action your intent implies?
-- Speech "Shall we head to the ${suggestedNext ?? "next amenity"}?" → intent \`AMENITY_BY_NAME\` on the guest's "yes" next turn.
-- Speech "Would you like to hear more about the pool?" → on the guest's "yes" next turn, use \`no_action_speak\` with actual pool details. Do NOT suddenly switch to AMENITY_BY_NAME.
-
-When in doubt, prefer speech that proposes advancement to suggestedNext (if available) — it's the more common intent at this stage.
-
-### Hard don'ts
-
-- Do NOT emit bare \`USER_INTENT: AFFIRMATIVE\` in this stage. It's ambiguous without a binding prior proposal, and the reducer will not auto-advance on it anymore. Either commit to AMENITY_BY_NAME (advance) or no_action_speak (stay).`
-  }
-
-  // VIRTUAL_LOUNGE stage-specific guidance.
-  //
-  // The reducer's VIRTUAL_LOUNGE:exploring branch routes only TRAVEL_TO_HOTEL,
-  // NEGATIVE, AFFIRMATIVE, and a small set of hotel-content intents into state
-  // transitions — everything else is ignored. Without explicit guidance the
-  // LLM tends to mis-classify lounge-exit phrasings ("I'm ready", "let's go",
-  // "take me to the hotel") as AMENITY_BY_NAME / AFFIRMATIVE / UNKNOWN,
-  // which the reducer then drops silently. This block forces the correct
-  // tag selection at exit-time and pushes off-topic / stay-longer utterances
-  // into `no_action_speak` so the `=on` handler's speech path keeps the
-  // avatar audible.
-  let virtualLoungeBlock = ""
-  if (body.journeyContext.stage === "VIRTUAL_LOUNGE" && body.experiment !== "action-dispatch") {
-    const sub = body.journeyContext.subState ?? "exploring"
-    virtualLoungeBlock = `\n\n## VIRTUAL_LOUNGE stage guidance (current stage)
-
-The guest is currently in the virtual lounge — a pre-hotel space showcasing exclusive artwork and retail pieces. They have NOT yet entered the hotel. The lounge contains NO hotel amenities (pool, spa, restaurant, lobby, conference, gym, bar); those live inside the hotel and are inaccessible from here.
-
-Current sub-state: ${sub}
-
-### When sub-state is "asking"
-
-The avatar just asked: "would you like to explore the virtual lounge first, or go straight to the hotel?" The guest's reply drives the transition:
-
-- AFFIRMATIVE ("yes", "sure", "let's see it", "show me", "okay") — classify as AFFIRMATIVE. They'll stay in the lounge and free-roam.
-- NEGATIVE ("no", "skip it", "not now") OR any explicit desire for the hotel ("take me to the hotel", "let's go to the hotel", "I'm ready", "straight to the hotel") — classify as TRAVEL_TO_HOTEL. They'll advance into the hotel.
-
-### When sub-state is "exploring"
-
-The guest is free-roaming the lounge. Any utterance signalling readiness to move on — "I'm ready", "let's go", "take me to the hotel", "okay I'm done", "next", "continue", "that's enough", "on to the hotel", "let's continue", "shall we go?" — MUST be classified as TRAVEL_TO_HOTEL (via navigate_and_speak). Do NOT use AFFIRMATIVE, AMENITY_BY_NAME, BACK, or UNKNOWN for these — the reducer only advances on TRAVEL_TO_HOTEL / NEGATIVE / AFFIRMATIVE here, and getting the tag wrong drops the transition silently.
-
-If the guest wants to stay longer, asks about the art or retail, or says something off-topic ("what's the weather?", "tell me about this piece", "how much is that sculpture?"), use the **no_action_speak** tool with a brief engaging response. NEVER leave a turn silent — every exploring-stage turn must produce audible speech either by advancing (TRAVEL_TO_HOTEL) or speaking via no_action_speak.
-
-### Hard don'ts for this stage
-
-- Do NOT classify generic lounge-exit phrasings as AMENITY_BY_NAME. The lounge has no hotel amenities; the amenity-name enum values (pool, spa, restaurant, lobby, etc.) are hotel-only.
-- If the guest asks about a hotel amenity by name while in the lounge ("take me to the pool"), treat it as TRAVEL_TO_HOTEL — they're implying they want to leave the lounge for the hotel. Mention in speech that the hotel is next so the transition feels coherent.
-- Do NOT classify bare "let's go" / "I'm ready" as AFFIRMATIVE during exploring — there is no standing yes/no proposal in that sub-state. Use TRAVEL_TO_HOTEL.`
-  }
+  // (Legacy AMENITY_VIEWING and VIRTUAL_LOUNGE prompt blocks deleted with the
+  // navigate_and_speak / no_action_speak removal — the per-stage action
+  // tool contract in buildStagePromptBlock is now the sole source of
+  // tool-selection guidance for non-PC stages.)
 
   // Phase 4: universal transcript-aware reconstruction block.
   //
@@ -1444,87 +1326,26 @@ The transcript above is ground truth. The "Reconstructed profile" block is assem
 When you detect a correction or supplement (e.g., "we're 6 not 8", "switch to May 15–20", "actually mom is joining too"), ALSO set the \`profileUpdates\` field on whichever tool you're calling this turn with the corrected field(s). Only include fields that actually changed from the reconstructed profile; omit everything else. This is how mid-journey corrections get persisted — don't just mention the correction in speech and move on.`
   }
 
-  // Action-dispatch experiment per-stage block. When set, supersedes the
-  // legacy intent-classification + tool-selection guidance in the system
-  // prompt. The legacy amenityViewingBlock / virtualLoungeBlock are gated
-  // off above for these turns; the experiment block is the sole source of
-  // tool guidance.
-  const experimentBlock =
-    body.experiment === "action-dispatch" ? buildActionDispatchPromptBlock(body) : ""
+  // Action-dispatch per-stage block. Returns "" for PROFILE_COLLECTION
+  // (which has its own prompt) and any stage outside ACTION_DISPATCH_STAGES.
+  const stagePromptBlock = buildStagePromptBlock(body)
 
   return `You are Ava, an AI concierge for a luxury hotel metaverse experience. Given a user message and journey context, you must do TWO things in a single call: (1) classify what the user wants, and (2) generate a natural spoken response.
 
-Call exactly one of the provided tools.
-
-## Intent Classification Rules
-
-Classify the user's intent into exactly one of these categories:
-
-- **ROOMS**: User wants to see rooms, suites, or accommodation options.
-- **AMENITIES**: User wants to see the list of amenities or facilities (generic request).
-- **AMENITY_BY_NAME**: User mentions or refers to a specific amenity (pool, spa, restaurant, lobby, conference, gym, bar, lounge, dining) — including paraphrases like "swimming area" → pool, "eat" / "food" → restaurant, "work out" → gym. You MUST also return the canonical amenity name (one of: pool, spa, restaurant, lobby, conference, gym, bar, lounge, dining) in the "amenityName" field.
-- **LOCATION**: Reserved for rare cases where the guest wants a generic look at the area AND has no stored interests AND you've already asked them once which category they'd like. In normal flow you should NOT pick LOCATION — prefer LOCATE_INTEREST_POINTS (when you can derive a category) or no_action_speak (when you need to ask). See the "Surrounding-area routing" section below.
-- **LOCATE_INTEREST_POINTS**: User wants to find a specific TYPE of place near the hotel — restaurants, kitesurfing spots, museums, hiking trails, golf courses, beaches, etc. Also use this when the guest asks generically about the area ("show me what's around", "the surroundings") AND \`Guest context > Interests\` lists one or more interests — derive the \`category\` from the strongest interest (e.g. interest "hiking" → category "hiking trails"; interest "art" → category "art galleries"; interest "food" → category "restaurants"). You MUST set the \`category\` field to a short Places-API-friendly query (e.g. "kitesurfing locations", "romantic restaurants in Bellagio", "art galleries", "hiking trails"). Normalize colloquial phrasing: "where can we eat fancy?" → "michelin restaurants", "any spots to kite?" → "kitesurfing locations", "what about old churches?" → "historic churches". ONLY valid in HOTEL_EXPLORATION, ROOM_SELECTED, and AMENITY_VIEWING.
-- **INTERIOR**: User wants to see the interior / inside view of a room or space.
-- **EXTERIOR**: User wants to see the exterior / outside view of a room or space.
-- **BACK**: User wants to go back, return to a previous view, or cancel current action.
-- **HOTEL_EXPLORE**: User wants a general overview / tour of the hotel property (bird's eye view, zoom out, explore the hotel).
-- **DOWNLOAD_DATA**: User explicitly requests to download their user data.
-- **BOOK**: User wants to book, reserve, or proceed with a reservation **for their stay** — i.e., a room. Examples: "book it", "book the room", "I'll take this one", "let's reserve the suite", "sign me up", "make a reservation". **Do NOT use BOOK when the verb's object is an amenity** ("book a conference room", "book a restaurant", "reserve the spa", "book a table") — those are AMENITY_BY_NAME with the named amenity.
-- **AFFIRMATIVE**: User agrees, says yes, confirms, or accepts a proposal.
-- **NEGATIVE**: User declines, says no, refuses, or rejects a proposal.
-- **TRAVEL_TO_HOTEL**: User wants to proceed to the hotel building itself (NOT a specific room or amenity within it). Typically used when leaving the lounge. Examples: "I'm ready", "let's go", "take me to the hotel", "let's continue". If the user says "take me to the [specific amenity]" (e.g., "take me to the pool"), that is AMENITY_BY_NAME, not TRAVEL_TO_HOTEL. **Hotel-intro speech rule**: whenever your \`navigate_and_speak\` emits TRAVEL_TO_HOTEL, the guest is about to enter the hotel for the first time this session — your speech MUST briefly cover (a) what's available to explore (rooms, amenities, grounds), (b) that they can switch the lighting to daylight, sunset, or night any time, including by using the toggle on your right, and (c) that they can return to the virtual lounge whenever they want. One warm paragraph — don't bullet-list.
-- **OTHER_OPTIONS**: User wants to see other options, alternatives, or something different.
-- **ROOM_TOGETHER**: User wants guests to share rooms or stay together.
-- **ROOM_SEPARATE**: User wants separate / individual rooms for guests.
-- **ROOM_AUTO**: User wants the system to decide room distribution (e.g., "you decide", "whatever works").
-- **ROOM_PLAN_CHEAPER**: User wants a cheaper / more affordable room plan.
-- **ROOM_PLAN_COMPACT**: User wants fewer rooms / a more compact room arrangement.
-- **RETURN_TO_LOUNGE**: User wants to go back to the virtual lounge / lobby / gallery.
-- **END_EXPERIENCE**: User wants to end the session, say goodbye, or leave.
-- **LIGHTING_CHANGE**: User asks to change the lighting, ambience, mood, atmosphere, or time-of-day feel **without naming a specific mode**. Examples: "change the lighting", "different mood in here", "can we adjust the atmosphere", "make it feel different". ONLY valid in HOTEL_EXPLORATION, ROOM_SELECTED, and AMENITY_VIEWING — never in PROFILE_COLLECTION or VIRTUAL_LOUNGE (fall back to no_action_speak there).
-- **LIGHTING_SET**: User names (or confirms) a specific lighting mode. You MUST also set \`lightingMode\` to one of: "daylight", "sunset", "night". Map evocative phrases: "morning light" / "brighter" / "daytime" → daylight; "golden hour" / "dusk" / "twilight" / "romantic" / "moody" → sunset; "after dark" / "starlight" / "evening" / "darker" / "nighttime" → night. ONLY valid in HOTEL_EXPLORATION / ROOM_SELECTED / AMENITY_VIEWING.
-- **UNKNOWN**: The message does not match any of the above intents.
-
-### Intent Disambiguation Rules
-
-1. **Do NOT resolve AFFIRMATIVE / NEGATIVE contextually.** If the user says "yes", "sure", "no thanks", etc. without mentioning a specific feature, return AFFIRMATIVE or NEGATIVE. The journey state machine handles context resolution (lastProposal, suggestedNext) — the classifier must not duplicate that logic.
-2. Only return AMENITY_BY_NAME when the user's message itself references a specific amenity. A bare "yes" with a suggestedAmenityName in context is still AFFIRMATIVE.
-3. Use UNKNOWN only when the message genuinely does not map to any intent.
-4. **AMENITY_BY_NAME takes priority over TRAVEL_TO_HOTEL.** If the message mentions a specific amenity or facility ("take me to the pool", "go to the lobby", "let's visit the conference room"), classify as AMENITY_BY_NAME, not TRAVEL_TO_HOTEL. TRAVEL_TO_HOTEL only applies when the destination is "the hotel" generically.
-5. **AMENITY_BY_NAME takes priority over BOOK when "book"/"reserve" has an amenity object.** "Book a conference room" → AMENITY_BY_NAME (conference), not BOOK. "Reserve the spa" → AMENITY_BY_NAME (spa). "Book a table at the restaurant" → AMENITY_BY_NAME (restaurant). BOOK is only correct when the object of the verb is the stay itself — "book it", "book the room", "book the suite", "book this one". When in doubt, prefer AMENITY_BY_NAME — the user is asking for that amenity, the system will surface it, and from there they can book if they want.
-
-## Surrounding-area routing (LOCATION → LOCATE_INTEREST_POINTS)
-
-When the guest asks about the surrounding area, neighbourhood, or what's nearby ("show me the area", "what's around here", "what's outside the hotel", "tell me about the surroundings") — DO NOT emit \`LOCATION\`. Route via one of these two paths:
-
-1. **Interests are known** (\`Guest context > Interests\` lists one or more entries): emit \`navigate_and_speak\` with \`intent: "LOCATE_INTEREST_POINTS"\` and \`category\` derived from the strongest matching interest. Map interests to Places-API-friendly categories: "hiking"/"outdoors" → "hiking trails"; "food"/"dining"/"culinary" → "restaurants"; "art"/"culture" → "art galleries"; "history" → "historic landmarks"; "shopping" → "boutique shops"; "wellness"/"spa" → "spas"; "wine" → "wineries"; "nightlife" → "bars and clubs"; "watersports" → "watersport rentals". When in doubt, pick the closest natural Places query. Speech should briefly acknowledge their interest and announce the lookup, e.g. "You mentioned hiking — let me put the best trails on the map." (1 short sentence; the system will follow up with a count once results land.)
-
-2. **No interests on file** (\`Guest context > Interests\` is absent or empty): emit \`no_action_speak\` with speech that asks what they'd like to see nearby. Offer 3-4 example categories so the guest knows the surface is clickable, e.g. "I can drop restaurants, hiking trails, museums, or anything else nearby on the map — what would you like to see?" Do NOT open the map yet. On their reply naming a category, the next turn will route to \`LOCATE_INTEREST_POINTS\` normally.
-
-The bare \`LOCATION\` intent (which only opens the panel with no markers) is a last-resort fallback — only use it if the guest has explicitly refused the question above twice OR they say something like "just show me the map, no specific category".
+Call exactly one of the provided tools. The per-stage tool contract below tells you which tools are legal and how to pick.
 
 ## Speech Generation Rules
 
-Every tool call MUST include a "speech" field — a natural spoken response for the avatar to say aloud.
+Every tool call MUST include a \`text\` (or \`speech\` for the PC tools) field — a natural spoken response for the avatar to say aloud.
 
 1. Generate speech that is personal and contextual — not a generic template.
 2. Preserve all room names, monetary amounts, and quantities VERBATIM. For example, if referring to "$398" or "Standard Mountain View", those exact strings must appear in your output.
-3. Keep to 1-3 sentences max. This is spoken aloud by an avatar, not typed.
+3. Keep to 1-2 sentences. This is spoken aloud by an avatar, not typed.
 4. Use the guest's name sparingly — not every response. Vary whether you include it.
 5. Reference the guest's last message or preferences when it feels natural, but don't force it.
 6. Do NOT invent hotel facts, room names, prices, or amenities not given in the context.
 7. Warm luxury concierge tone — not robotic, not overly enthusiastic. Think: a thoughtful host who remembers your preferences.
-
-## Tool Selection
-
-- Use **navigate_and_speak** for navigation intents (ROOMS, BACK, AMENITY_BY_NAME, AFFIRMATIVE, NEGATIVE, TRAVEL_TO_HOTEL, ROOM_TOGETHER, ROOM_SEPARATE, ROOM_PLAN_CHEAPER, ROOM_PLAN_COMPACT, etc.).
-- Use **no_action_speak** when the message doesn't map to any navigation intent — just generate a helpful spoken response.
-- **Room plan changes are handled by a dedicated client-side planner system**, not by this route. Do NOT try to compose a room plan here. When the guest asks for cheaper rooms, more compact rooms, specific room types, or a different distribution, just classify the utterance with \`navigate_and_speak\` (using the appropriate ROOM_* intent when one fits, otherwise UNKNOWN) and generate brief acknowledging speech. The client's room planner will read the transcript and update the rooms panel.
-
-## Profile Corrections (all stages)
-
-If during any turn the user corrects or supplements profile data (examples: "we're 6 not 8", "actually mom is joining too", "switch to May 15–20", "call me Lisa not Cesar"), set the optional \`profileUpdates\` field on whichever tool you're calling with the corrected field(s). Do NOT use \`profile_turn\` for mid-exploration corrections — only use \`profileUpdates\` on the tool that fits the user's primary intent (usually \`navigate_and_speak\` or \`no_action_speak\`). Only include fields that changed — omit everything else. Profile writes are idempotent and safe to emit alongside any action.${regexHintBlock}${roomBlock}${selectedRoomBlock}${hotelOverviewBlock}${hotelAmenitiesBlock}${selectedAmenityBlock}${guestBlock}${transcriptReconstructionBlock}${virtualLoungeBlock}${amenityViewingBlock}${experimentBlock}${profileCollectionBlock}`
+${roomBlock}${selectedRoomBlock}${hotelOverviewBlock}${hotelAmenitiesBlock}${selectedAmenityBlock}${guestBlock}${transcriptReconstructionBlock}${stagePromptBlock}${profileCollectionBlock}`
 }
 
 // ---------------------------------------------------------------------------
@@ -1859,17 +1680,6 @@ const PROFILE_TURN_TOOL: OpenAITool = {
   },
 }
 
-const PROFILE_COLLECTION_SKIP_INTENTS = [
-  "ROOMS",
-  "AMENITIES",
-  "AMENITY_BY_NAME",
-  "LOCATION",
-  "HOTEL_EXPLORE",
-  "TRAVEL_TO_HOTEL",
-  "BOOK",
-  "AFFIRMATIVE",
-] as const
-
 function buildProfileCollectionTools(): OpenAITool[] {
   return [
     PROFILE_TURN_TOOL,
@@ -1901,66 +1711,6 @@ function buildProfileCollectionTools(): OpenAITool[] {
   ]
 }
 
-function buildTools() {
-  const tools: OpenAITool[] = [
-    {
-      type: "function" as const,
-      function: {
-        name: "navigate_and_speak",
-        description: "Classify a navigation intent and generate speech",
-        parameters: {
-          type: "object",
-          properties: {
-            intent: {
-              type: "string",
-              enum: INTENT_VALUES,
-              description: "The classified navigation intent",
-            },
-            amenityName: {
-              type: "string",
-              description: "The canonical amenity name, required when intent is AMENITY_BY_NAME (one of: pool, spa, restaurant, lobby, conference, gym, bar, lounge, dining)",
-            },
-            lightingMode: {
-              type: "string",
-              enum: ["daylight", "sunset", "night"],
-              description: "Required when intent is LIGHTING_SET. Map evocative phrases: 'morning light', 'brighter' → daylight; 'golden hour', 'dusk', 'romantic/moody' → sunset; 'after dark', 'starlight' → night.",
-            },
-            category: {
-              type: "string",
-              description: "Required when intent is LOCATE_INTEREST_POINTS. A short Places-API-friendly query for what the guest wants nearby — e.g. 'kitesurfing locations', 'romantic restaurants', 'art galleries', 'hiking trails'. Normalize colloquial phrasing into something the Places API can search.",
-            },
-            speech: {
-              type: "string",
-              description: "Natural spoken response for the avatar (1-3 sentences, preserve all room names, amounts, and quantities verbatim)",
-            },
-          },
-          required: ["intent", "speech"],
-        },
-      },
-    },
-  ]
-
-  tools.push({
-    type: "function" as const,
-    function: {
-      name: "no_action_speak",
-      description: "No navigation action — just generate a helpful spoken response",
-      parameters: {
-        type: "object",
-        properties: {
-          speech: {
-            type: "string",
-            description: "Natural spoken response for the avatar (1-3 sentences)",
-          },
-        },
-        required: ["speech"],
-      },
-    },
-  })
-
-  return tools
-}
-
 // ---------------------------------------------------------------------------
 // Experiment: action-dispatch tool list. Only exposed when the request is
 // gated for AMENITY_VIEWING + experiment === "action-dispatch". The prompt's
@@ -1978,7 +1728,7 @@ function buildTools() {
 // Per-padding-tool descriptions surfaced both in the tool builder (for the
 // LLM to see) and in the prompt block (for the LLM to know they exist). Kept
 // in one place so the two stay in sync.
-const PADDING_TOOL_DESCRIPTIONS: Record<PaddingToolName, string> = {
+const ACTION_TOOL_DESCRIPTIONS: Record<ActionToolName, string> = {
   travel_to_hotel: "Transition the guest from the virtual lounge into the hotel. Only legal from VIRTUAL_LOUNGE.",
   return_to_virtual_lounge: "Take the guest from the hotel back out to the virtual lounge. The system will then ask them to confirm.",
   show_hotel_overview: "Reset the camera to the hotel-wide overview. Used when the guest wants to step back from a detail.",
@@ -2000,7 +1750,7 @@ const PADDING_TOOL_DESCRIPTIONS: Record<PaddingToolName, string> = {
   download_user_data: "Trigger a user-data download. Admin/dev command, rarely invoked by guests.",
 }
 
-const PADDING_PARAMETER_SCHEMAS: Record<PaddingToolName, Record<string, unknown>> = {
+const ACTION_PARAMETER_SCHEMAS: Record<ActionToolName, Record<string, unknown>> = {
   travel_to_hotel: { text: { type: "string", description: "Ava's spoken response (1-2 sentences)." } },
   return_to_virtual_lounge: { text: { type: "string", description: "Ava's spoken response (1-2 sentences)." } },
   show_hotel_overview: { text: { type: "string", description: "Ava's spoken response (1-2 sentences)." } },
@@ -2031,7 +1781,7 @@ const PADDING_PARAMETER_SCHEMAS: Record<PaddingToolName, Record<string, unknown>
   download_user_data: { text: { type: "string", description: "Ava's spoken response (1-2 sentences)." } },
 }
 
-const PADDING_REQUIRED_FIELDS: Record<PaddingToolName, string[]> = {
+const ACTION_REQUIRED_FIELDS: Record<ActionToolName, string[]> = {
   travel_to_hotel: ["text"],
   return_to_virtual_lounge: ["text"],
   show_hotel_overview: ["text"],
@@ -2063,14 +1813,18 @@ const PADDING_REQUIRED_FIELDS: Record<PaddingToolName, string[]> = {
 // utterance — not just `\bbook\b` ones — lands here). The always-on Phase 1a
 // `book` regex path still hits this branch with the same legal set.
 // ---------------------------------------------------------------------------
-type ExperimentToolName =
+// Union of every tool the LLM can be offered per-stage. ActionToolName covers
+// the 19 single-purpose tools listed in ACTION_TOOL_NAMES; StageToolName adds
+// the 3 core tools (navigate_to_amenity_action / open_rooms_panel_action /
+// speak_only_action) that carry richer arg shapes and live in CORE_ACTION_TOOLS.
+type StageToolName =
   | "navigate_to_amenity_action"
   | "open_rooms_panel_action"
   | "speak_only_action"
-  | PaddingToolName
+  | ActionToolName
 
-const STAGE_LEGAL_TOOLS: Record<string, ReadonlySet<ExperimentToolName>> = {
-  HOTEL_EXPLORATION: new Set<ExperimentToolName>([
+const STAGE_LEGAL_TOOLS: Record<string, ReadonlySet<StageToolName>> = {
+  HOTEL_EXPLORATION: new Set<StageToolName>([
     "navigate_to_amenity_action",
     "open_rooms_panel_action",
     "speak_only_action",
@@ -2083,7 +1837,7 @@ const STAGE_LEGAL_TOOLS: Record<string, ReadonlySet<ExperimentToolName>> = {
     "confirm_end_experience",
     "download_user_data",
   ]),
-  AMENITY_VIEWING: new Set<ExperimentToolName>([
+  AMENITY_VIEWING: new Set<StageToolName>([
     "navigate_to_amenity_action",
     "open_rooms_panel_action",
     "speak_only_action",
@@ -2096,7 +1850,7 @@ const STAGE_LEGAL_TOOLS: Record<string, ReadonlySet<ExperimentToolName>> = {
     "confirm_end_experience",
     "download_user_data",
   ]),
-  ROOM_SELECTED: new Set<ExperimentToolName>([
+  ROOM_SELECTED: new Set<StageToolName>([
     "speak_only_action",
     "step_into_unit",
     "step_out_of_unit",
@@ -2112,7 +1866,7 @@ const STAGE_LEGAL_TOOLS: Record<string, ReadonlySet<ExperimentToolName>> = {
     "confirm_end_experience",
     "download_user_data",
   ]),
-  VIRTUAL_LOUNGE: new Set<ExperimentToolName>([
+  VIRTUAL_LOUNGE: new Set<StageToolName>([
     "travel_to_hotel",
     "explore_lounge_action",
     "speak_only_action",
@@ -2123,29 +1877,27 @@ const STAGE_LEGAL_TOOLS: Record<string, ReadonlySet<ExperimentToolName>> = {
     "confirm_end_experience",
     "download_user_data",
   ]),
-  DESTINATION_SELECT: new Set<ExperimentToolName>([
-    "select_hotel",
-    "speak_only_action",
-    "confirm_end_experience",
-    "download_user_data",
-  ]),
-  END_CONFIRMING: new Set<ExperimentToolName>([
+  // DESTINATION_SELECT is intentionally NOT in this set — the home page
+  // gates the entire orchestrate flow off for that stage via an early
+  // return in useJourney (the destination picker is tap-driven, voice is
+  // not part of the surface).
+  END_CONFIRMING: new Set<StageToolName>([
     "end_experience_affirm",
     "end_experience_cancel",
     "speak_only_action",
   ]),
-  LOUNGE_CONFIRMING: new Set<ExperimentToolName>([
+  LOUNGE_CONFIRMING: new Set<StageToolName>([
     "lounge_return_affirm",
     "lounge_return_cancel",
     "speak_only_action",
   ]),
 }
 
-const MIGRATED_STAGES_FOR_EXPERIMENT: ReadonlySet<string> = new Set(
+const ACTION_DISPATCH_STAGES: ReadonlySet<string> = new Set(
   Object.keys(STAGE_LEGAL_TOOLS),
 )
 
-const CORE_EXPERIMENT_TOOLS: Record<
+const CORE_ACTION_TOOLS: Record<
   "navigate_to_amenity_action" | "open_rooms_panel_action" | "speak_only_action",
   OpenAITool
 > = {
@@ -2213,28 +1965,28 @@ const CORE_EXPERIMENT_TOOLS: Record<
   },
 }
 
-function buildActionDispatchToolsForStage(stage: string): OpenAITool[] {
+function buildToolsForStage(stage: string): OpenAITool[] {
   const allowed = STAGE_LEGAL_TOOLS[stage]
   if (!allowed) return []
 
   const tools: OpenAITool[] = []
-  // Core tools first (preserves Phase 1a's tool ordering for AMENITY_VIEWING).
-  for (const name of ["navigate_to_amenity_action", "open_rooms_panel_action", "speak_only_action"] as const) {
-    if (allowed.has(name)) tools.push(CORE_EXPERIMENT_TOOLS[name])
+  // Core action tools first (stable tool ordering across stages).
+  const coreNames = ["navigate_to_amenity_action", "open_rooms_panel_action", "speak_only_action"] as const
+  for (const name of coreNames) {
+    if (allowed.has(name)) tools.push(CORE_ACTION_TOOLS[name])
   }
-  // Remaining tools — defined in PADDING_TOOL_NAMES order so the schema layout
-  // is stable across stages.
-  for (const name of PADDING_TOOL_NAMES) {
+  // Remaining action tools, in ACTION_TOOL_NAMES order.
+  for (const name of ACTION_TOOL_NAMES) {
     if (allowed.has(name)) {
       tools.push({
         type: "function" as const,
         function: {
           name,
-          description: PADDING_TOOL_DESCRIPTIONS[name],
+          description: ACTION_TOOL_DESCRIPTIONS[name],
           parameters: {
             type: "object",
-            properties: PADDING_PARAMETER_SCHEMAS[name],
-            required: PADDING_REQUIRED_FIELDS[name],
+            properties: ACTION_PARAMETER_SCHEMAS[name],
+            required: ACTION_REQUIRED_FIELDS[name],
           },
         },
       })
@@ -2244,70 +1996,26 @@ function buildActionDispatchToolsForStage(stage: string): OpenAITool[] {
 }
 
 // ---------------------------------------------------------------------------
-// TurnDecision builder
-//
-// Normalizes whichever tool fired into the authoritative wire shape the
-// client dispatches against. Kept server-side so the wire format is owned
-// by the route and clients don't have to re-derive it.
+// TurnDecision builder — normalizes the tool result into a diagnostic
+// envelope. The client doesn't dispatch on this anymore (it switches on
+// `tool` directly); the envelope is retained for [ORCHESTRATE] log fidelity
+// and PROFILE_COLLECTION's profile_turn flow.
 // ---------------------------------------------------------------------------
 
-type TurnDecisionProposalKind =
-  | "rooms"
-  | "amenity"
-  | "location"
-  | "interior"
-  | "exterior"
-  | "hotel"
-  | "other"
-
 type TurnDecisionActionWire =
-  | { type: "USER_INTENT"; intent: string; amenityName?: string; lightingMode?: "daylight" | "sunset" | "night"; params?: Record<string, unknown> }
   | {
       type: "PROFILE_TURN_RESULT"
       decision: "ask_next" | "clarify" | "ready"
-      awaiting?: string
       profileUpdates?: Record<string, unknown>
     }
   | { type: "NO_ACTION" }
-  | null
 
 type TurnDecisionWire = {
   action: TurnDecisionActionWire
   speech: string
   reasoning?: string
-  proposal?: { kind: TurnDecisionProposalKind; targetId?: string; label?: string }
-  /**
-   * Phase 9: mid-conversation profile corrections can ride on any tool's
-   * response. Top-level field so callers apply it uniformly regardless of
-   * which action type fired. Identical shape to profile_turn.profileUpdates.
-   */
+  /** Mid-conversation profile corrections can ride on any tool's response. */
   profileUpdates?: Record<string, unknown>
-}
-
-function proposalForIntent(
-  intent: string,
-  amenityName?: string,
-): { kind: TurnDecisionProposalKind; targetId?: string; label?: string } | undefined {
-  switch (intent) {
-    case "ROOMS":
-      return { kind: "rooms" }
-    case "AMENITIES":
-      return { kind: "amenity" } // generic amenity listing
-    case "AMENITY_BY_NAME":
-      return amenityName
-        ? { kind: "amenity", targetId: amenityName, label: amenityName }
-        : { kind: "amenity" }
-    case "LOCATION":
-      return { kind: "location" }
-    case "INTERIOR":
-      return { kind: "interior" }
-    case "EXTERIOR":
-      return { kind: "exterior" }
-    case "HOTEL_EXPLORE":
-      return { kind: "hotel" }
-    default:
-      return undefined
-  }
 }
 
 function buildTurnDecision(args: {
@@ -2322,8 +2030,6 @@ function buildTurnDecision(args: {
     ? `${reasoning ? `${reasoning} | ` : ""}validator_override=${validatorOverride}`
     : reasoning
 
-  // Phase 9: any tool can carry mid-conversation profileUpdates. Extract once
-  // and surface as a top-level envelope field when non-empty.
   const envelopeProfileUpdates =
     result.profileUpdates &&
     typeof result.profileUpdates === "object" &&
@@ -2333,43 +2039,6 @@ function buildTurnDecision(args: {
   const profileUpdatesSuffix = envelopeProfileUpdates
     ? { profileUpdates: envelopeProfileUpdates }
     : {}
-
-  if (functionName === "navigate_and_speak") {
-    const intent = typeof result.intent === "string" ? result.intent : "UNKNOWN"
-    const amenityName =
-      typeof result.amenityName === "string" ? result.amenityName : undefined
-    const lightingMode =
-      result.lightingMode === "daylight" || result.lightingMode === "sunset" || result.lightingMode === "night"
-        ? (result.lightingMode as "daylight" | "sunset" | "night")
-        : undefined
-    const category =
-      typeof result.category === "string" && result.category.trim().length > 0
-        ? result.category.trim()
-        : undefined
-    const params: Record<string, unknown> | undefined =
-      amenityName || lightingMode || category
-        ? {
-            ...(amenityName ? { amenityName } : {}),
-            ...(lightingMode ? { lightingMode } : {}),
-            ...(category ? { category } : {}),
-          }
-        : undefined
-    const proposal = proposalForIntent(intent, amenityName)
-    const action: TurnDecisionActionWire = {
-      type: "USER_INTENT",
-      intent,
-      ...(amenityName ? { amenityName } : {}),
-      ...(lightingMode ? { lightingMode } : {}),
-      ...(params ? { params } : {}),
-    }
-    return {
-      action,
-      speech,
-      ...(reasoningAnnotated ? { reasoning: reasoningAnnotated } : {}),
-      ...(proposal ? { proposal } : {}),
-      ...profileUpdatesSuffix,
-    }
-  }
 
   if (functionName === "profile_turn") {
     const decisionVal = result.decision
@@ -2389,8 +2058,8 @@ function buildTurnDecision(args: {
     }
   }
 
-  // no_action_speak, or anything else (validator override / fallback) —
-  // represent as NO_ACTION with reasoning annotated so the client can see why.
+  // navigate_and_speak (PC skip-ahead) + every action-dispatch tool —
+  // represented as NO_ACTION since the client dispatches off `tool` not envelope.
   return {
     action: { type: "NO_ACTION" },
     speech,
@@ -2448,29 +2117,25 @@ export async function POST(request: Request) {
       body,
     )
     const systemPrompt = buildSystemPrompt(body, reconstructedProfile)
-    // PROFILE_COLLECTION's primary tool is profile_turn (extraction + ask_next /
-    // clarify / ready). navigate_and_speak is also exposed so the model can
-    // honor explicit skip-ahead requests ("show me the rooms / amenities /
-    // hotel / surrounding area"); the prompt's "Skip-ahead exception" block
-    // governs when to pick which. Room-plan changes are handled by the
-    // dedicated client-side planner (/api/room-planner), not this route.
-    // Experiment: when `experiment === "action-dispatch"` AND stage is in the
-    // migrated set (HOTEL_EXPLORATION / AMENITY_VIEWING / ROOM_SELECTED /
-    // VIRTUAL_LOUNGE / DESTINATION_SELECT / END_CONFIRMING / LOUNGE_CONFIRMING),
-    // swap in the per-stage action tool subset and tell the model it MUST pick
-    // one ("required" tool_choice). Phase 1a's always-on `\bbook\b` surface in
-    // AMENITY_VIEWING is preserved (client sends `experiment: "action-dispatch"`
-    // for that case unchanged); the new `?fullActionDispatch=1` URL flag
-    // broadens the client-side gate to every utterance in every migrated stage.
-    const isActionDispatchExperiment =
-      body.experiment === "action-dispatch" &&
-      MIGRATED_STAGES_FOR_EXPERIMENT.has(body.journeyContext.stage)
-    const tools = isActionDispatchExperiment
-      ? buildActionDispatchToolsForStage(body.journeyContext.stage)
+    // Tool selection:
+    //   • PROFILE_COLLECTION → profile_turn (extraction) + navigate_and_speak
+    //     (the LLM can pick the latter for explicit skip-ahead requests like
+    //     "show me the rooms" / "take me to the hotel"). Tool choice is
+    //     "auto" — the prompt's skip-ahead exception block governs which.
+    //   • Every other stage in ACTION_DISPATCH_STAGES → per-stage action tool
+    //     subset, tool_choice "required" so the model must pick one.
+    //   • Any stage NOT in either set falls back to an empty tool list and
+    //     this route 503s. Today that's only DESTINATION_SELECT, which is
+    //     gated off client-side via an early return in useJourney, so we
+    //     never actually arrive here.
+    const useActionDispatch =
+      !isProfileCollection && ACTION_DISPATCH_STAGES.has(body.journeyContext.stage)
+    const tools = useActionDispatch
+      ? buildToolsForStage(body.journeyContext.stage)
       : isProfileCollection
         ? buildProfileCollectionTools()
-        : buildTools()
-    const toolChoice = isActionDispatchExperiment
+        : []
+    const toolChoice = useActionDispatch
       ? ("required" as const)
       : ("auto" as const)
 
@@ -2588,10 +2253,12 @@ export async function POST(request: Request) {
           }
         }
 
+        // PC's only legal tools are profile_turn (collection) and
+        // navigate_and_speak (skip-ahead). Anything else here would be a
+        // server bug — buildProfileCollectionTools doesn't expose other tools.
         if (functionName === "navigate_and_speak") {
           responseBody.intent = result.intent
           if (result.amenityName) responseBody.amenityName = result.amenityName
-          if (result.lightingMode) responseBody.lightingMode = result.lightingMode
           responseBody.speech = cleanSpeech(result.speech)
           passThroughProfileUpdates()
         } else if (functionName === "profile_turn") {
@@ -2600,8 +2267,11 @@ export async function POST(request: Request) {
           responseBody.decision = result.decision
           responseBody.speech = cleanSpeech(result.speech)
         } else {
-          responseBody.speech = cleanSpeech(result.speech)
-          passThroughProfileUpdates()
+          console.warn("[ORCHESTRATE] unexpected tool from PC LLM", { functionName })
+          return new Response(
+            JSON.stringify({ error: `Unexpected tool: ${functionName}` }),
+            { status: 503, headers: { "Content-Type": "application/json" } },
+          )
         }
 
         const finalSpeechText =
@@ -2728,87 +2398,43 @@ export async function POST(request: Request) {
         )
       }
 
-      // Build response
-      let result = validated.data as Record<string, unknown>
-      let validatorOverride: ProfileValidatorOverride | null = null
-
-      // Server-side gate for profile_turn — see validateProfileTurn. Runs
-      // BEFORE strip / response construction so any override flows through
-      // the normal speech pipeline.
-      if (functionName === "profile_turn") {
-        const check = validateProfileTurn(result as unknown as ProfileTurnT, body)
-        result = check.result as unknown as Record<string, unknown>
-        validatorOverride = check.overridden
-      }
-
+      // Non-PC LLM is action-dispatch only. The only tools that can land
+      // here are the 3 core action tools and the 19 named action tools in
+      // ACTION_TOOL_NAMES. (profile_turn / navigate_and_speak are PC-only
+      // and served by the Anthropic block above.)
+      const result = validated.data as Record<string, unknown>
       const responseBody: Record<string, unknown> = { tool: functionName }
+      const validatorOverride: ProfileValidatorOverride | null = null
+      const shouldStripPreamble = false
 
-      // Belt-and-suspenders: gpt-4o-mini ignores the no-preamble rule in the
-      // system prompt often enough that a deterministic strip is needed.
-      // Applied during PROFILE_COLLECTION, and skipped only for warm handoffs
-      // (profile_turn with decision=ready, or legacy TRAVEL_TO_HOTEL). After
-      // the validator, decision=ready only survives when it's actually valid.
-      const isReadyHandoff =
-        (functionName === "profile_turn" && result.decision === "ready") ||
-        (functionName === "navigate_and_speak" && result.intent === "TRAVEL_TO_HOTEL")
-      const shouldStripPreamble = isProfileCollection && !isReadyHandoff
-      const cleanSpeech = (s: unknown) =>
-        shouldStripPreamble && typeof s === "string" ? stripPreamble(s) : s
-
-      // Phase 9: mid-conversation profile corrections surface on the 3
-      // non-profile tools via an optional `profileUpdates` field. Pass it
-      // through to the client whenever present so the correction is applied
-      // with the same idempotent write path as profile_turn.
-      const passThroughProfileUpdates = (): void => {
-        if (
-          result.profileUpdates &&
-          typeof result.profileUpdates === "object" &&
-          Object.keys(result.profileUpdates).length > 0
-        ) {
-          responseBody.profileUpdates = result.profileUpdates
-        }
-      }
-
-      if (functionName === "navigate_and_speak") {
-        responseBody.intent = result.intent
-        if (result.amenityName) responseBody.amenityName = result.amenityName
-        if (result.lightingMode) responseBody.lightingMode = result.lightingMode
-        if (result.category) responseBody.category = result.category
-        responseBody.speech = cleanSpeech(result.speech)
-        passThroughProfileUpdates()
-      } else if (functionName === "profile_turn") {
-        responseBody.reasoning = result.reasoning
-        responseBody.profileUpdates = result.profileUpdates ?? {}
-        responseBody.decision = result.decision
-        responseBody.speech = cleanSpeech(result.speech)
-      } else if (
+      if (
         functionName === "navigate_to_amenity_action" ||
         functionName === "open_rooms_panel_action" ||
         functionName === "speak_only_action"
       ) {
-        // Primary action-dispatch tools. The `text` field carries Ava's
-        // speech (renamed from `speech` to make the action shape distinct
-        // from legacy tools). Surface as `speech` on the wire so client-side
-        // latency / log code doesn't need a special case. The client
-        // branches directly on `responseBody.tool` for these.
+        // Core action tools. `text` carries Ava's speech; surfaced as
+        // `speech` on the wire so client-side latency / log code can stay
+        // tool-agnostic. Client switches directly on `responseBody.tool`.
         responseBody.speech = result.text
         if (functionName === "navigate_to_amenity_action") {
           responseBody.amenityId = result.amenityId
         }
-      } else if ((PADDING_TOOL_NAMES as readonly string[]).includes(functionName)) {
-        // Full action-dispatch surface (former padding tools + new
-        // affirm/cancel/explore actions). All carry `text`; some carry
-        // additional args (mode for change_lighting, category for
-        // locate_interest_points, hotelSlug for select_hotel). Marshal
-        // them onto the wire uniformly; client switches on `responseBody.tool`.
+      } else if ((ACTION_TOOL_NAMES as readonly string[]).includes(functionName)) {
+        // Named action tools. All carry `text`; some carry additional args
+        // (mode / category / hotelSlug). Marshal them uniformly; client
+        // switches on `responseBody.tool`.
         responseBody.speech = result.text
         if (typeof result.mode === "string") responseBody.lightingMode = result.mode
         if (typeof result.category === "string") responseBody.category = result.category
         if (typeof result.hotelSlug === "string") responseBody.hotelSlug = result.hotelSlug
       } else {
-        // no_action_speak
-        responseBody.speech = cleanSpeech(result.speech)
-        passThroughProfileUpdates()
+        // Schema validated against TOOL_SCHEMAS above, so this shouldn't
+        // happen. Surface a 503 so the client falls back gracefully.
+        console.warn("[ORCHESTRATE] unexpected tool from non-PC LLM", { functionName })
+        return new Response(
+          JSON.stringify({ error: `Unexpected tool: ${functionName}` }),
+          { status: 503, headers: { "Content-Type": "application/json" } },
+        )
       }
 
       // --- Phase 1: TurnDecision envelope -------------------------------

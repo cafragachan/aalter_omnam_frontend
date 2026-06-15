@@ -1,6 +1,5 @@
-import { z } from "zod"
 import type { UserIntent } from "./intents"
-import type { JourneyState, TurnDecision } from "./types"
+import type { JourneyState } from "./types"
 import type { UserDBProfile } from "@/lib/auth-context"
 import type {
   HotelCatalogAddress,
@@ -31,43 +30,7 @@ export type OrchestrateTelemetry = {
 }
 
 // ---------------------------------------------------------------------------
-// Zod schema for the Phase 1 TurnDecision envelope. Validation is advisory:
-// failures are logged and the field is dropped. Legacy dispatch continues.
-// ---------------------------------------------------------------------------
-
-const ProposalSchema = z.object({
-  kind: z.enum(["rooms", "amenity", "location", "interior", "exterior", "hotel", "other"]),
-  targetId: z.string().optional(),
-  label: z.string().optional(),
-})
-
-const TurnDecisionActionSchema = z.union([
-  z.object({
-    type: z.literal("USER_INTENT"),
-    intent: z.string(),
-    amenityName: z.string().optional(),
-    lightingMode: z.enum(["daylight", "sunset", "night"]).optional(),
-    params: z.record(z.string(), z.unknown()).optional(),
-  }),
-  z.object({
-    type: z.literal("PROFILE_TURN_RESULT"),
-    decision: z.enum(["ask_next", "clarify", "ready"]),
-    awaiting: z.string().optional(),
-    profileUpdates: z.record(z.string(), z.unknown()).optional(),
-  }),
-  z.object({ type: z.literal("NO_ACTION") }),
-  z.null(),
-])
-
-export const TurnDecisionSchema = z.object({
-  action: TurnDecisionActionSchema,
-  speech: z.string(),
-  reasoning: z.string().optional(),
-  proposal: ProposalSchema.optional(),
-})
-
-// ---------------------------------------------------------------------------
-// OrchestrateResult — discriminated union of the 4 tool types
+// OrchestrateResult — discriminated union of the tool types the server can emit
 // ---------------------------------------------------------------------------
 
 export type ProfileUpdates = {
@@ -81,19 +44,10 @@ export type ProfileUpdates = {
 
 export type ProfileTurnDecision = "ask_next" | "clarify" | "ready"
 
-// Full action-dispatch tool names — everything beyond the 3 primary tools
-// declared in OrchestrateResult. Each maps to an existing reducer dispatch
-// path client-side (see plan `vast-rolling-adleman.md`).
-//
-// History: this list started as 14 "padding tools" used for schema-cost
-// measurement during Phase 1a. With the `?fullActionDispatch=1` migration they
-// became real implementations; the PADDING_ prefix is kept on type names to
-// minimize cross-file churn. Two tools dropped vs Phase 1a:
-//   • `confirm_return_to_lounge` → replaced by `lounge_return_affirm` / `..._cancel`.
-//   • `end_experience` → replaced by `end_experience_affirm` / `..._cancel`.
-// Five tools added: end_experience_affirm/cancel, lounge_return_affirm/cancel,
-// explore_lounge_action.
-export const PADDING_TOOL_RESULT_NAMES = [
+// Named action tools — every action beyond the 3 core ones (navigate_to_amenity_action,
+// open_rooms_panel_action, speak_only_action). Each maps to an existing reducer
+// dispatch path client-side (see useJourney.ts).
+export const ACTION_TOOL_NAMES = [
   "travel_to_hotel",
   "return_to_virtual_lounge",
   "show_hotel_overview",
@@ -114,10 +68,10 @@ export const PADDING_TOOL_RESULT_NAMES = [
   "select_hotel",
   "download_user_data",
 ] as const
-export type PaddingToolResultName = typeof PADDING_TOOL_RESULT_NAMES[number]
+export type ActionToolName = typeof ACTION_TOOL_NAMES[number]
 
-export type PaddingToolResult = {
-  tool: PaddingToolResultName
+export type ActionToolResult = {
+  tool: ActionToolName
   speech: string
   /** change_lighting only */
   lightingMode?: "daylight" | "sunset" | "night"
@@ -128,8 +82,8 @@ export type PaddingToolResult = {
 }
 
 export type OrchestrateResult = (
+  // PROFILE_COLLECTION tools.
   | { tool: "navigate_and_speak"; intent: UserIntent; speech: string }
-  | { tool: "no_action_speak"; speech: string }
   | {
       tool: "profile_turn"
       reasoning?: string
@@ -137,15 +91,13 @@ export type OrchestrateResult = (
       decision: ProfileTurnDecision
       speech: string
     }
-  // ---- Experiment: action-dispatch tools (AMENITY_VIEWING `book` surface).
-  // The `text` field on the wire is renamed to `speech` server-side, so client
-  // code can treat them uniformly with the legacy speech-carrying tools.
+  // Action-dispatch tools (every non-PC turn). The `text` field on the wire is
+  // renamed to `speech` server-side so client code treats them uniformly.
   | { tool: "navigate_to_amenity_action"; amenityId: string; speech: string }
   | { tool: "open_rooms_panel_action"; speech: string }
   | { tool: "speak_only_action"; speech: string }
-  // ---- Schema-scale test padding tools. Single client handler.
-  | PaddingToolResult
-) & { decision_envelope?: TurnDecision; telemetry?: OrchestrateTelemetry }
+  | ActionToolResult
+) & { telemetry?: OrchestrateTelemetry }
 
 // ---------------------------------------------------------------------------
 // OrchestrateInput — the context shape sent to the API route
@@ -249,13 +201,6 @@ export interface OrchestrateInput {
    * the same turn. Required for the latency log to render correctly.
    */
   turnId?: string
-  /**
-   * Experiment opt-in. When "action-dispatch" AND the server-side stage is
-   * AMENITY_VIEWING, the server swaps in three experimental action tools
-   * (navigate_to_amenity_action / open_rooms_panel_action / speak_only_action)
-   * and `tool_choice: "required"`. See plan `inherited-beaming-gray.md`.
-   */
-  experiment?: "action-dispatch"
 }
 
 // ---------------------------------------------------------------------------
@@ -351,7 +296,6 @@ export async function orchestrateLLM(
         conversationHistory: rest.conversationHistory,
         regexHint: rest.regexHint,
         turnId,
-        experiment: rest.experiment,
       }),
       signal,
     })
@@ -368,14 +312,10 @@ export async function orchestrateLLM(
       reasoning?: string
       profileUpdates?: ProfileUpdates
       decision?: ProfileTurnDecision
-      // Experiment: action-dispatch tools carry amenityId on
-      // navigate_to_amenity_action.
+      /** navigate_to_amenity_action carries the amenityId. */
       amenityId?: string
-      // Schema-scale test padding tools: select_hotel carries hotelSlug.
+      /** select_hotel carries hotelSlug. */
       hotelSlug?: string
-      // Phase 1 envelope. Optional on the wire — server always emits it,
-      // but we treat missing/invalid as soft-warn, not fatal.
-      decision_envelope?: unknown
       serverTimings?: ServerTimings
       turnId?: string
     }
@@ -391,38 +331,13 @@ export async function orchestrateLLM(
 
     if (!data.tool || !data.speech) return null
 
-    // Phase 1: validate the envelope. Failures are advisory. The legacy tool
-    // field still drives dispatch; the envelope is shadow-groundwork only.
-    // Server emits under `decision_envelope` to avoid collision with the
-    // profile_turn legacy `decision` enum string.
-    const rawEnvelope = data.decision_envelope
-    let envelope: TurnDecision | undefined
-    if (rawEnvelope !== undefined && rawEnvelope !== null) {
-      const parsed = TurnDecisionSchema.safeParse(rawEnvelope)
-      if (parsed.success) {
-        envelope = parsed.data as TurnDecision
-      } else {
-        console.warn("[DECISION-ENVELOPE] invalid", {
-          tool: data.tool,
-          error: parsed.error.flatten(),
-        })
-      }
-    } else {
-      console.warn("[DECISION-ENVELOPE] missing or invalid", {
-        tool: data.tool,
-      })
-    }
-
-    const withMeta = <T extends object>(base: T): T & {
-      decision_envelope?: TurnDecision
-      telemetry?: OrchestrateTelemetry
-    } => {
-      const out: T & { decision_envelope?: TurnDecision; telemetry?: OrchestrateTelemetry } = { ...base }
-      if (envelope) out.decision_envelope = envelope
+    const withMeta = <T extends object>(base: T): T & { telemetry?: OrchestrateTelemetry } => {
+      const out: T & { telemetry?: OrchestrateTelemetry } = { ...base }
       if (telemetry) out.telemetry = telemetry
       return out
     }
 
+    // PROFILE_COLLECTION tools.
     if (data.tool === "profile_turn") {
       if (!data.decision) return null
       return withMeta({
@@ -435,27 +350,18 @@ export async function orchestrateLLM(
     }
 
     if (data.tool === "navigate_and_speak") {
+      // PC skip-ahead — narrow set of intents (see route.ts
+      // PROFILE_COLLECTION_SKIP_INTENTS).
       if (!data.intent) return null
-      let intent: UserIntent
-      if (data.intent === "AMENITY_BY_NAME" && data.amenityName) {
-        intent = { type: "AMENITY_BY_NAME", amenityName: data.amenityName }
-      } else if (data.intent === "LIGHTING_SET" && data.lightingMode) {
-        intent = { type: "LIGHTING_SET", mode: data.lightingMode }
-      } else if (data.intent === "LOCATE_INTEREST_POINTS" && data.category) {
-        intent = { type: "LOCATE_INTEREST_POINTS", category: data.category }
-      } else {
-        intent = { type: data.intent } as UserIntent
-      }
+      const intent: UserIntent =
+        data.intent === "AMENITY_BY_NAME" && data.amenityName
+          ? { type: "AMENITY_BY_NAME", amenityName: data.amenityName }
+          : ({ type: data.intent } as UserIntent)
       return withMeta({ tool: "navigate_and_speak" as const, intent, speech: data.speech })
     }
 
-    if (data.tool === "no_action_speak") {
-      return withMeta({ tool: "no_action_speak" as const, speech: data.speech })
-    }
-
-    // Experiment: action-dispatch tools. Speech is already on `data.speech`
-    // (server renamed from the tool's `text` field). Skip envelope (server
-    // emits a NO_ACTION stub for these; client dispatches on `result.tool`).
+    // Action-dispatch tools. `text` was renamed to `speech` server-side so
+    // every variant carries the same shape.
     if (data.tool === "navigate_to_amenity_action") {
       if (!data.amenityId) return null
       return withMeta({
@@ -471,17 +377,16 @@ export async function orchestrateLLM(
       return withMeta({ tool: "speak_only_action" as const, speech: data.speech })
     }
 
-    // Schema-scale test: any of the padding tools. Surface arg fields for
-    // log fidelity; client uses a single generic handler.
-    if ((PADDING_TOOL_RESULT_NAMES as readonly string[]).includes(data.tool)) {
-      const paddingResult: PaddingToolResult = {
-        tool: data.tool as PaddingToolResultName,
+    // Named action tools. Surface arg fields uniformly.
+    if ((ACTION_TOOL_NAMES as readonly string[]).includes(data.tool)) {
+      const actionResult: ActionToolResult = {
+        tool: data.tool as ActionToolName,
         speech: data.speech,
       }
-      if (data.lightingMode) paddingResult.lightingMode = data.lightingMode
-      if (data.category) paddingResult.category = data.category
-      if (data.hotelSlug) paddingResult.hotelSlug = data.hotelSlug
-      return withMeta(paddingResult)
+      if (data.lightingMode) actionResult.lightingMode = data.lightingMode
+      if (data.category) actionResult.category = data.category
+      if (data.hotelSlug) actionResult.hotelSlug = data.hotelSlug
+      return withMeta(actionResult)
     }
 
     return null

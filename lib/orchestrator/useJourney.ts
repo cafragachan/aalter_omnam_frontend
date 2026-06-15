@@ -10,11 +10,10 @@ import { useLiveAvatarContext as useHeyGenLiveAvatarContext } from "@/lib/liveav
 import { MessageSender } from "@/lib/liveavatar/types"
 import { useGuestIntelligence } from "@/lib/guest-intelligence"
 import { classifyIntent, type UserIntent } from "./intents"
-import { orchestrateLLM, PADDING_TOOL_RESULT_NAMES, type PaddingToolResult } from "./orchestrateLLM"
+import { orchestrateLLM, ACTION_TOOL_NAMES, type ActionToolResult } from "./orchestrateLLM"
 import { buildAmenityNarrative, intentToShortcutTarget, profileCollectionAwaiting } from "./journey-machine"
 import type { ProfileAwaiting } from "./profileFastPath"
 import { evaluateDeterministicProfileTurn } from "./profileDeterministic"
-import { evaluateDeterministicExplorationTurn } from "./explorationDeterministic"
 import { useIdleDetection } from "./idle-detection"
 import { beginUtteranceTurn, claimSpeech, type SpeechSource } from "./speech-mutex"
 import type { JourneyState, JourneyAction, JourneyEffect, AmenityRef } from "./types"
@@ -91,36 +90,6 @@ function numberWord(n: number): string {
 // (panel-open / amenity nav). Gives UE5's server-travel time to settle so the
 // follow-up nav command (gameEstate / communal) lands on the loaded level.
 const UE5_POST_TRAVEL_DELAY_MS = 3500
-
-// ---------------------------------------------------------------------------
-// Speech-authority rule (=on dispatch).
-//
-// When the reducer authors canonical speech for an intent — either directly
-// (e.g., `pullUpRooms`, `hotelBackOverview`) or via a follow-up action it
-// dispatches (e.g., AMENITIES → `LIST_AMENITIES` → `amenityListing` which
-// reads actual hotel data + travel-purpose recommendation) — the reducer's
-// speech is the source of truth. The LLM envelope speech for these intents
-// is almost always a paraphrase or, worse, a hallucinated list that
-// contradicts ground truth.
-//
-// Rule: if the intent is in this set, NULL `preGeneratedSpeechRef` before
-// dispatch so the reducer's rendered speech plays. If not in the set, keep
-// the LLM envelope speech — those intents either have no canonical reducer
-// speech (UNKNOWN, unrecognized fallback) or the LLM's warmth is preferable
-// to the reducer's tone (AFFIRMATIVE / TRAVEL_TO_HOTEL transitions).
-//
-// Consequence: adding a new intent that the reducer speaks canonically
-// requires adding it here. That's the price of the invariant.
-// ---------------------------------------------------------------------------
-const CANONICAL_REDUCER_INTENTS: ReadonlySet<string> = new Set([
-  "AMENITIES",       // → LIST_AMENITIES → amenityListing (actual hotel data)
-  "ROOMS",           // → pullUpRooms (+ room planner speaks the plan after)
-  "LOCATION",        // → showLocation
-  "BACK",            // → hotelBackOverview / backToOtherRooms / backToHotelOverview
-  "BOOK",            // → bookPickRoom
-  "HOTEL_EXPLORE",   // → hotelBackOverview
-  "OTHER_OPTIONS",   // → otherOptionsRooms (or AMENITY_VIEWING list flow)
-])
 
 // ---------------------------------------------------------------------------
 // Phase 6 — stateRef shim.
@@ -287,32 +256,15 @@ export function useJourney(options: UseJourneyOptions) {
   // --- Pre-generated speech ref (Phase 4: orchestrate fills this before processIntent) ---
   const preGeneratedSpeechRef = useRef<string | null>(null)
 
-  // --- Action-dispatch surface: AMENITY_VIEWING `book` (Phase 1a, always on) ---
-  // Phase 1a (shipped 2026-05-23): the URL `?actionTest=1` gate was removed
-  // and this surface is now the default behavior for every session. When the
-  // stage is AMENITY_VIEWING AND the utterance contains "book", the unified
-  // turn pipeline bypasses the deterministic gate and requests action-dispatch
-  // tools from the server. See plan `inherited-beaming-gray.md`.
-  //
-  // --- Full action-dispatch migration: `?fullActionDispatch=1` ---
-  // When the URL flag is set, every utterance in a migrated stage routes
-  // through action-dispatch (not just AMENITY_VIEWING + `book`). Read once
-  // at mount; never mutated after. See plan `vast-rolling-adleman.md`.
-  const fullActionDispatchRef = useRef<boolean>(
-    typeof window !== "undefined" &&
-      new URLSearchParams(window.location.search).get("fullActionDispatch") === "1",
-  )
-
-  // Stages the broadened gate applies to. Must match the server's
-  // MIGRATED_STAGES_FOR_EXPERIMENT in app/api/orchestrate/route.ts. Reading
-  // the URL flag without this set would let the client think it's "on" for
-  // stages the server doesn't recognize, producing a silent 503 path.
-  const MIGRATED_STAGES_FOR_CLIENT: ReadonlySet<JourneyState["stage"]> = new Set([
+  // Stages where action-dispatch is the orchestrate path. Must match the
+  // server's ACTION_DISPATCH_STAGES in app/api/orchestrate/route.ts.
+  // PROFILE_COLLECTION uses profile_turn + navigate_and_speak instead;
+  // DESTINATION_SELECT is gated off entirely via the early return below.
+  const ACTION_DISPATCH_STAGES: ReadonlySet<JourneyState["stage"]> = new Set([
     "HOTEL_EXPLORATION",
     "AMENITY_VIEWING",
     "ROOM_SELECTED",
     "VIRTUAL_LOUNGE",
-    "DESTINATION_SELECT",
     "END_CONFIRMING",
     "LOUNGE_CONFIRMING",
   ])
@@ -592,68 +544,6 @@ export function useJourney(options: UseJourneyOptions) {
     document.body.removeChild(a)
     URL.revokeObjectURL(url)
   }, [profile, derivedProfile, guestIntelligence, journeyStage, userMessages])
-
-  // --- Apply profileUpdates from any orchestrate tool result ---
-  //
-  // Shared mapping: server `profileUpdates` (startDate / endDate as ISO
-  // strings, partySize or guestComposition, travelPurpose, roomAllocation)
-  // → UserProfile context updates. Idempotent. Logs [PROFILE_UPDATE→APPLY]
-  // with the source tool so mid-conversation corrections are traceable.
-  const applyOrchestrateProfileUpdates = useCallback((
-    pu: Record<string, unknown> | null | undefined,
-    source: "profile_turn" | "navigate_and_speak" | "no_action_speak" | "envelope",
-  ) => {
-    if (!pu || typeof pu !== "object" || Object.keys(pu).length === 0) return
-    const updates: Partial<import("@/lib/context").UserProfile> = {}
-    const startDate = pu.startDate
-    const endDate = pu.endDate
-    const partySize = pu.partySize
-    const guestComposition = pu.guestComposition
-    const travelPurpose = pu.travelPurpose
-    const roomAllocation = pu.roomAllocation
-    if (typeof startDate === "string") updates.startDate = new Date(startDate)
-    if (typeof endDate === "string") updates.endDate = new Date(endDate)
-    if (guestComposition && typeof guestComposition === "object") {
-      const gc = guestComposition as { adults?: number; children?: number; childrenAges?: number[] }
-      const hasAdults = typeof gc.adults === "number"
-      const hasChildren = typeof gc.children === "number"
-      if (hasAdults || hasChildren) {
-        // Declaring a new composition — default the missing side to 0 so
-        // downstream schemas (room-planner requires both fields as numbers)
-        // and familySize math don't see NaN. See the profile_turn APPLY
-        // path in this file for the same normalization.
-        const adults = hasAdults ? gc.adults! : 0
-        const children = hasChildren ? gc.children! : 0
-        updates.guestComposition = {
-          adults,
-          children,
-          ...(gc.childrenAges ? { childrenAges: gc.childrenAges } : {}),
-        }
-        updates.familySize = adults + children
-      } else {
-        // Partial update (e.g. ages only). Pass through and let the store's
-        // deep-merge keep prior adults/children.
-        updates.guestComposition = gc as import("@/lib/context").GuestComposition
-      }
-    } else if (typeof partySize === "number") {
-      updates.familySize = partySize
-    }
-    if (typeof travelPurpose === "string") updates.travelPurpose = travelPurpose
-    if (Array.isArray(roomAllocation)) updates.roomAllocation = roomAllocation as number[]
-    if (Object.keys(updates).length > 0) {
-      // eslint-disable-next-line no-console
-      console.log("[PROFILE_UPDATE→APPLY]", JSON.stringify({
-        source,
-        llmProfileUpdates: pu,
-        mappedToContextUpdates: {
-          ...updates,
-          startDate: updates.startDate?.toISOString?.() ?? undefined,
-          endDate: updates.endDate?.toISOString?.() ?? undefined,
-        },
-      }))
-      updateProfile(updates)
-    }
-  }, [updateProfile])
 
   // --- Room Planner gate (allowlist) ---
   //
@@ -1952,49 +1842,18 @@ export function useJourney(options: UseJourneyOptions) {
       // Reset idle detection on turn-start so the 12s reengage can't
       // fire over a response that's about to land.
       resetIdleTimer()
-      // Action-dispatch routing. Two paths into the experiment:
-      //   1. Phase 1a (always-on, shipped 2026-05-23) — AMENITY_VIEWING +
-      //      `\bbook\b`. Bypasses the deterministic gate so the BOOK regex
-      //      doesn't short-circuit to the rooms panel — the LLM picks among
-      //      navigate_to_amenity / open_rooms_panel / speak_only.
-      //   2. Full migration (`?fullActionDispatch=1`) — every utterance in
-      //      any migrated stage routes through the experiment. Lets the user
-      //      walk the entire journey on action-dispatch before committing to
-      //      the broader deletion-and-cleanup refactor. See plan
-      //      `vast-rolling-adleman.md`.
-      const stageOnNewArch = MIGRATED_STAGES_FOR_CLIENT.has(currentState.stage)
-      const isExperimentTurn =
-        (currentState.stage === "AMENITY_VIEWING" && /\bbook\b/i.test(latestMessage)) ||
-        (fullActionDispatchRef.current && stageOnNewArch)
-      const deterministic = isExperimentTurn
-        ? { handled: false as const, confidence: 0, reasons: ["experiment_bypass"] }
-        : evaluateDeterministicExplorationTurn({
-            latestMessage,
-            state: currentState,
-          })
-      if (deterministic.handled) {
+      // Every utterance in a migrated stage hits the action-dispatch LLM.
+      // The deterministic exploration gate was retired with the legacy
+      // navigate_and_speak path — the LLM now disambiguates every turn so
+      // we never short-circuit utterances like "book it" to the wrong scene.
+      if (!ACTION_DISPATCH_STAGES.has(currentState.stage)) {
+        // Stages outside the action-dispatch set (today: none reachable —
+        // DESTINATION_SELECT early-returns above and PROFILE_COLLECTION
+        // takes its own branch). Defensive no-op so a future stage can't
+        // silently 503 the server.
         if (unifiedTurnAbortRef.current === controller) {
           unifiedTurnAbortRef.current = null
         }
-        logTurn({
-          stage,
-          latestMessage: turnMessageSlice,
-          regexIntent: regexIntent.type,
-          llmIntent: null,
-          action: {
-            type: "USER_INTENT",
-            intent: deterministic.intent.type,
-            confidence: deterministic.confidence,
-            reasons: deterministic.reasons,
-          },
-          speech: null,
-          latencyMs: 0,
-          pathway: "deterministic",
-        })
-        preGeneratedSpeechRef.current = null
-        speechTurnIdForEffectsRef.current = utteranceTurnId
-        processIntent(deterministic.intent, latestMessage, currentState, stage)
-        maybeKickRoomPlanner(deterministic.intent.type, latestMessage, utteranceTurnId)
         return
       }
       const orchestrateStart = Date.now()
@@ -2069,7 +1928,6 @@ export function useJourney(options: UseJourneyOptions) {
           conversationHistory,
           signal: controller.signal,
           turnId: turnTimingRef.current?.turnId,
-          experiment: isExperimentTurn ? "action-dispatch" : undefined,
         })
         markTurnTiming("t3")
         if (turnTimingRef.current && result?.telemetry) {
@@ -2124,13 +1982,13 @@ export function useJourney(options: UseJourneyOptions) {
           result.tool === "navigate_to_amenity_action" ||
           result.tool === "open_rooms_panel_action" ||
           result.tool === "speak_only_action" ||
-          (PADDING_TOOL_RESULT_NAMES as readonly string[]).includes(result.tool)
+          (ACTION_TOOL_NAMES as readonly string[]).includes(result.tool)
         ) {
           const actionResult = result as
             | { tool: "navigate_to_amenity_action"; amenityId: string; speech: string }
             | { tool: "open_rooms_panel_action"; speech: string }
             | { tool: "speak_only_action"; speech: string }
-            | PaddingToolResult
+            | ActionToolResult
           const actionTool = actionResult.tool
           const actionSpeech = actionResult.speech
 
@@ -2198,7 +2056,7 @@ export function useJourney(options: UseJourneyOptions) {
               )
               if (!targetAmenity) {
                 // eslint-disable-next-line no-console
-                console.warn("[ACTION-EXP] navigate_to_amenity_action with unknown amenityId", {
+                console.warn("[ACTION] navigate_to_amenity_action with unknown amenityId", {
                   amenityId: (actionResult as { amenityId: string }).amenityId,
                   knownIds: amenities.map((a) => a.id),
                 })
@@ -2230,10 +2088,10 @@ export function useJourney(options: UseJourneyOptions) {
               return
 
             case "locate_interest_points": {
-              const category = (actionResult as PaddingToolResult).category
+              const category = (actionResult as ActionToolResult).category
               if (!category) {
                 // eslint-disable-next-line no-console
-                console.warn("[ACTION-EXP] locate_interest_points missing category", {
+                console.warn("[ACTION] locate_interest_points missing category", {
                   utterance: turnMessageSlice,
                 })
                 speakOnly(actionSpeech)
@@ -2244,10 +2102,10 @@ export function useJourney(options: UseJourneyOptions) {
             }
 
             case "change_lighting": {
-              const mode = (actionResult as PaddingToolResult).lightingMode
+              const mode = (actionResult as ActionToolResult).lightingMode
               if (!mode) {
                 // eslint-disable-next-line no-console
-                console.warn("[ACTION-EXP] change_lighting missing mode", {
+                console.warn("[ACTION] change_lighting missing mode", {
                   utterance: turnMessageSlice,
                 })
                 speakOnly(actionSpeech)
@@ -2314,10 +2172,10 @@ export function useJourney(options: UseJourneyOptions) {
               // the catalog if available; fall back to the slug for the
               // descriptive fields. Today the destination grid is mostly
               // tap-driven, so this branch is rare but graceful.
-              const hotelSlug = (actionResult as PaddingToolResult).hotelSlug
+              const hotelSlug = (actionResult as ActionToolResult).hotelSlug
               if (!hotelSlug) {
                 // eslint-disable-next-line no-console
-                console.warn("[ACTION-EXP] select_hotel missing hotelSlug", {
+                console.warn("[ACTION] select_hotel missing hotelSlug", {
                   utterance: turnMessageSlice,
                 })
                 speakOnly(actionSpeech)
@@ -2349,7 +2207,7 @@ export function useJourney(options: UseJourneyOptions) {
               // isn't silent, and log loudly so future schema additions
               // without a client handler are easy to spot.
               // eslint-disable-next-line no-console
-              console.warn("[ACTION-EXP] unhandled action-dispatch tool", {
+              console.warn("[ACTION] unhandled action-dispatch tool", {
                 tool: actionTool,
                 utterance: turnMessageSlice,
               })
@@ -2359,216 +2217,14 @@ export function useJourney(options: UseJourneyOptions) {
           }
         }
 
-        // Route via decision_envelope.action when the envelope carries a
-        // USER_INTENT. PROFILE_TURN_RESULT envelopes fall through to the
-        // tool-based dispatch below — those have dedicated handlers that
-        // do more than just hand an intent to the reducer.
-        const envelope = result.decision_envelope
-        const envelopeAction = envelope?.action
-        if (envelopeAction && envelopeAction.type === "USER_INTENT") {
-          // envelopeAction.intent is a STRING (the intent tag) on the wire —
-          // see lib/orchestrator/types.ts. processIntent + the reducer both
-          // want a full UserIntent union object. Rebuild it here.
-          //
-          // AMENITY_BY_NAME carries an amenityName that the server ships in
-          // two places: the envelope's top-level `amenityName` (also mirrored
-          // into params.amenityName) AND the legacy tool field on `result`.
-          // Prefer the envelope, fall back to result for safety.
-          const intentTag = envelopeAction.intent
-          const amenityName =
-            (typeof envelopeAction.amenityName === "string" && envelopeAction.amenityName) ||
-            (envelopeAction.params && typeof envelopeAction.params.amenityName === "string"
-              ? (envelopeAction.params.amenityName as string)
-              : undefined) ||
-            (result.tool === "navigate_and_speak" && result.intent.type === "AMENITY_BY_NAME"
-              ? result.intent.amenityName
-              : undefined)
-
-          const envelopeLightingMode =
-            envelopeAction.lightingMode === "daylight" ||
-            envelopeAction.lightingMode === "sunset" ||
-            envelopeAction.lightingMode === "night"
-              ? envelopeAction.lightingMode
-              : undefined
-          const paramLightingMode =
-            envelopeAction.params && typeof envelopeAction.params.lightingMode === "string" &&
-            (envelopeAction.params.lightingMode === "daylight" ||
-              envelopeAction.params.lightingMode === "sunset" ||
-              envelopeAction.params.lightingMode === "night")
-              ? (envelopeAction.params.lightingMode as "daylight" | "sunset" | "night")
-              : undefined
-          const resultLightingMode =
-            result.tool === "navigate_and_speak" && result.intent.type === "LIGHTING_SET"
-              ? result.intent.mode
-              : undefined
-          const lightingMode = envelopeLightingMode ?? paramLightingMode ?? resultLightingMode
-
-          // LOCATE_INTEREST_POINTS carries a free-text Places-API query in
-          // `category`. Server ships it under both the top-level result.category
-          // (legacy mirror) and envelope params.category. Prefer params.
-          const envelopeCategory =
-            envelopeAction.params && typeof envelopeAction.params.category === "string"
-              ? (envelopeAction.params.category as string)
-              : undefined
-          const resultCategory =
-            result.tool === "navigate_and_speak" && result.intent.type === "LOCATE_INTEREST_POINTS"
-              ? result.intent.category
-              : undefined
-          const category = envelopeCategory ?? resultCategory
-
-          let fullIntentObject: UserIntent
-          if (intentTag === "AMENITY_BY_NAME" && amenityName) {
-            fullIntentObject = { type: "AMENITY_BY_NAME", amenityName }
-          } else if (intentTag === "LIGHTING_SET" && lightingMode) {
-            fullIntentObject = { type: "LIGHTING_SET", mode: lightingMode }
-          } else if (intentTag === "LOCATE_INTEREST_POINTS" && category) {
-            fullIntentObject = { type: "LOCATE_INTEREST_POINTS", category }
-          } else {
-            fullIntentObject = { type: intentTag } as UserIntent
-          }
-
-          // eslint-disable-next-line no-console
-          console.log("[ENVELOPE-DISPATCH]", {
-            intent: fullIntentObject,
-            speech: envelope.speech,
-          })
-
-          logTurn({
-            stage,
-            latestMessage: turnMessageSlice,
-            regexIntent: regexIntent.type,
-            llmIntent: intentTag,
-            action: { type: "USER_INTENT", intent: intentTag },
-            speech: envelope.speech,
-            latencyMs,
-            pathway: "orchestrate",
-          })
-          // Apply any mid-conversation profile correction the LLM attached
-          // to this envelope. Profile writes are idempotent.
-          applyOrchestrateProfileUpdates(
-            (envelope as { profileUpdates?: Record<string, unknown> }).profileUpdates,
-            "envelope",
-          )
-          // Speech-authority rule: if the reducer authors canonical speech
-          // for this intent, drop the LLM envelope speech so the rendered
-          // canonical line plays instead. See CANONICAL_REDUCER_INTENTS at
-          // the top of the file for the full rationale.
-          preGeneratedSpeechRef.current =
-            CANONICAL_REDUCER_INTENTS.has(intentTag) ? null : envelope.speech
-          speechTurnIdForEffectsRef.current = utteranceTurnId
-          processIntent(fullIntentObject, latestMessage, currentState, stage)
-          // Room Planner: sole room brain when the rooms panel is open.
-          // Gated by ROOM_PLANNER_ALLOWLIST (room-edit intents only) —
-          // see `maybeKickRoomPlanner` above. The planner also competes
-          // for the speech mutex via `utteranceTurnId`; if the reducer
-          // already spoke this turn, the planner's recommendation is
-          // suppressed.
-          maybeKickRoomPlanner(intentTag, latestMessage, utteranceTurnId)
-          return
-        }
-
-        if (result.tool === "no_action_speak") {
-          logTurn({
-            stage,
-            latestMessage: turnMessageSlice,
-            regexIntent: regexIntent.type,
-            llmIntent: "NO_ACTION",
-            action: null,
-            speech: result.speech,
-            latencyMs,
-            pathway: "orchestrate",
-          })
-          applyOrchestrateProfileUpdates(
-            (result as { profileUpdates?: Record<string, unknown> }).profileUpdates,
-            "no_action_speak",
-          )
-          if (!claimSpeech(utteranceTurnId, "llm_no_action")) {
-            // eslint-disable-next-line no-console
-            console.log("[SPEECH_LOCK_SUPPRESSED]", {
-              source: "llm_no_action",
-              turnId: utteranceTurnId,
-              text: result.speech.slice(0, 80),
-            })
-            return
-          }
-          interrupt()
-          repeat(result.speech).catch(() => undefined)
-          return
-        }
-
-        if (result.tool === "profile_turn") {
-          // profile_turn is only expected during PROFILE_COLLECTION; if the
-          // model picks it outside that stage, just speak it and bail.
-          logTurn({
-            stage,
-            latestMessage: turnMessageSlice,
-            regexIntent: regexIntent.type,
-            llmIntent: "PROFILE_TURN",
-            action: { type: "PROFILE_TURN", decision: result.decision },
-            speech: result.speech,
-            latencyMs,
-            pathway: "orchestrate",
-          })
-          if (!claimSpeech(utteranceTurnId, "llm_profile")) {
-            // eslint-disable-next-line no-console
-            console.log("[SPEECH_LOCK_SUPPRESSED]", {
-              source: "llm_profile",
-              turnId: utteranceTurnId,
-              text: result.speech.slice(0, 80),
-            })
-            return
-          }
-          interrupt()
-          repeat(result.speech).catch(() => undefined)
-          return
-        }
-
-        // Fallthrough: navigate_and_speak without a usable envelope. Reaching
-        // here means the server responded with the legacy tool shape but the
-        // envelope was missing or malformed. Log [ENVELOPE-FALLBACK] and
-        // dispatch on the tool's intent.
-        //
-        // Type guard: the experiment and padding branches above return early,
-        // so only navigate_and_speak can plausibly land here — but TS can't
-        // narrow the union without an explicit check now that the result type
-        // includes the experiment + padding variants.
-        if (result.tool !== "navigate_and_speak") {
-          // eslint-disable-next-line no-console
-          console.warn("[ENVELOPE-FALLBACK] unexpected tool reached fallthrough", {
-            tool: result.tool,
-          })
-          return
-        }
+        // If we got here without the action-dispatch branch returning, the
+        // server emitted a tool we don't handle in this (non-PC) flow. Log
+        // and bail. profile_turn / navigate_and_speak shouldn't ever land
+        // here — those are PC tools handled by the PC debounce path above.
         // eslint-disable-next-line no-console
-        console.log("[ENVELOPE-FALLBACK]", {
-          reason: envelope ? "non-USER_INTENT envelope action" : "envelope missing",
-          tool: result.tool,
-          intent: result.intent.type,
-          regexHint: regexIntent.type,
+        console.warn("[ACTION] unexpected tool in non-PC flow", {
+          tool: (result as { tool: string }).tool,
         })
-        logTurn({
-          stage,
-          latestMessage: turnMessageSlice,
-          regexIntent: regexIntent.type,
-          llmIntent: result.intent.type,
-          action: { type: "USER_INTENT", intent: result.intent.type },
-          speech: result.speech,
-          latencyMs,
-          pathway: "orchestrate",
-        })
-        applyOrchestrateProfileUpdates(
-          (result as { profileUpdates?: Record<string, unknown> }).profileUpdates,
-          "navigate_and_speak",
-        )
-        // See the CANONICAL_REDUCER_INTENTS note at the top of the file.
-        preGeneratedSpeechRef.current =
-          CANONICAL_REDUCER_INTENTS.has(result.intent.type) ? null : result.speech
-        speechTurnIdForEffectsRef.current = utteranceTurnId
-        processIntent(result.intent, latestMessage, currentState, stage)
-        // Room Planner: fallback path — allowlist-gated (see
-        // `maybeKickRoomPlanner` above). Speech-mutex applies the same way
-        // as in the envelope branch.
-        maybeKickRoomPlanner(result.intent.type, latestMessage, utteranceTurnId)
       })()
       // Day-1 latency batch: trimmed from 600→250ms. HeyGen's
       // USER_TRANSCRIPTION fires per finalized utterance; the AbortController
