@@ -127,7 +127,7 @@ export const DebugHud = () => {
 export const SandboxSessionPlayer = ({ fit }: { fit: "contain" | "cover" }) => {
   const [muted, setMuted] = useState(false)
   const { sessionState, isStreamReady, startSession, attachElement, stopSession } = useSession()
-  const { repeat, interrupt } = useAvatarActions("FULL")
+  const { repeat, interrupt } = useAvatarActions()
   const { profile } = useUserProfileContext()
   const { sessionRef } = useLiveAvatarContext()
   const videoRef = useRef<HTMLVideoElement>(null)

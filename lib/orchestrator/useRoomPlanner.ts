@@ -61,7 +61,7 @@ export function useRoomPlanner(): {
 } {
   const { state, stateRef, dispatch } = useOmnamStore()
   const { messages } = useLiveAvatarContext()
-  const { interrupt, repeat } = useAvatarActions("FULL")
+  const { interrupt, repeat } = useAvatarActions()
 
   // Live mirrors so the async requestPlan always reads the freshest values
   // without triggering re-renders or invalidating its useCallback identity.

@@ -713,7 +713,6 @@ export default function HomePage() {
   // run a session and forces a fresh machine on every load (defeats the
   // streams.vagon.io sticky-session cookie). All machine ops (provision,
   // assign, cache-snapshot, teardown) happen server-side on Vagon.
-  // The HMAC API path is preserved but unused — see lib/vagon-api.ts.
   const streamMode = process.env.NEXT_PUBLIC_STREAM_MODE || "local"
   const isVagonMode = streamMode === "vagon"
 

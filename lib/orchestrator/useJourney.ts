@@ -216,7 +216,7 @@ export function useJourney(options: UseJourneyOptions) {
     lastAvatarSpeakStartedAtMsRef,
     sessionIdRef,
   } = useHeyGenLiveAvatarContext()
-  const { repeat, interrupt, stopListening } = useHeyGenAvatarActions("FULL")
+  const { repeat, interrupt, stopListening } = useHeyGenAvatarActions()
   const guestIntelligence = useGuestIntelligence()
   const { trackQuestion, trackRoomExplored, trackAmenityExplored, trackRequirement, startRoomTimer, startAmenityTimer, stopExplorationTimer, setBookingOutcome } = guestIntelligence
 

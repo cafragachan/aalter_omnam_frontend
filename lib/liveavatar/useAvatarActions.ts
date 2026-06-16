@@ -13,7 +13,7 @@ import { InputModeContext } from "@/lib/input-mode/context"
  */
 export const lastRepeatCalledAtMsRef: { current: number | null } = { current: null }
 
-export const useAvatarActions = (mode: "FULL" | "CUSTOM" = "FULL") => {
+export const useAvatarActions = () => {
   const { sessionRef, appendMessage } = useLiveAvatarContext()
   // Read the InputMode context directly (not via the throwing hook) so that
   // `useAvatarActions` remains callable even outside an InputModeProvider.
@@ -46,18 +46,9 @@ export const useAvatarActions = (mode: "FULL" | "CUSTOM" = "FULL") => {
         return
       }
 
-      if (mode === "FULL") {
-        return sessionRef.current.repeat(message)
-      }
-
-      const res = await fetch("/api/elevenlabs-text-to-speech", {
-        method: "POST",
-        body: JSON.stringify({ text: message }),
-      })
-      const { audio } = await res.json()
-      return sessionRef.current.repeatAudio(audio)
+      return sessionRef.current.repeat(message)
     },
-    [appendMessage, isChatMode, mode, sessionRef],
+    [appendMessage, isChatMode, sessionRef],
   )
 
   const startListening = useCallback(() => {
