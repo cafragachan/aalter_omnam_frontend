@@ -1081,7 +1081,7 @@ export default function AdminPage() {
         <Card className="bg-white/5 border-white/10 max-w-sm w-full">
           <CardContent className="pt-6 text-center">
             <p className="text-white/60 text-sm">Please sign in to access the admin portal.</p>
-            <a href="/login" className="mt-4 inline-block text-indigo-400 underline text-sm">
+            <a href="/home" className="mt-4 inline-block text-indigo-400 underline text-sm">
               Go to Login
             </a>
           </CardContent>
