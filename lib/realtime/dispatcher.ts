@@ -7,6 +7,7 @@ import { getHotelCatalog } from "@/lib/hotel-data"
 import type { useUE5Bridge } from "@/lib/ue5/bridge"
 import type { SunState } from "@/components/SunToggle"
 import type { UserProfile, GuestComposition } from "@/lib/context"
+import type { CurrentRoomPlan } from "@/lib/omnam-store"
 import { PILOT_HOTEL_SLUG } from "./context"
 
 type Ue5Bridge = ReturnType<typeof useUE5Bridge>
@@ -17,6 +18,10 @@ export interface DispatcherHooks {
   onScene?: (label: string) => void
   /** Persist a learned profile detail to the OmnamStore (UPDATE_PROFILE). */
   saveProfile?: (updates: Partial<UserProfile>) => void
+  /** Write a recommended room plan to the OmnamStore (SET_ROOM_PLAN). */
+  setRoomPlan?: (plan: CurrentRoomPlan) => void
+  /** Show/hide the rooms panel. */
+  onRoomsPanel?: (show: boolean) => void
 }
 
 export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}) {
@@ -24,6 +29,8 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
   // Track selection locally so we can guard view_unit (the bridge's selectedUnit
   // only reflects in-world clicks, not tool-driven select_room).
   let selectedRoomId: string | null = null
+  // First room of the latest proposed plan — open_booking defaults to it.
+  let lastPlanFirstRoomId: string | null = null
   // The guest starts in the virtual lounge; hotel navigation is gated until they
   // travel (startTEST). Mirrors the journey's VIRTUAL_LOUNGE → hotel transition.
   let arrived = false
@@ -92,6 +99,7 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
           default:
             return `"${area}" is not a valid area (use rooms, amenities, location, or default).`
         }
+        hooks.onRoomsPanel?.(area === "rooms")
         hooks.onScene?.(area)
         return `Navigated to ${area}.`
       }
@@ -151,6 +159,39 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
         ue5.changeSunPosition(mode as SunState)
         hooks.onScene?.(`lighting: ${mode}`)
         return `Lighting set to ${mode}.`
+      }
+
+      case "propose_room_plan": {
+        const raw = Array.isArray(args.rooms) ? (args.rooms as Array<Record<string, unknown>>) : []
+        const planRooms: { roomId: string; quantity: number }[] = []
+        let totalPerNight = 0
+        let capacity = 0
+        for (const r of raw) {
+          const id = String(r.roomId ?? "")
+          const qty = Math.max(1, Math.floor(Number(r.quantity ?? 1)) || 1)
+          const room = cat?.rooms.find((x) => x.id === id)
+          if (!room) continue
+          planRooms.push({ roomId: id, quantity: qty })
+          totalPerNight += room.price * qty
+          capacity += room.occupancy * qty
+        }
+        if (!planRooms.length) return "None of those room ids exist — pick from the catalog."
+        hooks.setRoomPlan?.({ rooms: planRooms, totalPerNight, capacity, source: "planner" })
+        hooks.onRoomsPanel?.(true)
+        lastPlanFirstRoomId = planRooms[0].roomId
+        const names = planRooms
+          .map((p) => `${p.quantity}× ${cat?.rooms.find((x) => x.id === p.roomId)?.name ?? p.roomId}`)
+          .join(", ")
+        return `Proposed plan: ${names} — $${totalPerNight}/night, sleeps ${capacity}.`
+      }
+
+      case "open_booking": {
+        const id = String(args.roomId ?? "") || lastPlanFirstRoomId || selectedRoomId || ""
+        const room = cat?.rooms.find((r) => r.id === id)
+        if (!room) return "I'm not sure which room to book — let's settle on one first."
+        if (!room.book_url) return `${room.name} doesn't have a booking link yet.`
+        if (typeof window !== "undefined") window.open(room.book_url, "_blank", "noopener,noreferrer")
+        return `Opening the booking page for ${room.name} in a new tab.`
       }
 
       default:

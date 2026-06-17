@@ -1,24 +1,26 @@
 "use client"
 
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { RealtimeSession, type TurnMetric } from "@/lib/realtime/session"
 import { createToolDispatcher } from "@/lib/realtime/dispatcher"
-import { formatSceneDelta } from "@/lib/realtime/context"
+import { formatSceneDelta, PILOT_HOTEL_SLUG } from "@/lib/realtime/context"
 import { useUE5Bridge } from "@/lib/ue5/bridge"
 import { useOmnamStore } from "@/lib/omnam-store"
+import { RoomsPanel } from "@/components/panels/RoomsPanel"
+import { getHotelBySlug, getRoomsByHotelId, type RoomPlan, type RoomPlanEntry } from "@/lib/hotel-data"
 
-// Walking skeleton: UE5 twin (background iframe) + HeyGen LITE avatar + gpt-realtime
-// brain driving navigation via function calls and remembering the guest via
-// save_profile. Dev chrome lives in a LEFT column (over the avatar) so the right
-// + center stay clear for the room/amenity panels coming in Phase C.
+// Walking skeleton: UE5 twin + HeyGen LITE avatar + gpt-realtime brain that
+// navigates (function calls → UE5), remembers the guest (save_profile →
+// OmnamStore), recommends a room plan (propose_room_plan → currentRoomPlan,
+// which highlights rooms in UE5 and renders the RoomsPanel), and books
+// (open_booking → book_url). Dev chrome lives in a LEFT column; the rooms panel
+// occupies the RIGHT.
 
 const STREAM_MODE = process.env.NEXT_PUBLIC_STREAM_MODE || "local"
 const IS_VAGON = STREAM_MODE === "vagon"
 const STREAM_URL = IS_VAGON
   ? "https://streams.vagon.io/streams/e92ad7d9-0510-4246-bdac-8fbedb5653ed?newSession=true"
   : process.env.NEXT_PUBLIC_VAGON_STREAM_URL || "http://127.0.0.1"
-// Match /home's iframe permissions so the Vagon player initialises the same way
-// (avoids the WebXR permissions-policy console noise).
 const IFRAME_ALLOW = IS_VAGON
   ? "microphone *; clipboard-read *; clipboard-write *; encrypted-media *; fullscreen *"
   : "autoplay; fullscreen; clipboard-read; clipboard-write; gamepad"
@@ -26,7 +28,8 @@ const IFRAME_ALLOW = IS_VAGON
 export default function RealtimeExperience() {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const sessionRef = useRef<RealtimeSession | null>(null)
-  const { dispatch } = useOmnamStore()
+  const { state, dispatch } = useOmnamStore()
+  const currentRoomPlan = state.currentRoomPlan
 
   const [active, setActive] = useState(false)
   const [status, setStatus] = useState("idle")
@@ -35,6 +38,37 @@ export default function RealtimeExperience() {
   const [transcript, setTranscript] = useState<{ who: string; text: string }[]>([])
   const [log, setLog] = useState<string[]>([])
   const [showLog, setShowLog] = useState(false)
+  const [showRoomsPanel, setShowRoomsPanel] = useState(false)
+
+  // Static catalog for the pilot hotel (full Room[] for the panel).
+  const { rooms, hotelName } = useMemo(() => {
+    const hotel = getHotelBySlug(PILOT_HOTEL_SLUG)
+    return { rooms: hotel ? getRoomsByHotelId(hotel.id) : [], hotelName: hotel?.name ?? "the hotel" }
+  }, [])
+
+  // currentRoomPlan (store) → RoomPlan (panel prop). Mirrors app/home/page.tsx.
+  const recommendedPlan = useMemo<RoomPlan | null>(() => {
+    if (!currentRoomPlan || currentRoomPlan.rooms.length === 0) return null
+    const byId = new Map(rooms.map((r) => [r.id, r]))
+    const entries: RoomPlanEntry[] = []
+    for (const entry of currentRoomPlan.rooms) {
+      const room = byId.get(entry.roomId)
+      if (!room) continue
+      entries.push({
+        roomId: room.id,
+        roomName: room.name,
+        quantity: entry.quantity,
+        pricePerNight: room.price,
+        occupancy: parseInt(room.occupancy, 10) || 0,
+      })
+    }
+    if (entries.length === 0) return null
+    return {
+      entries,
+      totalCapacity: entries.reduce((s, e) => s + e.occupancy * e.quantity, 0),
+      totalPricePerNight: entries.reduce((s, e) => s + e.pricePerNight * e.quantity, 0),
+    }
+  }, [currentRoomPlan, rooms])
 
   const pushLog = useCallback((line: string) => {
     const ts = new Date().toLocaleTimeString()
@@ -51,6 +85,19 @@ export default function RealtimeExperience() {
 
   const ue5 = useUE5Bridge({ onUnitSelected })
 
+  // currentRoomPlan → UE5 selectedRoom highlight (deduped). Mirrors /home.
+  const selectRoomUE5 = ue5.selectRoom
+  const lastSelectedPayloadRef = useRef<string | null>(null)
+  useEffect(() => {
+    const entries = currentRoomPlan?.rooms ?? []
+    if (entries.length === 0) return
+    const ids = Array.from(new Set(entries.map((r) => r.roomId)))
+    const payload = ids.join(",")
+    if (!payload || lastSelectedPayloadRef.current === payload) return
+    lastSelectedPayloadRef.current = payload
+    selectRoomUE5(payload)
+  }, [currentRoomPlan, selectRoomUE5])
+
   const start = useCallback(async () => {
     if (!videoRef.current || sessionRef.current) return
     setActive(true)
@@ -64,6 +111,8 @@ export default function RealtimeExperience() {
       createToolDispatcher(ue5, {
         onScene: setScene,
         saveProfile: (updates) => dispatch({ type: "UPDATE_PROFILE", updates }),
+        setRoomPlan: (plan) => dispatch({ type: "SET_ROOM_PLAN", plan }),
+        onRoomsPanel: setShowRoomsPanel,
       }),
     )
     sessionRef.current = session
@@ -76,8 +125,7 @@ export default function RealtimeExperience() {
     setActive(false)
   }, [])
 
-  // Reliability: always tear down the LITE + Realtime session on unmount and on
-  // tab close, so we don't leak concurrent HeyGen LITE sessions.
+  // Reliability: tear down the LITE + Realtime session on unmount and tab close.
   useEffect(() => {
     const onUnload = () => {
       void sessionRef.current?.stop()
@@ -90,9 +138,13 @@ export default function RealtimeExperience() {
     }
   }, [])
 
+  // EDIT_ROOM_PLAN wiring for the RoomsPanel cards (user-driven edits).
+  const onAddRoom = useCallback((roomId: string) => dispatch({ type: "EDIT_ROOM_PLAN", edit: { kind: "add", roomId } }), [dispatch])
+  const onSetRoomQuantity = useCallback((roomId: string, quantity: number) => dispatch({ type: "EDIT_ROOM_PLAN", edit: { kind: "setQuantity", roomId, quantity } }), [dispatch])
+  const onRemoveRoom = useCallback((roomId: string) => dispatch({ type: "EDIT_ROOM_PLAN", edit: { kind: "remove", roomId } }), [dispatch])
+
   return (
     <div style={{ position: "fixed", inset: 0, background: "#000", overflow: "hidden", color: "#e7e9ee", fontFamily: "system-ui, sans-serif" }}>
-      {/* UE5 twin background */}
       <iframe
         title="UE5 Stream"
         src={STREAM_URL}
@@ -116,11 +168,11 @@ export default function RealtimeExperience() {
           </strong>
         </span>
         <button onClick={() => setShowLog((v) => !v)} style={btn("#334155")}>{showLog ? "Hide log" : "Log"}</button>
+        <button onClick={() => setShowRoomsPanel((v) => !v)} style={btn("#334155")}>Rooms</button>
         {!ue5.isConnected && <span style={{ fontSize: 12, color: "#fbbf24" }}>UE5 ⚠ not connected</span>}
       </div>
 
-      {/* LEFT column (bottom-anchored): [log?] → transcript → avatar.
-          Right + center are intentionally clear for Phase C's panels. */}
+      {/* LEFT column (bottom-anchored): [log?] → transcript → avatar */}
       <div style={{ position: "absolute", left: 16, top: 64, bottom: 16, width: 320, display: "flex", flexDirection: "column", justifyContent: "flex-end", gap: 10, pointerEvents: "none" }}>
         {showLog && (
           <div style={{ ...card(), flex: 1, minHeight: 0, overflow: "auto", fontFamily: "ui-monospace, monospace", fontSize: 11, pointerEvents: "auto" }}>
@@ -142,6 +194,20 @@ export default function RealtimeExperience() {
         <div style={{ width: 300, height: 300, borderRadius: 12, overflow: "hidden", background: "#000", boxShadow: "0 8px 30px rgba(0,0,0,.5)", border: "1px solid #232838", pointerEvents: "auto" }}>
           <video ref={videoRef} autoPlay playsInline style={{ width: "100%", height: "100%", objectFit: "cover" }} />
         </div>
+      </div>
+
+      {/* RIGHT: rooms panel (driven by currentRoomPlan; cards edit the plan) */}
+      <div style={{ position: "absolute", right: 16, top: 16, bottom: 16, width: 380, zIndex: 10, pointerEvents: showRoomsPanel ? "auto" : "none" }}>
+        <RoomsPanel
+          visible={showRoomsPanel}
+          hotelName={hotelName}
+          rooms={rooms}
+          recommendedPlan={recommendedPlan}
+          onClose={() => setShowRoomsPanel(false)}
+          onAddRoom={onAddRoom}
+          onSetRoomQuantity={onSetRoomQuantity}
+          onRemoveRoom={onRemoveRoom}
+        />
       </div>
     </div>
   )

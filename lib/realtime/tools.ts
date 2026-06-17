@@ -90,6 +90,17 @@ export function buildToolSchemas(slug: string = PILOT_HOTEL_SLUG): RealtimeTool[
         required: ["view"],
       },
     },
+    {
+      type: "function",
+      name: "open_booking",
+      description:
+        "Open the booking/reservation page for a room in a new tab when the guest is ready to book. Omit roomId to book the first room in the current proposed plan.",
+      parameters: {
+        type: "object",
+        properties: { roomId: { type: "string" } },
+        required: [],
+      },
+    },
   ]
 
   if (amenityNames.length) {
@@ -115,6 +126,28 @@ export function buildToolSchemas(slug: string = PILOT_HOTEL_SLUG): RealtimeTool[
         type: "object",
         properties: { roomId: { type: "string", enum: roomIds } },
         required: ["roomId"],
+      },
+    })
+    tools.push({
+      type: "function",
+      name: "propose_room_plan",
+      description: `Recommend a specific set of rooms for the guest's stay — highlights them in the scene and shows them in the rooms panel. Use what you know about their party, dates, taste, and budget; make sure total capacity fits the party. Room ids: ${roomLabels}.`,
+      parameters: {
+        type: "object",
+        properties: {
+          rooms: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                roomId: { type: "string", enum: roomIds },
+                quantity: { type: "integer" },
+              },
+              required: ["roomId", "quantity"],
+            },
+          },
+        },
+        required: ["rooms"],
       },
     })
   }
