@@ -15,6 +15,11 @@ const IS_VAGON = STREAM_MODE === "vagon"
 const STREAM_URL = IS_VAGON
   ? "https://streams.vagon.io/streams/e92ad7d9-0510-4246-bdac-8fbedb5653ed?newSession=true"
   : process.env.NEXT_PUBLIC_VAGON_STREAM_URL || "http://127.0.0.1"
+// Match /home's iframe permissions so the Vagon player initialises the same way
+// (avoids the WebXR permissions-policy console noise).
+const IFRAME_ALLOW = IS_VAGON
+  ? "microphone *; clipboard-read *; clipboard-write *; encrypted-media *; fullscreen *"
+  : "autoplay; fullscreen; clipboard-read; clipboard-write; gamepad"
 
 export default function RealtimeExperience() {
   const videoRef = useRef<HTMLVideoElement | null>(null)
@@ -74,7 +79,7 @@ export default function RealtimeExperience() {
         ref={iframeRef}
         title="UE5 Stream"
         src={STREAM_URL}
-        allow="autoplay; fullscreen; clipboard-read; clipboard-write; gamepad; microphone *"
+        allow={IFRAME_ALLOW}
         style={{ position: "absolute", inset: 0, width: "100%", height: "100%", border: "none" }}
       />
 
