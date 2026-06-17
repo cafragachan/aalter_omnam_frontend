@@ -24,6 +24,13 @@ export function buildToolSchemas(slug: string = PILOT_HOTEL_SLUG): RealtimeTool[
   const tools: RealtimeTool[] = [
     {
       type: "function",
+      name: "travel_to_hotel",
+      description:
+        "Take the guest from the virtual lounge to the hotel/property. Call this once you've learned a little about their trip, or whenever they ask to see the hotel. REQUIRED before any room/amenity navigation.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+    {
+      type: "function",
       name: "navigate_to",
       description:
         "Move the guest to a top-level area of the live 3D tour. Call this when they ask to see rooms, amenities, the surroundings/location, or to go back to the default view.",

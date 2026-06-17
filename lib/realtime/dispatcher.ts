@@ -21,13 +21,25 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
   // Track selection locally so we can guard view_unit (the bridge's selectedUnit
   // only reflects in-world clicks, not tool-driven select_room).
   let selectedRoomId: string | null = null
+  // The guest starts in the virtual lounge; hotel navigation is gated until they
+  // travel (startTEST). Mirrors the journey's VIRTUAL_LOUNGE → hotel transition.
+  let arrived = false
+  const LOUNGE_GATE = "The guest is still in the virtual lounge — call travel_to_hotel first."
 
   return async function dispatch(
     name: string,
     args: Record<string, unknown>,
   ): Promise<string> {
     switch (name) {
+      case "travel_to_hotel": {
+        ue5.startTest() // emits { type: "startTEST", value: "startTEST" }
+        arrived = true
+        hooks.onScene?.("traveling to the hotel")
+        return "Traveling to the property now — the hotel is coming into view."
+      }
+
       case "navigate_to": {
+        if (!arrived) return LOUNGE_GATE
         const area = String(args.area ?? "")
         switch (area) {
           case "rooms":
@@ -50,6 +62,7 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
       }
 
       case "go_to_amenity": {
+        if (!arrived) return LOUNGE_GATE
         const wanted = String(args.amenity ?? "").trim().toLowerCase()
         const match = cat?.amenities.find(
           (a) =>
@@ -71,6 +84,7 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
       }
 
       case "select_room": {
+        if (!arrived) return LOUNGE_GATE
         const id = String(args.roomId ?? "")
         const room = cat?.rooms.find((r) => r.id === id)
         if (!room) return `"${id}" is not a known room id.`
@@ -81,6 +95,7 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
       }
 
       case "view_unit": {
+        if (!arrived) return LOUNGE_GATE
         const view = String(args.view ?? "")
         if (view !== "interior" && view !== "exterior") {
           return `view must be "interior" or "exterior".`
