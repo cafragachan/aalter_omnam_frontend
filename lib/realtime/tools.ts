@@ -31,6 +31,33 @@ export function buildToolSchemas(slug: string = PILOT_HOTEL_SLUG): RealtimeTool[
     },
     {
       type: "function",
+      name: "save_profile",
+      description:
+        "Quietly remember a detail the guest shares about their trip, so you can tailor the tour and recommendations. Call this whenever you learn something new (multiple times is fine). Include ONLY the fields you actually learned this turn — never guess.",
+      parameters: {
+        type: "object",
+        properties: {
+          firstName: { type: "string" },
+          adults: { type: "integer", description: "number of adults in the party" },
+          children: { type: "integer", description: "number of children in the party" },
+          childrenAges: { type: "array", items: { type: "integer" } },
+          startDate: { type: "string", description: "check-in date as ISO YYYY-MM-DD, if known" },
+          endDate: { type: "string", description: "check-out date as ISO YYYY-MM-DD, if known" },
+          interests: {
+            type: "array",
+            items: { type: "string" },
+            description: "what they care about, e.g. spa, fine dining, romance, hiking, lake views",
+          },
+          travelPurpose: { type: "string", description: "e.g. honeymoon, family vacation, business" },
+          budgetRange: { type: "string" },
+          dietaryRestrictions: { type: "array", items: { type: "string" } },
+          accessibilityNeeds: { type: "array", items: { type: "string" } },
+        },
+        required: [],
+      },
+    },
+    {
+      type: "function",
       name: "navigate_to",
       description:
         "Move the guest to a top-level area of the live 3D tour. Call this when they ask to see rooms, amenities, the surroundings/location, or to go back to the default view.",

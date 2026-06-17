@@ -6,6 +6,7 @@
 import { getHotelCatalog } from "@/lib/hotel-data"
 import type { useUE5Bridge } from "@/lib/ue5/bridge"
 import type { SunState } from "@/components/SunToggle"
+import type { UserProfile, GuestComposition } from "@/lib/context"
 import { PILOT_HOTEL_SLUG } from "./context"
 
 type Ue5Bridge = ReturnType<typeof useUE5Bridge>
@@ -14,6 +15,8 @@ export interface DispatcherHooks {
   /** HUD-only: report the new scene label (does NOT inject into the LLM — the
    *  function_call_output already keeps the model aware). */
   onScene?: (label: string) => void
+  /** Persist a learned profile detail to the OmnamStore (UPDATE_PROFILE). */
+  saveProfile?: (updates: Partial<UserProfile>) => void
 }
 
 export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}) {
@@ -36,6 +39,38 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
         arrived = true
         hooks.onScene?.("traveling to the hotel")
         return "Traveling to the property now — the hotel is coming into view."
+      }
+
+      case "save_profile": {
+        const updates: Partial<UserProfile> = {}
+        if (typeof args.firstName === "string" && args.firstName.trim()) {
+          updates.firstName = args.firstName.trim()
+        }
+        const gc: Partial<GuestComposition> = {}
+        if (Number.isFinite(Number(args.adults))) gc.adults = Number(args.adults)
+        if (Number.isFinite(Number(args.children))) gc.children = Number(args.children)
+        if (Array.isArray(args.childrenAges)) {
+          gc.childrenAges = (args.childrenAges as unknown[]).map(Number).filter(Number.isFinite)
+        }
+        if (Object.keys(gc).length) updates.guestComposition = gc as GuestComposition
+        const start = parseDate(args.startDate)
+        if (start) updates.startDate = start
+        const end = parseDate(args.endDate)
+        if (end) updates.endDate = end
+        if (Array.isArray(args.interests)) updates.interests = (args.interests as unknown[]).map(String)
+        if (typeof args.travelPurpose === "string") updates.travelPurpose = args.travelPurpose
+        if (typeof args.budgetRange === "string") updates.budgetRange = args.budgetRange
+        if (Array.isArray(args.dietaryRestrictions)) {
+          updates.dietaryRestrictions = (args.dietaryRestrictions as unknown[]).map(String)
+        }
+        if (Array.isArray(args.accessibilityNeeds)) {
+          updates.accessibilityNeeds = (args.accessibilityNeeds as unknown[]).map(String)
+        }
+        if (Object.keys(updates).length === 0) return "Nothing new to remember."
+        hooks.saveProfile?.(updates)
+        const summary = summarizeProfile(updates)
+        hooks.onScene?.(`noted: ${summary}`)
+        return `Remembered: ${summary}.`
       }
 
       case "navigate_to": {
@@ -122,4 +157,29 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
         return `Unknown tool "${name}".`
     }
   }
+}
+
+function parseDate(v: unknown): Date | undefined {
+  if (typeof v !== "string" || !v.trim()) return undefined
+  const d = new Date(v)
+  return Number.isNaN(d.getTime()) ? undefined : d
+}
+
+function summarizeProfile(u: Partial<UserProfile>): string {
+  const bits: string[] = []
+  if (u.firstName) bits.push(u.firstName)
+  if (u.guestComposition) {
+    const { adults, children } = u.guestComposition
+    const parts: string[] = []
+    if (typeof adults === "number") parts.push(`${adults} adult${adults === 1 ? "" : "s"}`)
+    if (typeof children === "number" && children > 0) parts.push(`${children} child${children === 1 ? "" : "ren"}`)
+    if (parts.length) bits.push(parts.join(" + "))
+  }
+  if (u.startDate) bits.push(`from ${u.startDate.toISOString().slice(0, 10)}${u.endDate ? ` to ${u.endDate.toISOString().slice(0, 10)}` : ""}`)
+  if (u.interests?.length) bits.push(u.interests.join(", "))
+  if (u.travelPurpose) bits.push(u.travelPurpose)
+  if (u.budgetRange) bits.push(u.budgetRange)
+  if (u.dietaryRestrictions?.length) bits.push(`dietary: ${u.dietaryRestrictions.join(", ")}`)
+  if (u.accessibilityNeeds?.length) bits.push(`access: ${u.accessibilityNeeds.join(", ")}`)
+  return bits.join("; ") || "a detail"
 }
