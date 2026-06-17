@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { buildL1Instruction } from "@/lib/realtime/context"
+import { buildToolSchemas } from "@/lib/realtime/tools"
 
 // Mint a short-lived OpenAI Realtime ephemeral client secret (ek_...). Only this
 // reaches the browser; OPENAI_API_KEY never does. The L1 instruction (persona +
@@ -41,6 +42,9 @@ export async function POST() {
           type: "realtime",
           model,
           instructions,
+          // Function calling → UE5 (executed client-side by lib/realtime/dispatcher).
+          tools: buildToolSchemas(),
+          tool_choice: "auto",
           // PCM16 @ 24kHz on both sides — matches HeyGen LITE, so no resampling.
           audio: {
             input: {
