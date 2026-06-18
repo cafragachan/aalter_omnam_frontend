@@ -10,6 +10,7 @@ import { RoomsPanel } from "@/components/panels/RoomsPanel"
 import { ChromaAvatar } from "@/components/realtime/ChromaAvatar"
 import { getHotelBySlug, getRoomsByHotelId, type RoomPlan, type RoomPlanEntry } from "@/lib/hotel-data"
 import { useAuth } from "@/lib/auth-context"
+import { useIncrementalPersistence } from "@/lib/firebase/useIncrementalPersistence"
 
 // D.1b — the realtime brain mounted inside /home's shell (auth + login overlay +
 // UE5 iframe live in HomePage). Reuses the real OmnamStore + auth, so returning
@@ -50,6 +51,19 @@ export default function HomePageContentRealtime() {
   const { state, dispatch } = useOmnamStore()
   const { userProfile, returningUserData } = useAuth()
   const currentRoomPlan = state.currentRoomPlan
+
+  // Live mirror so the tool dispatcher (created once at start) reads the CURRENT
+  // profile (e.g. party size) rather than the empty profile captured at start.
+  const stateRef = useRef(state)
+  stateRef.current = state
+
+  // Persist the session (profile + guest intelligence) to Firebase so returning
+  // guests accumulate data. DI hooks supply an empty transcript (the realtime
+  // transcript isn't in LiveAvatarContext); profile/personality still persist.
+  useIncrementalPersistence({
+    useContext: () => ({ messages: [] }),
+    useProfile: () => ({ userMessages: [] }),
+  })
 
   const [active, setActive] = useState(false)
   const [status, setStatus] = useState("idle")
@@ -123,6 +137,11 @@ export default function HomePageContentRealtime() {
         saveProfile: (updates) => dispatch({ type: "UPDATE_PROFILE", updates }),
         setRoomPlan: (plan) => dispatch({ type: "SET_ROOM_PLAN", plan }),
         onRoomsPanel: setShowRoomsPanel,
+        getPartySize: () => {
+          const gc = stateRef.current.profile.guestComposition
+          const n = (gc?.adults ?? 0) + (gc?.children ?? 0)
+          return n > 0 ? n : undefined
+        },
       }),
     )
     sessionRef.current = session

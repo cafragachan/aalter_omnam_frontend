@@ -31,6 +31,8 @@ export default function RealtimeExperience() {
   const sessionRef = useRef<RealtimeSession | null>(null)
   const { state, dispatch } = useOmnamStore()
   const currentRoomPlan = state.currentRoomPlan
+  const stateRef = useRef(state)
+  stateRef.current = state
 
   const [active, setActive] = useState(false)
   const [status, setStatus] = useState("idle")
@@ -114,6 +116,11 @@ export default function RealtimeExperience() {
         saveProfile: (updates) => dispatch({ type: "UPDATE_PROFILE", updates }),
         setRoomPlan: (plan) => dispatch({ type: "SET_ROOM_PLAN", plan }),
         onRoomsPanel: setShowRoomsPanel,
+        getPartySize: () => {
+          const gc = stateRef.current.profile.guestComposition
+          const n = (gc?.adults ?? 0) + (gc?.children ?? 0)
+          return n > 0 ? n : undefined
+        },
       }),
     )
     sessionRef.current = session

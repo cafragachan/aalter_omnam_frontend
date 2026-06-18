@@ -22,6 +22,8 @@ export interface DispatcherHooks {
   setRoomPlan?: (plan: CurrentRoomPlan) => void
   /** Show/hide the rooms panel. */
   onRoomsPanel?: (show: boolean) => void
+  /** Current party size (adults + children), for the capacity guardrail. */
+  getPartySize?: () => number | undefined
 }
 
 export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}) {
@@ -176,6 +178,11 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
           capacity += room.occupancy * qty
         }
         if (!planRooms.length) return "None of those room ids exist — pick from the catalog."
+        // Deterministic capacity guardrail — never propose a plan too small.
+        const party = hooks.getPartySize?.()
+        if (party && capacity < party) {
+          return `That plan only sleeps ${capacity}, but the party is ${party}. Add a room or pick larger ones so everyone fits, then propose again.`
+        }
         hooks.setRoomPlan?.({ rooms: planRooms, totalPerNight, capacity, source: "planner" })
         hooks.onRoomsPanel?.(true)
         lastPlanFirstRoomId = planRooms[0].roomId
