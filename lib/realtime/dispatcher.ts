@@ -103,7 +103,32 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
         }
         hooks.onRoomsPanel?.(area === "rooms")
         hooks.onScene?.(area)
+        if (area === "location") {
+          return "Now viewing the surrounding area. Call show_points_of_interest with a category (fine dining, landmarks, lakeside towns…) to map nearby places, then describe a couple."
+        }
         return `Navigated to ${area}.`
+      }
+
+      case "show_points_of_interest": {
+        const category = String(args.category ?? "").trim()
+        if (!category) return "Tell me what kind of places to show (e.g. fine dining, landmarks)."
+        try {
+          const res = await fetch("/api/locate-interest-points", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ category, maxResults: 10 }),
+          })
+          if (!res.ok) return `Couldn't fetch nearby ${category} right now.`
+          const data = (await res.json()) as { points?: Array<{ name?: string }> }
+          const points = Array.isArray(data.points) ? data.points : []
+          ue5.sendOSMData(JSON.stringify({ points })) // osm_data — array of places by name+type
+          hooks.onScene?.(`points of interest: ${category}`)
+          if (!points.length) return `I couldn't find notable ${category} nearby to map right now.`
+          const names = points.slice(0, 5).map((p) => p.name).filter(Boolean).join(", ")
+          return `Dropped ${points.length} ${category} markers on the map (${names}). Mention a couple to the guest.`
+        } catch {
+          return `Couldn't load nearby ${category} right now.`
+        }
       }
 
       case "go_to_amenity": {
@@ -189,7 +214,7 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
         const names = planRooms
           .map((p) => `${p.quantity}× ${cat?.rooms.find((x) => x.id === p.roomId)?.name ?? p.roomId}`)
           .join(", ")
-        return `Proposed plan: ${names} — $${totalPerNight}/night, sleeps ${capacity}.`
+        return `Proposed plan: ${names} — $${totalPerNight}/night, sleeps ${capacity}. The matching units now glow green in the scene — invite the guest to tap one to step inside.`
       }
 
       case "open_booking": {

@@ -123,6 +123,37 @@ export default function HomePageContentRealtime() {
     selectRoomUE5(payload)
   }, [currentRoomPlan, selectRoomUE5])
 
+  // Re-signal the highlighted units whenever we (re-)enter the rooms scene, so
+  // they persist even if the plan was set before arrival or after a detour.
+  useEffect(() => {
+    if (scene !== "rooms") return
+    const ids = Array.from(new Set((currentRoomPlan?.rooms ?? []).map((r) => r.roomId)))
+    if (!ids.length) return
+    const payload = ids.join(",")
+    lastSelectedPayloadRef.current = payload
+    selectRoomUE5(payload)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scene])
+
+  // Keep Ava in sync with GUEST-driven plan edits on the panel cards (she made
+  // planner edits herself, so only feed back source: 'user' changes).
+  const lastPlanFeedbackRef = useRef<string | null>(null)
+  useEffect(() => {
+    const plan = currentRoomPlan
+    if (!plan || plan.source !== "user") return
+    const key = plan.rooms.map((r) => `${r.roomId}x${r.quantity}`).join(",")
+    if (lastPlanFeedbackRef.current === key) return
+    lastPlanFeedbackRef.current = key
+    const summary =
+      plan.rooms
+        .map((r) => `${r.quantity}× ${rooms.find((x) => x.id === r.roomId)?.name ?? r.roomId}`)
+        .join(", ") || "empty"
+    sessionRef.current?.injectContext(
+      `[plan updated by guest] The room plan is now: ${summary} ($${plan.totalPerNight}/night, sleeps ${plan.capacity}).`,
+      { respond: false },
+    )
+  }, [currentRoomPlan, rooms])
+
   const start = useCallback(async () => {
     if (!videoRef.current || sessionRef.current) return
     setActive(true)

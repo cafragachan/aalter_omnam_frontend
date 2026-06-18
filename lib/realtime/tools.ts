@@ -92,6 +92,19 @@ export function buildToolSchemas(slug: string = PILOT_HOTEL_SLUG): RealtimeTool[
     },
     {
       type: "function",
+      name: "show_points_of_interest",
+      description:
+        "When the guest is exploring the surrounding area, drop map markers for notable nearby places. Pass a category of place to show.",
+      parameters: {
+        type: "object",
+        properties: {
+          category: { type: "string", description: "e.g. fine dining, landmarks, lakeside towns, bars, activities" },
+        },
+        required: ["category"],
+      },
+    },
+    {
+      type: "function",
       name: "open_booking",
       description:
         "Open the booking/reservation page for a room in a new tab when the guest is ready to book. Omit roomId to book the first room in the current proposed plan.",
