@@ -24,6 +24,26 @@ function safeJson(v: unknown): string {
   }
 }
 
+function fmtDate(d: unknown): string | null {
+  if (!d) return null
+  const date = d instanceof Date ? d : new Date(d as string)
+  return Number.isNaN(date.getTime()) ? null : date.toLocaleDateString(undefined, { month: "short", day: "numeric" })
+}
+function tripDates(p: { startDate?: unknown; endDate?: unknown }): string {
+  const s = fmtDate(p.startDate)
+  const e = fmtDate(p.endDate)
+  if (s && e) return `${s} – ${e}`
+  if (s) return `from ${s}`
+  return "—"
+}
+function tripGuests(p: { guestComposition?: { adults?: number; children?: number } }): string {
+  const gc = p.guestComposition
+  if (!gc || (gc.adults == null && gc.children == null)) return "—"
+  const a = gc.adults ?? 0
+  const c = gc.children ?? 0
+  return `${a} adult${a === 1 ? "" : "s"}${c > 0 ? ` · ${c} child${c === 1 ? "" : "ren"}` : ""}`
+}
+
 export default function HomePageContentRealtime() {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const sessionRef = useRef<RealtimeSession | null>(null)
@@ -65,10 +85,10 @@ export default function HomePageContentRealtime() {
     const prefs = returningUserData?.preferences
     if (!name && !prefs) return ""
     const parts: string[] = []
-    if (name) parts.push(`The returning guest's name is ${name}.`)
+    if (name) parts.push(`Name: ${name}.`)
     if (userProfile?.nationality) parts.push(`Nationality: ${userProfile.nationality}.`)
-    if (prefs) parts.push(`Previously noted preferences: ${safeJson(prefs)}.`)
-    return `[returning guest] ${parts.join(" ")} Greet them warmly${name ? " by name" : ""} and tailor the experience to what you already know.`
+    if (prefs) parts.push(`Soft hints from past visits (confirm, don't assume): ${safeJson(prefs)}.`)
+    return `[returning guest — background only] ${parts.join(" ")} When you greet them (once), use their name. Still ask for THIS trip's dates, party, and room needs before travelling — never assume them.`
   }, [userProfile, returningUserData])
 
   const onUnitSelected = useCallback((payload: { roomName: string }) => {
@@ -106,9 +126,10 @@ export default function HomePageContentRealtime() {
       }),
     )
     sessionRef.current = session
-    // Queue hydration before the WS opens; flushed on open (proactive welcome
-    // back for returning guests).
-    if (hydration) session.injectContext(hydration, { respond: Boolean(userProfile?.firstName) })
+    // Queue hydration before the WS opens; flushed on open. respond:false — Ava
+    // greets ONCE on the guest's first turn (proactive auto-greet caused a
+    // double welcome), and the persona still drives the intake.
+    if (hydration) session.injectContext(hydration, { respond: false })
     await session.start()
   }, [ue5, dispatch, hydration, userProfile])
 
@@ -136,6 +157,15 @@ export default function HomePageContentRealtime() {
           <button onClick={start} style={{ background: "#2563eb", color: "#fff", border: "none", borderRadius: 12, padding: "14px 28px", fontSize: 18, fontWeight: 800, cursor: "pointer", boxShadow: "0 10px 40px rgba(0,0,0,.5)" }}>
             ▶ Begin with Ava
           </button>
+        </div>
+      )}
+
+      {/* Trip-details chip — fills in live as Ava captures the intake */}
+      {active && (
+        <div style={{ position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)", display: "flex", gap: 14, alignItems: "center", background: "rgba(11,13,18,.78)", border: "1px solid #232838", borderRadius: 999, padding: "6px 18px", fontSize: 12, color: "#e7e9ee", pointerEvents: "none", backdropFilter: "blur(6px)" }}>
+          <span><span style={{ opacity: 0.55 }}>Dates</span> {tripDates(state.profile)}</span>
+          <span style={{ opacity: 0.3 }}>·</span>
+          <span><span style={{ opacity: 0.55 }}>Guests</span> {tripGuests(state.profile)}</span>
         </div>
       )}
 
