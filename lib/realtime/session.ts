@@ -86,6 +86,9 @@ export class RealtimeSession {
   // Tool calling (Phase A.2). callId → accumulated state.
   private toolHandler: ToolHandler | null = null
   private pendingCalls = new Map<string, { name: string; args: string }>()
+  // Context items injected before the WS is open are queued and flushed on open
+  // (so returning-guest hydration at session start isn't dropped).
+  private pendingContext: { text: string; respond: boolean }[] = []
 
   constructor(videoEl: HTMLMediaElement, cb: RealtimeCallbacks = {}, opts: RealtimeOptions = {}) {
     this.videoEl = videoEl
@@ -158,6 +161,14 @@ export class RealtimeSession {
    * narration); otherwise it just updates her awareness for the next turn.
    */
   injectContext(text: string, opts: { respond?: boolean } = {}) {
+    if (this.oaWs && this.oaWs.readyState === WebSocket.OPEN) {
+      this.sendContext(text, !!opts.respond)
+    } else {
+      this.pendingContext.push({ text, respond: !!opts.respond })
+    }
+  }
+
+  private sendContext(text: string, respond: boolean) {
     if (!this.oaWs || this.oaWs.readyState !== WebSocket.OPEN) return
     this.oaWs.send(
       JSON.stringify({
@@ -165,7 +176,7 @@ export class RealtimeSession {
         item: { type: "message", role: "user", content: [{ type: "input_text", text }] },
       }),
     )
-    if (opts.respond) this.oaWs.send(JSON.stringify({ type: "response.create" }))
+    if (respond) this.oaWs.send(JSON.stringify({ type: "response.create" }))
   }
 
   // ---- HeyGen LITE avatar -----------------------------------------------
@@ -255,7 +266,12 @@ export class RealtimeSession {
     const ws = new WebSocket(url, ["realtime", "openai-insecure-api-key." + tok.value])
     this.oaWs = ws
 
-    ws.onopen = () => this.log("✅ Realtime WS open")
+    ws.onopen = () => {
+      this.log("✅ Realtime WS open")
+      const queued = this.pendingContext
+      this.pendingContext = []
+      for (const c of queued) this.sendContext(c.text, c.respond)
+    }
     ws.onerror = () => this.log("❌ Realtime WS error")
     ws.onclose = (e) => this.log(`Realtime WS closed (${e.code}${e.reason ? " " + e.reason : ""})`)
     ws.onmessage = (ev) => this.handleRealtimeEvent(ev.data as string)

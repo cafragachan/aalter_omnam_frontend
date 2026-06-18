@@ -32,6 +32,13 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { useIncrementalPersistence } from "@/lib/firebase/useIncrementalPersistence"
 import { useActiveSessionHydration } from "@/lib/firebase/useActiveSessionHydration"
+import HomePageContentRealtime from "./HomePageContentRealtime"
+
+// D.1b — opt-in flag for the realtime brain (gpt-realtime + HeyGen LITE). When
+// on, /home renders HomePageContentRealtime inside the same shell (auth, login
+// overlay, UE5 iframe) instead of the legacy HeyGen-FULL + useJourney path.
+// Old brain stays the default until the explicit D.2 flip.
+const REALTIME_BRAIN = process.env.NEXT_PUBLIC_REALTIME_BRAIN === "1"
 import { initDebug } from "@/lib/debug"
 import { SessionState, VoiceChatState } from "@heygen/liveavatar-web-sdk"
 
@@ -736,6 +743,9 @@ export default function HomePage() {
   // Fetch HeyGen session token once UE5 is ready, user is authenticated, AND intro is complete.
   // Reset if the user identity changes (logout + re-login on same page mount).
   useEffect(() => {
+    // Realtime path mints its own (LITE) session token inside the brain; no
+    // FULL HeyGen session needed.
+    if (REALTIME_BRAIN) return
     if (!ue5Ready || !introComplete || !isAuthenticated || !userProfile) return
     const currentUid = firebaseUser?.uid ?? null
     if (sessionUserIdRef.current === currentUid) return
@@ -812,26 +822,19 @@ export default function HomePage() {
 
       {/* Main experience (avatar, panels, etc.) — only after intro completes */}
       {introComplete && isAuthenticated && (
-        <>
-          {/* {!sessionToken && (
-            <div className="pointer-events-none relative z-10 flex min-h-screen items-center justify-center">
-              {error ? (
-                <div className="text-center text-sm text-red-300">{error}</div>
-              ) : (
-                <div className="text-white/80 text-sm">
-                  {ue5Ready ? "Launching avatar..." : "Waiting for UE5 stream..."}
-                </div>
-              )}
-            </div>
-          )} */}
-          {sessionToken && (
-            <HydratedLiveAvatarContext sessionToken={sessionToken}>
-              <InputModeProvider>
-                <HomePageContent onHideUE5Stream={() => setUe5Hidden(true)} catalog={catalog} />
-              </InputModeProvider>
-            </HydratedLiveAvatarContext>
-          )}
-        </>
+        REALTIME_BRAIN ? (
+          <HomePageContentRealtime />
+        ) : (
+          <>
+            {sessionToken && (
+              <HydratedLiveAvatarContext sessionToken={sessionToken}>
+                <InputModeProvider>
+                  <HomePageContent onHideUE5Stream={() => setUe5Hidden(true)} catalog={catalog} />
+                </InputModeProvider>
+              </HydratedLiveAvatarContext>
+            )}
+          </>
+        )
       )}
     </div>
   )
