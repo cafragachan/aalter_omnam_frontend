@@ -7,6 +7,7 @@ import { formatSceneDelta, PILOT_HOTEL_SLUG } from "@/lib/realtime/context"
 import { useUE5Bridge } from "@/lib/ue5/bridge"
 import { useOmnamStore } from "@/lib/omnam-store"
 import { RoomsPanel } from "@/components/panels/RoomsPanel"
+import { ChromaAvatar } from "@/components/realtime/ChromaAvatar"
 import { getHotelBySlug, getRoomsByHotelId, type RoomPlan, type RoomPlanEntry } from "@/lib/hotel-data"
 
 // Walking skeleton: UE5 twin + HeyGen LITE avatar + gpt-realtime brain that
@@ -191,9 +192,8 @@ export default function RealtimeExperience() {
             </div>
           ))}
         </div>
-        <div style={{ width: 300, height: 300, borderRadius: 12, overflow: "hidden", background: "#000", boxShadow: "0 8px 30px rgba(0,0,0,.5)", border: "1px solid #232838", pointerEvents: "auto" }}>
-          <video ref={videoRef} autoPlay playsInline style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-        </div>
+        {/* Chroma-keyed avatar — composites over the twin (transparent bg) */}
+        <ChromaAvatar videoRef={videoRef} fit="contain" style={{ width: 300, height: 420, pointerEvents: "none" }} />
       </div>
 
       {/* RIGHT: rooms panel (driven by currentRoomPlan; cards edit the plan) */}
