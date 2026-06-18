@@ -33,6 +33,10 @@ export async function POST() {
         avatar_id: avatarId,
         is_sandbox: false,
         video_settings: { quality: "high", encoding: "VP8" },
+        // Default idle timeout is ~120s, which silently kills the avatar on any
+        // pause > 2min (transcript keeps going via the separate OpenAI session).
+        // Raise it; client also pings keep-alive (server-side, CORS-safe).
+        activity_idle_timeout: 3600,
       }),
     })
 

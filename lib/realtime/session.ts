@@ -21,6 +21,7 @@ import {
   LiveAvatarSession,
   SessionEvent,
   SessionState,
+  SessionDisconnectReason,
   AgentEventsEnum,
 } from "@heygen/liveavatar-web-sdk"
 
@@ -90,6 +91,14 @@ export class RealtimeSession {
   // (so returning-guest hydration at session start isn't dropped).
   private pendingContext: { text: string; respond: boolean }[] = []
 
+  // HeyGen session lifecycle. The avatar idle-times-out (and the browser can't
+  // keep-alive/stop it — CORS), so we ping keep-alive + stop via server proxies
+  // and reconnect if the LITE session drops while the OpenAI session lives on.
+  private heygenSessionToken: string | null = null
+  private keepAliveTimer: ReturnType<typeof setInterval> | null = null
+  private stopping = false
+  private reconnectAttempts = 0
+
   constructor(videoEl: HTMLMediaElement, cb: RealtimeCallbacks = {}, opts: RealtimeOptions = {}) {
     this.videoEl = videoEl
     this.cb = cb
@@ -109,6 +118,8 @@ export class RealtimeSession {
   async start() {
     if (this.running) return
     this.running = true
+    this.stopping = false
+    this.reconnectAttempts = 0
     try {
       await this.startAvatar()
       await this.startRealtimeAndMic()
@@ -122,7 +133,11 @@ export class RealtimeSession {
 
   async stop() {
     this.running = false
+    this.stopping = true
     this.avatarReady = false
+    this.stopKeepAlive()
+    // Stop the HeyGen session server-side (browser REST stop is CORS-blocked).
+    if (this.heygenSessionToken) void this.serverStop(this.heygenSessionToken)
     if (this.flushTimer) {
       clearTimeout(this.flushTimer)
       this.flushTimer = null
@@ -151,6 +166,7 @@ export class RealtimeSession {
     this.audioCtx = null
     this.oaWs = null
     this.avatar = null
+    this.heygenSessionToken = null
     this.pendingCalls.clear()
     this.status("stopped")
   }
@@ -186,6 +202,7 @@ export class RealtimeSession {
     const res = await fetch(this.opts.heygenUrl, { method: "POST" })
     const json = await res.json()
     if (!res.ok) throw new Error(json.error || "heygen-lite-session failed")
+    this.heygenSessionToken = json.session_token
 
     const avatar = new LiveAvatarSession(json.session_token, {
       voiceChat: false, // BYO audio — we push PCM via repeatAudio()
@@ -198,6 +215,7 @@ export class RealtimeSession {
     })
     avatar.on(SessionEvent.SESSION_STREAM_READY, () => {
       this.log("avatar stream ready → attaching")
+      this.reconnectAttempts = 0 // healthy connection — refresh the retry budget
       try {
         avatar.attach(this.videoEl)
         ;(this.videoEl as HTMLVideoElement).muted = false
@@ -205,6 +223,9 @@ export class RealtimeSession {
       } catch (err) {
         this.log(`❌ attach failed: ${(err as Error).message}`)
       }
+    })
+    avatar.on(SessionEvent.SESSION_DISCONNECTED, (reason: SessionDisconnectReason) => {
+      void this.handleAvatarDisconnect(reason)
     })
     avatar.on(AgentEventsEnum.AVATAR_SPEAK_STARTED, () => {
       if (this.cur && this.cur.t3 == null) {
@@ -219,7 +240,64 @@ export class RealtimeSession {
     this.status("connecting avatar…")
     await avatar.start()
     this.avatarReady = true
+    this.startKeepAlive()
     this.log("✅ avatar connected (LITE, BYO audio)")
+  }
+
+  // ---- HeyGen session lifecycle (server-proxied; CORS-safe) -------------
+
+  private startKeepAlive() {
+    this.stopKeepAlive()
+    const token = this.heygenSessionToken
+    if (!token) return
+    // Ping well inside the idle window so the avatar never goes silent.
+    this.keepAliveTimer = setInterval(() => {
+      void fetch("/api/heygen-keepalive", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_token: token }),
+      }).catch(() => {})
+    }, 60_000)
+  }
+
+  private stopKeepAlive() {
+    if (this.keepAliveTimer) {
+      clearInterval(this.keepAliveTimer)
+      this.keepAliveTimer = null
+    }
+  }
+
+  private async serverStop(token: string) {
+    try {
+      await fetch("/api/heygen-stop", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_token: token }),
+      })
+    } catch {}
+  }
+
+  private async handleAvatarDisconnect(reason: SessionDisconnectReason) {
+    if (this.stopping || !this.running) return
+    this.stopKeepAlive()
+    if (this.reconnectAttempts >= 2) {
+      this.log(`⚠️ avatar disconnected (${reason}); gave up after ${this.reconnectAttempts} reconnect attempts`)
+      this.status("avatar disconnected")
+      return
+    }
+    this.reconnectAttempts += 1
+    this.log(`↻ avatar disconnected (${reason}); reconnecting (attempt ${this.reconnectAttempts})…`)
+    if (this.heygenSessionToken) void this.serverStop(this.heygenSessionToken)
+    try {
+      await this.avatar?.stop()
+    } catch {}
+    this.avatar = null
+    try {
+      await this.startAvatar() // re-mint + re-create + re-attach + restart keep-alive
+      this.log("✅ avatar reconnected")
+    } catch (err) {
+      this.log(`❌ reconnect failed: ${(err as Error).message}`)
+    }
   }
 
   // ---- OpenAI Realtime + mic --------------------------------------------
