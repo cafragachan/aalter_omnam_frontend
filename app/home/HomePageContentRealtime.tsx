@@ -130,7 +130,7 @@ export default function HomePageContentRealtime() {
       onStatus: setStatus,
       onMetric: (_m: TurnMetric) => {},
       onTranscript: (who, text) => setTranscript((prev) => [...prev, { who, text }].slice(-30)),
-    })
+    }, { greetOnReady: true })
     session.setToolHandler(
       createToolDispatcher(ue5, {
         onScene: setScene,

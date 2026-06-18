@@ -49,6 +49,9 @@ export interface RealtimeOptions {
   heygenUrl?: string
   /** Server route that mints the OpenAI Realtime ephemeral token. */
   tokenUrl?: string
+  /** Fire ONE proactive greeting ~3s after the avatar + WS are ready, instead
+   *  of waiting for the guest to speak. Content is driven by persona + hydration. */
+  greetOnReady?: boolean
 }
 
 /**
@@ -98,6 +101,9 @@ export class RealtimeSession {
   private keepAliveTimer: ReturnType<typeof setInterval> | null = null
   private stopping = false
   private reconnectAttempts = 0
+  // One-shot proactive greeting (~3s after avatar + WS are ready).
+  private greeted = false
+  private greetTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(videoEl: HTMLMediaElement, cb: RealtimeCallbacks = {}, opts: RealtimeOptions = {}) {
     this.videoEl = videoEl
@@ -105,6 +111,7 @@ export class RealtimeSession {
     this.opts = {
       heygenUrl: opts.heygenUrl ?? "/api/heygen-lite-session",
       tokenUrl: opts.tokenUrl ?? "/api/realtime-token",
+      greetOnReady: opts.greetOnReady ?? false,
     }
   }
 
@@ -120,6 +127,7 @@ export class RealtimeSession {
     this.running = true
     this.stopping = false
     this.reconnectAttempts = 0
+    this.greeted = false
     try {
       await this.startAvatar()
       await this.startRealtimeAndMic()
@@ -136,6 +144,10 @@ export class RealtimeSession {
     this.stopping = true
     this.avatarReady = false
     this.stopKeepAlive()
+    if (this.greetTimer) {
+      clearTimeout(this.greetTimer)
+      this.greetTimer = null
+    }
     // Stop the HeyGen session server-side (browser REST stop is CORS-blocked).
     if (this.heygenSessionToken) void this.serverStop(this.heygenSessionToken)
     if (this.flushTimer) {
@@ -241,7 +253,24 @@ export class RealtimeSession {
     await avatar.start()
     this.avatarReady = true
     this.startKeepAlive()
+    this.maybeGreet()
     this.log("✅ avatar connected (LITE, BYO audio)")
+  }
+
+  // One proactive greeting ~3s after BOTH the avatar and the WS are ready, so
+  // Ava welcomes the guest instead of waiting for them to speak first.
+  private maybeGreet() {
+    if (!this.opts.greetOnReady || this.greeted || this.greetTimer) return
+    if (!this.avatarReady) return
+    if (!this.oaWs || this.oaWs.readyState !== WebSocket.OPEN) return
+    this.greetTimer = setTimeout(() => {
+      this.greetTimer = null
+      this.greeted = true
+      this.injectContext(
+        "[The experience has just begun and the guest is here — greet them now, once, following your persona.]",
+        { respond: true },
+      )
+    }, 3000)
   }
 
   // ---- HeyGen session lifecycle (server-proxied; CORS-safe) -------------
@@ -349,6 +378,7 @@ export class RealtimeSession {
       const queued = this.pendingContext
       this.pendingContext = []
       for (const c of queued) this.sendContext(c.text, c.respond)
+      this.maybeGreet()
     }
     ws.onerror = () => this.log("❌ Realtime WS error")
     ws.onclose = (e) => this.log(`Realtime WS closed (${e.code}${e.reason ? " " + e.reason : ""})`)

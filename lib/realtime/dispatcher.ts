@@ -47,7 +47,7 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
         ue5.startTest() // emits { type: "startTEST", value: "startTEST" }
         arrived = true
         hooks.onScene?.("traveling to the hotel")
-        return "Traveling to the property now — the hotel is coming into view."
+        return "Arriving at the EDITION Lake Como. Now recommend the best room(s) for their party by calling propose_room_plan, and mention they can also explore the amenities or the surrounding area."
       }
 
       case "save_profile": {
