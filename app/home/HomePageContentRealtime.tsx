@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { RealtimeSession, type TurnMetric } from "@/lib/realtime/session"
+import { RealtimeSession } from "@/lib/realtime/session"
 import { createToolDispatcher } from "@/lib/realtime/dispatcher"
 import { PILOT_HOTEL_SLUG } from "@/lib/realtime/context"
 import { useUE5Bridge } from "@/lib/ue5/bridge"
@@ -47,20 +47,6 @@ function tripGuests(p: { guestComposition?: { adults?: number; children?: number
   return `${a} adult${a === 1 ? "" : "s"}${c > 0 ? ` · ${c} child${c === 1 ? "" : "ren"}` : ""}`
 }
 
-const iconBtnStyle: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  width: 40,
-  height: 40,
-  borderRadius: 999,
-  background: "rgba(255,255,255,.15)",
-  border: "1px solid rgba(255,255,255,.3)",
-  color: "#fff",
-  cursor: "pointer",
-  backdropFilter: "blur(8px)",
-}
-
 export default function HomePageContentRealtime() {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const sessionRef = useRef<RealtimeSession | null>(null)
@@ -82,10 +68,8 @@ export default function HomePageContentRealtime() {
   })
 
   const [active, setActive] = useState(false)
-  const [status, setStatus] = useState("idle")
   const [showRoomsPanel, setShowRoomsPanel] = useState(false)
   const [scene, setScene] = useState("lounge")
-  const [transcript, setTranscript] = useState<{ who: string; text: string }[]>([])
   const [muted, setMuted] = useState(false)
   const [chatOpen, setChatOpen] = useState(false)
   const [chatText, setChatText] = useState("")
@@ -178,11 +162,7 @@ export default function HomePageContentRealtime() {
   const start = useCallback(async () => {
     if (!videoRef.current || sessionRef.current) return
     setActive(true)
-    const session = new RealtimeSession(videoRef.current, {
-      onStatus: setStatus,
-      onMetric: (_m: TurnMetric) => {},
-      onTranscript: (who, text) => setTranscript((prev) => [...prev, { who, text }].slice(-30)),
-    }, { greetOnReady: true })
+    const session = new RealtimeSession(videoRef.current, {}, { greetOnReady: true })
     session.setToolHandler(
       createToolDispatcher(ue5, {
         onScene: setScene,
@@ -231,16 +211,18 @@ export default function HomePageContentRealtime() {
     const text = chatText.trim()
     if (!text || !sessionRef.current) return
     sessionRef.current.injectContext(text, { respond: true })
-    setTranscript((prev) => [...prev, { who: "user", text }].slice(-30))
     setChatText("")
   }, [chatText])
 
   return (
-    <div style={{ position: "absolute", inset: 0, zIndex: 20, pointerEvents: "none" }}>
-      {/* Start gate (mic needs a user gesture) */}
+    <div className="pointer-events-none absolute inset-0 z-20 overflow-hidden" onDragStart={(e) => e.preventDefault()}>
+      {/* Start gate — mic needs a user gesture */}
       {!active && (
-        <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "auto" }}>
-          <button onClick={start} style={{ background: "#2563eb", color: "#fff", border: "none", borderRadius: 12, padding: "14px 28px", fontSize: 18, fontWeight: 800, cursor: "pointer", boxShadow: "0 10px 40px rgba(0,0,0,.5)" }}>
+        <div className="pointer-events-auto absolute inset-0 flex items-center justify-center">
+          <button
+            onClick={start}
+            className="rounded-full border border-white/25 bg-gradient-to-br from-white/20 via-white/10 to-white/5 px-8 py-4 text-lg font-semibold text-white shadow-[0_20px_60px_-28px_rgba(0,0,0,0.85)] backdrop-blur-2xl transition hover:bg-white/20"
+          >
             ▶ Begin with Ava
           </button>
         </div>
@@ -248,73 +230,85 @@ export default function HomePageContentRealtime() {
 
       {/* Trip-details chip — fills in live as Ava captures the intake */}
       {active && (
-        <div style={{ position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)", display: "flex", gap: 14, alignItems: "center", background: "rgba(11,13,18,.78)", border: "1px solid #232838", borderRadius: 999, padding: "6px 18px", fontSize: 12, color: "#e7e9ee", pointerEvents: "none", backdropFilter: "blur(6px)" }}>
-          <span><span style={{ opacity: 0.55 }}>Dates</span> {tripDates(state.profile)}</span>
-          <span style={{ opacity: 0.3 }}>·</span>
-          <span><span style={{ opacity: 0.55 }}>Guests</span> {tripGuests(state.profile)}</span>
+        <div className="pointer-events-none absolute left-1/2 top-4 flex -translate-x-1/2 items-center gap-3 rounded-full border border-white/25 bg-gradient-to-br from-white/20 via-white/10 to-white/5 px-5 py-2 text-xs text-white shadow-lg backdrop-blur-2xl">
+          <span><span className="text-white/55">Dates</span> {tripDates(state.profile)}</span>
+          <span className="text-white/30">·</span>
+          <span><span className="text-white/55">Guests</span> {tripGuests(state.profile)}</span>
         </div>
       )}
 
-      {/* Chroma-keyed avatar + transcript, bottom-left */}
-      <div style={{ position: "absolute", left: 16, bottom: 16, width: 340, display: "flex", flexDirection: "column", gap: 8, pointerEvents: "none" }}>
-        {active && transcript.length > 0 && (
-          <div style={{ maxHeight: 160, overflow: "auto", background: "rgba(20,24,35,.85)", border: "1px solid #232838", borderRadius: 10, padding: 10, fontSize: 12, pointerEvents: "auto", backdropFilter: "blur(6px)" }}>
-            {transcript.map((t, i) => (
-              <div key={i} style={{ margin: "2px 0" }}>
-                <span style={{ color: t.who === "ava" ? "#60a5fa" : "#a3e635" }}>{t.who === "ava" ? "Ava" : "You"}:</span> {t.text}
+      {/* Rooms panel — right side */}
+      {showRoomsPanel && (
+        <div className="pointer-events-auto fixed right-4 top-4 bottom-[calc(4rem+2vh)] z-20" style={{ width: 273 }}>
+          <RoomsPanel
+            visible={showRoomsPanel}
+            hotelName={hotelName}
+            rooms={rooms}
+            recommendedPlan={recommendedPlan}
+            onClose={() => setShowRoomsPanel(false)}
+            onAddRoom={onAddRoom}
+            onSetRoomQuantity={onSetRoomQuantity}
+            onRemoveRoom={onRemoveRoom}
+          />
+        </div>
+      )}
+
+      {/* Avatar control panel — bottom-left glass pill (always mounted so the
+          session can attach to the avatar video). */}
+      <div className="absolute inset-x-0 bottom-0 flex flex-col px-6 pb-10">
+        <div className="mt-auto">
+          {active && chatOpen && (
+            <div className="pointer-events-auto mb-3 flex w-full max-w-sm gap-2">
+              <input
+                value={chatText}
+                onChange={(e) => setChatText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") sendChat()
+                }}
+                placeholder="Type to Ava…"
+                className="flex-1 rounded-xl border border-white/25 bg-white/15 px-3 py-2 text-sm text-white outline-none backdrop-blur-md placeholder:text-white/50"
+              />
+              <button
+                onClick={sendChat}
+                className="flex h-10 w-10 items-center justify-center rounded-full border border-white/15 bg-white/10 backdrop-blur-md transition-colors hover:bg-white/20"
+              >
+                <Send className="h-5 w-5 text-white" />
+              </button>
+            </div>
+          )}
+          <div className="pointer-events-auto inline-flex items-stretch rounded-[20px] border border-white/25 bg-gradient-to-br from-white/20 via-white/10 to-white/5 shadow-[0_20px_60px_-28px_rgba(0,0,0,0.85)] backdrop-blur-2xl">
+            {/* Avatar thumbnail (chroma-keyed onto black) */}
+            <div className="p-[5px] pr-0">
+              <div className="relative overflow-hidden rounded-[16px] bg-black shadow-2xl" style={{ width: 210, height: 262 }}>
+                <ChromaAvatar videoRef={videoRef} fit="cover" style={{ width: "100%", height: "100%" }} />
               </div>
-            ))}
-          </div>
-        )}
-        {active && (
-          <div style={{ display: "flex", gap: 8, alignItems: "center", pointerEvents: "auto" }}>
-            <button onClick={toggleMute} title={muted ? "Unmute Ava" : "Mute Ava"} style={iconBtnStyle}>
-              {muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
-            </button>
-            <SunToggle value={ue5.sunState} onChange={ue5.changeSunPosition} />
-            <button onClick={() => setChatOpen((o) => !o)} title="Type to Ava" style={iconBtnStyle}>
-              <MessageSquare size={16} />
-            </button>
-          </div>
-        )}
-        {active && chatOpen && (
-          <div style={{ display: "flex", gap: 6, pointerEvents: "auto" }}>
-            <input
-              value={chatText}
-              onChange={(e) => setChatText(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") sendChat()
-              }}
-              placeholder="Type to Ava…"
-              style={{ flex: 1, background: "rgba(20,24,35,.9)", border: "1px solid #232838", borderRadius: 8, padding: "6px 10px", color: "#e7e9ee", fontSize: 13, outline: "none" }}
-            />
-            <button onClick={sendChat} style={iconBtnStyle}>
-              <Send size={16} />
-            </button>
-          </div>
-        )}
-        <ChromaAvatar videoRef={videoRef} fit="contain" style={{ width: 340, height: 460 }} />
-      </div>
+            </div>
 
-      {/* Rooms panel, right */}
-      <div style={{ position: "absolute", right: 16, top: 16, bottom: 16, width: 380, pointerEvents: showRoomsPanel ? "auto" : "none" }}>
-        <RoomsPanel
-          visible={showRoomsPanel}
-          hotelName={hotelName}
-          rooms={rooms}
-          recommendedPlan={recommendedPlan}
-          onClose={() => setShowRoomsPanel(false)}
-          onAddRoom={onAddRoom}
-          onSetRoomQuantity={onSetRoomQuantity}
-          onRemoveRoom={onRemoveRoom}
-        />
-      </div>
-
-      {active && (
-        <div style={{ position: "absolute", top: 12, left: 12, fontSize: 11, color: "#cbd5e1", background: "rgba(11,13,18,.7)", padding: "4px 8px", borderRadius: 8, pointerEvents: "none" }}>
-          {status} · {scene}
+            {/* Right body — vertical button column */}
+            <div className="flex min-w-[70px] flex-col items-center justify-end gap-3 px-[15px] py-4">
+              <SunToggle value={ue5.sunState} onChange={ue5.changeSunPosition} />
+              {active && (
+                <>
+                  <button
+                    onClick={toggleMute}
+                    title={muted ? "Unmute Ava" : "Mute Ava"}
+                    className="flex h-10 w-10 items-center justify-center rounded-full border border-white/15 bg-white/10 shadow-lg backdrop-blur-md transition-colors hover:bg-white/20"
+                  >
+                    {muted ? <VolumeX className="h-5 w-5 text-red-400" /> : <Volume2 className="h-5 w-5 text-white" />}
+                  </button>
+                  <button
+                    onClick={() => setChatOpen((o) => !o)}
+                    title="Type to Ava"
+                    className="flex h-10 w-10 items-center justify-center rounded-full border border-white/15 bg-white/10 shadow-lg backdrop-blur-md transition-colors hover:bg-white/20"
+                  >
+                    <MessageSquare className="h-5 w-5 text-white" />
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
         </div>
-      )}
+      </div>
     </div>
   )
 }
