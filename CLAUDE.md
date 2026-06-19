@@ -267,5 +267,5 @@ tag in the root layout. `lib/context.tsx` / `lib/store.tsx` are compat shims ove
   hydration (inline in `HomePageContentRealtime`).
 - **Only active hotel**: EDITION Lake Como (`lib/hotels/lake-como.ts`).
 - **Auth**: Firebase.
-- **Branch**: this architecture lives on `feature/realtime-phase-a`; `main` may still
-  carry the retired brain until merged.
+- **Branch**: this architecture lives on `dev` (the active branch). `main` still
+  carries the pre-refactor brain until `dev` is merged down.
