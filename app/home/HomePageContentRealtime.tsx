@@ -27,26 +27,6 @@ function safeJson(v: unknown): string {
   }
 }
 
-function fmtDate(d: unknown): string | null {
-  if (!d) return null
-  const date = d instanceof Date ? d : new Date(d as string)
-  return Number.isNaN(date.getTime()) ? null : date.toLocaleDateString(undefined, { month: "short", day: "numeric" })
-}
-function tripDates(p: { startDate?: unknown; endDate?: unknown }): string {
-  const s = fmtDate(p.startDate)
-  const e = fmtDate(p.endDate)
-  if (s && e) return `${s} – ${e}`
-  if (s) return `from ${s}`
-  return "—"
-}
-function tripGuests(p: { guestComposition?: { adults?: number; children?: number } }): string {
-  const gc = p.guestComposition
-  if (!gc || (gc.adults == null && gc.children == null)) return "—"
-  const a = gc.adults ?? 0
-  const c = gc.children ?? 0
-  return `${a} adult${a === 1 ? "" : "s"}${c > 0 ? ` · ${c} child${c === 1 ? "" : "ren"}` : ""}`
-}
-
 export default function HomePageContentRealtime() {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const sessionRef = useRef<RealtimeSession | null>(null)
@@ -68,6 +48,7 @@ export default function HomePageContentRealtime() {
   })
 
   const [active, setActive] = useState(false)
+  const [atHotel, setAtHotel] = useState(false)
   const [showRoomsPanel, setShowRoomsPanel] = useState(false)
   const [scene, setScene] = useState("lounge")
   const [muted, setMuted] = useState(false)
@@ -169,6 +150,7 @@ export default function HomePageContentRealtime() {
         saveProfile: (updates) => dispatch({ type: "UPDATE_PROFILE", updates }),
         setRoomPlan: (plan) => dispatch({ type: "SET_ROOM_PLAN", plan }),
         onRoomsPanel: setShowRoomsPanel,
+        onArrived: setAtHotel,
         getPartySize: () => {
           const gc = stateRef.current.profile.guestComposition
           const n = (gc?.adults ?? 0) + (gc?.children ?? 0)
@@ -184,7 +166,14 @@ export default function HomePageContentRealtime() {
     await session.start()
   }, [ue5, dispatch, hydration, userProfile])
 
+  // Auto-start once the avatar's <video> is mounted — no "Begin" gate. The
+  // avatar and the mic/Realtime start INDEPENDENTLY (see RealtimeSession.start),
+  // so a getUserMedia/permission hiccup never tears the avatar down to black.
+  // start() is idempotent (guards on sessionRef), and the cleanup stops the
+  // session, so React StrictMode's mount→unmount→mount only yields one live
+  // session.
   useEffect(() => {
+    void start()
     const onUnload = () => {
       void sessionRef.current?.stop()
     }
@@ -194,6 +183,7 @@ export default function HomePageContentRealtime() {
       void sessionRef.current?.stop()
       sessionRef.current = null
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const onAddRoom = useCallback((roomId: string) => dispatch({ type: "EDIT_ROOM_PLAN", edit: { kind: "add", roomId } }), [dispatch])
@@ -216,27 +206,6 @@ export default function HomePageContentRealtime() {
 
   return (
     <div className="pointer-events-none absolute inset-0 z-20 overflow-hidden" onDragStart={(e) => e.preventDefault()}>
-      {/* Start gate — mic needs a user gesture */}
-      {!active && (
-        <div className="pointer-events-auto absolute inset-0 flex items-center justify-center">
-          <button
-            onClick={start}
-            className="rounded-full border border-white/25 bg-gradient-to-br from-white/20 via-white/10 to-white/5 px-8 py-4 text-lg font-semibold text-white shadow-[0_20px_60px_-28px_rgba(0,0,0,0.85)] backdrop-blur-2xl transition hover:bg-white/20"
-          >
-            ▶ Begin with Ava
-          </button>
-        </div>
-      )}
-
-      {/* Trip-details chip — fills in live as Ava captures the intake */}
-      {active && (
-        <div className="pointer-events-none absolute left-1/2 top-4 flex -translate-x-1/2 items-center gap-3 rounded-full border border-white/25 bg-gradient-to-br from-white/20 via-white/10 to-white/5 px-5 py-2 text-xs text-white shadow-lg backdrop-blur-2xl">
-          <span><span className="text-white/55">Dates</span> {tripDates(state.profile)}</span>
-          <span className="text-white/30">·</span>
-          <span><span className="text-white/55">Guests</span> {tripGuests(state.profile)}</span>
-        </div>
-      )}
-
       {/* Rooms panel — right side */}
       {showRoomsPanel && (
         <div className="pointer-events-auto fixed right-4 top-4 bottom-[calc(4rem+2vh)] z-20" style={{ width: 273 }}>
@@ -286,7 +255,9 @@ export default function HomePageContentRealtime() {
 
             {/* Right body — vertical button column */}
             <div className="flex min-w-[70px] flex-col items-center justify-end gap-3 px-[15px] py-4">
-              <SunToggle value={ue5.sunState} onChange={ue5.changeSunPosition} />
+              {/* Lighting toggle is a hotel-scene control — hidden in the lounge
+                  (at start and after returning from the experience). */}
+              {atHotel && <SunToggle value={ue5.sunState} onChange={ue5.changeSunPosition} />}
               {active && (
                 <>
                   <button

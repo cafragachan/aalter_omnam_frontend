@@ -131,14 +131,23 @@ export class RealtimeSession {
     this.stopping = false
     this.reconnectAttempts = 0
     this.greeted = false
+    // Start the avatar first. If it fails, that's fatal — tear down.
     try {
       await this.startAvatar()
+    } catch (err) {
+      this.log(`❌ avatar start failed: ${(err as Error).message}`)
+      this.status("error")
+      await this.stop()
+      return
+    }
+    // Start the mic/Realtime SEPARATELY: a getUserMedia/permission/AudioContext
+    // failure must NOT tear the avatar down (that left a black thumbnail).
+    try {
       await this.startRealtimeAndMic()
       this.status("LIVE — speak to Ava")
     } catch (err) {
-      this.log(`❌ start failed: ${(err as Error).message}`)
-      this.status("error")
-      await this.stop()
+      this.log(`⚠️ mic/realtime start failed (avatar stays up): ${(err as Error).message}`)
+      this.status("avatar ready — mic unavailable")
     }
   }
 

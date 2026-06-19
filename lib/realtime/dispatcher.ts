@@ -22,6 +22,9 @@ export interface DispatcherHooks {
   setRoomPlan?: (plan: CurrentRoomPlan) => void
   /** Show/hide the rooms panel. */
   onRoomsPanel?: (show: boolean) => void
+  /** Whether the guest has travelled to the hotel (true) or is in the lounge
+   *  (false). Drives hotel-only HUD like the lighting toggle. */
+  onArrived?: (arrived: boolean) => void
   /** Current party size (adults + children), for the capacity guardrail. */
   getPartySize?: () => number | undefined
 }
@@ -59,6 +62,7 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
         ue5.startTest() // emits { type: "startTEST", value: "startTEST" }
         arrived = true
         sceneReadyAt = Date.now() + TRAVEL_SETTLE_MS
+        hooks.onArrived?.(true)
         hooks.onScene?.("traveling to the hotel")
         return "Arriving at the EDITION Lake Como. Now recommend the best room(s) for their party by calling propose_room_plan, and mention they can also explore the amenities or the surrounding area."
       }
@@ -68,6 +72,7 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
         arrived = false
         sceneReadyAt = Date.now() + TRAVEL_SETTLE_MS
         hooks.onRoomsPanel?.(false)
+        hooks.onArrived?.(false)
         hooks.onScene?.("virtual lounge")
         return "Heading back to the virtual lounge."
       }
