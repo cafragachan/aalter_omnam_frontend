@@ -1,49 +1,19 @@
 "use client"
 
 import type React from "react"
-
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { Mic, MicOff, Lock, Mail, LogIn, User, Phone, Calendar, UserPlus, ArrowLeft, Globe } from "lucide-react"
-import { DebugHud, SandboxSessionPlayer, useDebugLogger } from "@/components/liveavatar/SandboxLiveAvatar"
-import { ModeToggle } from "@/components/liveavatar/ModeToggle"
-import { ChatPanel } from "@/components/chat/ChatPanel"
-import { SunToggle, type SunState } from "@/components/SunToggle"
-import { InputModeProvider, useInputMode } from "@/lib/input-mode/context"
-import { LiveAvatarContextProvider, useLiveAvatarContext } from "@/lib/liveavatar"
-import { ProfileSync } from "@/components/ProfileSync"
-import { DestinationsOverlay } from "@/components/panels/DestinationsOverlay"
-import { RoomsPanel } from "@/components/panels/RoomsPanel"
-// AmenitiesPanel removed — amenity navigation is now voice-driven
-import { UnitDetailPanel } from "@/components/panels/UnitDetailPanel"
-import { useUserProfileContext } from "@/lib/context"
-import { useApp } from "@/lib/store"
-import { useOmnamStore } from "@/lib/omnam-store"
-import { useAuth } from "@/lib/auth-context"
-import { buildOpeningText, type ContextInput } from "@/lib/avatar-context-builder"
-import { useAvatarActions } from "@/lib/liveavatar/useAvatarActions"
-import { useJourney } from "@/lib/orchestrator"
-import { useRoomPlanner } from "@/lib/orchestrator/useRoomPlanner"
-import { useUE5Bridge } from "@/lib/ue5/bridge"
-import { hotels, getHotelBySlug, getRoomsByHotelId, getAmenitiesByHotelId } from "@/lib/hotel-data"
-import type { Room, Amenity, HotelCatalog } from "@/lib/hotel-data"
-import { useUE5WebSocket } from "@/lib/useUE5WebSocket"
+import { useCallback, useEffect, useRef, useState } from "react"
+import { Mail, Lock, LogIn, User, Phone, Calendar, UserPlus, ArrowLeft, Globe } from "lucide-react"
 import { GlassPanel } from "@/components/glass-panel"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { useIncrementalPersistence } from "@/lib/firebase/useIncrementalPersistence"
-import { useActiveSessionHydration } from "@/lib/firebase/useActiveSessionHydration"
+import { useAuth } from "@/lib/auth-context"
+import { useUserProfileContext } from "@/lib/context"
 import HomePageContentRealtime from "./HomePageContentRealtime"
 
-// D.2 — the realtime brain (gpt-realtime + HeyGen LITE) is now the DEFAULT for
-// /home, rendered inside the same shell (auth, login overlay, UE5 iframe). The
-// legacy HeyGen-FULL + useJourney path remains as a fallback: set
-// NEXT_PUBLIC_REALTIME_BRAIN=0 to opt out. (The fallback is removed in D.3.)
-const REALTIME_BRAIN = process.env.NEXT_PUBLIC_REALTIME_BRAIN !== "0"
-import { initDebug } from "@/lib/debug"
-import { SessionState, VoiceChatState } from "@heygen/liveavatar-web-sdk"
-
 // ---------------------------------------------------------------------------
-// Typewriter intro constants & component
+// /home — thin shell: auth + login overlay + UE5 iframe, then the realtime brain
+// (HomePageContentRealtime). The legacy HeyGen-FULL + useJourney path was removed
+// in D.3; the realtime path is the only execution path now.
 // ---------------------------------------------------------------------------
 
 const INTRO_MESSAGES = [
@@ -107,55 +77,6 @@ function TypewriterText({
 }
 
 // ---------------------------------------------------------------------------
-// EndExperienceOverlay — farewell message over intro video background
-// ---------------------------------------------------------------------------
-
-function EndExperienceOverlay({ firstName }: { firstName?: string }) {
-  const name = firstName ?? "guest"
-  const message = `Thank you ${name}, we hope to see you again soon`
-
-  const [phase, setPhase] = useState<"fade-in" | "typing" | "hold">("fade-in")
-
-  useEffect(() => {
-    const timer = setTimeout(() => setPhase("typing"), 500)
-    return () => clearTimeout(timer)
-  }, [])
-
-  return (
-    <div
-      className={`fixed inset-0 z-50 flex items-center justify-center transition-opacity duration-1000 ${phase === "fade-in" ? "opacity-0" : "opacity-100"}`}
-    >
-      <video
-        autoPlay
-        muted
-        loop
-        playsInline
-        className="absolute inset-0 h-full w-full object-cover"
-        src="/videos/omanmBackground_720.mp4"
-      />
-      <div className="absolute inset-0 bg-black/80" />
-
-      <div className="relative z-10 text-center px-8">
-        {phase === "typing" && (
-          <TypewriterText
-            text={message}
-            onComplete={() => setPhase("hold")}
-          />
-        )}
-        {phase === "hold" && (
-          <span
-            className="text-base tracking-wide text-white md:text-xl"
-            style={{ fontFamily: "var(--font-open-sans)" }}
-          >
-            {message}
-          </span>
-        )}
-      </div>
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
 // LoginOverlay — video + typewriter + login form, overlaid on top of UE5
 // ---------------------------------------------------------------------------
 
@@ -183,7 +104,7 @@ function LoginOverlay({ onComplete, skipIntro = false }: { onComplete: () => voi
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   const { login, register, isAuthReady } = useAuth()
-  const { updateProfile, setJourneyStage } = useUserProfileContext()
+  const { updateProfile } = useUserProfileContext()
 
   // Local mode: skip intro animations, always show login form
   const didSkipRef = useRef(false)
@@ -248,7 +169,6 @@ function LoginOverlay({ onComplete, skipIntro = false }: { onComplete: () => voi
         nationality: profile.nationality || undefined,
         languagePreference: profile.languagePreference || undefined,
       })
-      setJourneyStage("PROFILE_COLLECTION")
       setShowForm(false)
       setTimeout(() => {
         setPhase("farewell")
@@ -256,7 +176,7 @@ function LoginOverlay({ onComplete, skipIntro = false }: { onComplete: () => voi
         setTyping(true)
       }, 400)
     },
-    [updateProfile, setJourneyStage],
+    [updateProfile],
   )
 
   const switchMode = useCallback((mode: AuthMode) => {
@@ -621,179 +541,35 @@ function LoginOverlay({ onComplete, skipIntro = false }: { onComplete: () => voi
 }
 
 // ---------------------------------------------------------------------------
-// MicToggle — round mic mute/unmute button for the avatar frame
-// ---------------------------------------------------------------------------
-
-function MicToggle() {
-  const { isMuted, sessionRef } = useLiveAvatarContext()
-
-  const toggle = useCallback(() => {
-    const vc = sessionRef.current?.voiceChat
-    if (!vc) return
-    if (isMuted) {
-      vc.unmute()
-    } else {
-      vc.mute()
-    }
-  }, [isMuted, sessionRef])
-
-  return (
-    <button
-      type="button"
-      onClick={toggle}
-      className="flex h-10 w-10 items-center justify-center rounded-full border border-white/15 bg-white/10 backdrop-blur-md shadow-lg transition-colors hover:bg-white/20"
-      title={isMuted ? "Unmute microphone" : "Mute microphone"}
-    >
-      {isMuted ? (
-        <MicOff className="h-5 w-5 text-red-400" />
-      ) : (
-        <Mic className="h-5 w-5 text-white" />
-      )}
-    </button>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// HydratedLiveAvatarContext — Phase 5 wrapper.
-//
-// Calls `useActiveSessionHydration` and blocks rendering of the provider
-// until the hydration attempt has finished, then seeds
-// `LiveAvatarContextProvider` with the prior transcript (or an empty list
-// when no resumable session is available). Keeping the hook inside this
-// wrapper ensures it only runs for authenticated users who reached the
-// point of starting a HeyGen session.
-// ---------------------------------------------------------------------------
-
-function HydratedLiveAvatarContext({
-  sessionToken,
-  children,
-}: {
-  sessionToken: string
-  children: React.ReactNode
-}) {
-  // Hydration disabled by default — user prefers fresh sessions. Per-message
-  // writes in useIncrementalPersistence still run so the transcript is
-  // available server-side for future debugging/analytics, but the client
-  // won't read them back on mount unless NEXT_PUBLIC_HYDRATE_ACTIVE_SESSION
-  // is explicitly set to "true".
-  const hydrationEnabled = process.env.NEXT_PUBLIC_HYDRATE_ACTIVE_SESSION === "true"
-  const { isHydrationReady, initialMessages } = useActiveSessionHydration(hydrationEnabled)
-
-  // Gate the provider on hydration completion so `initialMessages` is read
-  // once by the provider's lazy initializer with a stable value.
-  if (!isHydrationReady) {
-    return null
-  }
-
-  return (
-    <LiveAvatarContextProvider
-      sessionAccessToken={sessionToken}
-      initialMessages={initialMessages}
-    >
-      {children}
-    </LiveAvatarContextProvider>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// HomePage — single page: UE5 iframe loads immediately, login overlays on top
+// HomePage — shell: UE5 iframe + login overlay → realtime brain
 // ---------------------------------------------------------------------------
 
 export default function HomePage() {
-  const { isAuthenticated, userProfile, returningUserData, firebaseUser } = useAuth()
-  const { profile, journeyStage } = useUserProfileContext()
+  const { isAuthenticated } = useAuth()
   const [introComplete, setIntroComplete] = useState(false)
-  const [ue5Ready, setUe5Ready] = useState(false)
-  const [ue5Hidden, setUe5Hidden] = useState(false)
-  const [sessionToken, setSessionToken] = useState<string | null>(null)
-  // Phase 2: server ships the active hotel's catalog alongside the session
-  // token. Null when the server omits/rejects the field — consumer falls
-  // back to the legacy `getAmenitiesByHotelId` / `getRoomsByHotelId` lookups.
-  const [catalog, setCatalog] = useState<HotelCatalog | null>(null)
-  const sessionUserIdRef = useRef<string | null>(null)
   const iframeRef = useRef<HTMLIFrameElement>(null)
-  const [error, setError] = useState<string | null>(null)
 
-  // --- Stream config ---
-  // In vagon mode we point the iframe at Vagon's hosted stream URL with
-  // `?newSession=true` — per Vagon support this is the canonical way to
-  // run a session and forces a fresh machine on every load (defeats the
-  // streams.vagon.io sticky-session cookie). All machine ops (provision,
-  // assign, cache-snapshot, teardown) happen server-side on Vagon.
   const streamMode = process.env.NEXT_PUBLIC_STREAM_MODE || "local"
   const isVagonMode = streamMode === "vagon"
-
-  // The overlay stays until introComplete — auth state changes mid-intro don't dismiss it
   const showLoginOverlay = !introComplete
 
-  // Re-focus the UE5 iframe whenever the mouse re-enters it so that
-  // pointer/keyboard input routes back to the pixel-streamed experience
-  // after the user interacts with overlay controls (mic, sun toggle, etc.).
   const handleIframeMouseEnter = useCallback(() => {
     iframeRef.current?.focus()
   }, [])
+  const handleIntroComplete = useCallback(() => setIntroComplete(true), [])
 
-  // Lightweight UE5 listener — detect the first incoming message
-  const handleFirstUE5Message = useCallback(() => setUe5Ready(true), [])
-  useUE5WebSocket({
-    onMessage: handleFirstUE5Message,
-    onUnitSelected: handleFirstUE5Message,
-  })
-
-  // Fetch HeyGen session token once UE5 is ready, user is authenticated, AND intro is complete.
-  // Reset if the user identity changes (logout + re-login on same page mount).
-  useEffect(() => {
-    // Realtime path mints its own (LITE) session token inside the brain; no
-    // FULL HeyGen session needed.
-    if (REALTIME_BRAIN) return
-    if (!ue5Ready || !introComplete || !isAuthenticated || !userProfile) return
-    const currentUid = firebaseUser?.uid ?? null
-    if (sessionUserIdRef.current === currentUid) return
-    sessionUserIdRef.current = currentUid
-    const startSandboxSession = async () => {
-      try {
-        const body = {
-          identity: userProfile,
-          personality: returningUserData?.personality ?? null,
-          preferences: returningUserData?.preferences ?? null,
-          loyalty: returningUserData?.loyalty ?? null,
-        }
-        const res = await fetch("/api/start-sandbox-session", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        })
-        if (!res.ok) {
-          const resp = await res.json().catch(() => ({}))
-          throw new Error(resp?.error ?? "Failed to start sandbox session")
-        }
-        const data = await res.json()
-        setSessionToken(data.session_token)
-        // Phase 2: server-packed catalog is additive — null/undefined means
-        // the client falls back to `hotel-data.ts` lookups.
-        setCatalog((data.catalog as HotelCatalog | null | undefined) ?? null)
-      } catch (err) {
-        setError((err as Error).message)
-      }
-    }
-    startSandboxSession()
-  }, [ue5Ready, introComplete, isAuthenticated, userProfile, returningUserData, firebaseUser])
-
-  // --- Stream config (streamMode & isVagonMode declared earlier) ---
   const streamUrl = isVagonMode
     ? "https://streams.vagon.io/streams/e92ad7d9-0510-4246-bdac-8fbedb5653ed?newSession=true"
-    : (process.env.NEXT_PUBLIC_VAGON_STREAM_URL || "http://127.0.0.1")
+    : process.env.NEXT_PUBLIC_VAGON_STREAM_URL || "http://127.0.0.1"
   const hasStream = !!streamUrl && streamUrl !== "about:blank"
   const iframeAllow = isVagonMode
     ? "microphone *; clipboard-read *; clipboard-write *; encrypted-media *; fullscreen *"
     : "autoplay; fullscreen; clipboard-read; clipboard-write; gamepad"
 
-  const handleIntroComplete = useCallback(() => setIntroComplete(true), [])
-
   return (
     <div className="relative min-h-screen w-full bg-black overflow-hidden select-none">
       {/* UE5 Pixel Stream — loads immediately, behind everything */}
-      {hasStream && !ue5Hidden ? (
+      {hasStream ? (
         <iframe
           ref={iframeRef}
           id={isVagonMode ? "vagonFrame" : undefined}
@@ -804,7 +580,7 @@ export default function HomePage() {
           className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 min-w-full min-h-full w-[max(100vw,calc(100vh*16/9))] h-[max(100vh,calc(100vw*9/16))] outline-none"
           allow={iframeAllow}
         />
-      ) : !ue5Hidden ? (
+      ) : (
         <div className="absolute inset-0 bg-gradient-to-br from-slate-900 via-black to-slate-950">
           {!isVagonMode && (
             <div className="flex items-center justify-center h-full text-white/70">
@@ -812,582 +588,13 @@ export default function HomePage() {
             </div>
           )}
         </div>
-      ) : null}
+      )}
 
       {/* Login intro overlay — sits on top of iframe, hides UE5 while loading */}
       {showLoginOverlay && <LoginOverlay onComplete={handleIntroComplete} skipIntro={!isVagonMode} />}
 
-      {/* End experience overlay — farewell message over intro video */}
-      {journeyStage === "END_EXPERIENCE" && <EndExperienceOverlay firstName={profile.firstName} />}
-
-      {/* Main experience (avatar, panels, etc.) — only after intro completes */}
-      {introComplete && isAuthenticated && (
-        REALTIME_BRAIN ? (
-          <HomePageContentRealtime />
-        ) : (
-          <>
-            {sessionToken && (
-              <HydratedLiveAvatarContext sessionToken={sessionToken}>
-                <InputModeProvider>
-                  <HomePageContent onHideUE5Stream={() => setUe5Hidden(true)} catalog={catalog} />
-                </InputModeProvider>
-              </HydratedLiveAvatarContext>
-            )}
-          </>
-        )
-      )}
+      {/* The realtime brain, once intro completes and the guest is authenticated */}
+      {introComplete && isAuthenticated && <HomePageContentRealtime />}
     </div>
   )
 }
-
-// ---------------------------------------------------------------------------
-// HomePageContent — thin layout shell (all hooks available)
-// ---------------------------------------------------------------------------
-
-function HomePageContent({
-  onHideUE5Stream,
-  catalog,
-}: {
-  onHideUE5Stream: () => void
-  /**
-   * Phase 2: server-packed hotel catalog. When non-null, its `rooms` and
-   * `amenities` are used in place of the synchronous `getRoomsByHotelId` /
-   * `getAmenitiesByHotelId` lookups. Null falls back to client-side lookups
-   * so env-flagged fallback paths keep working.
-   */
-  catalog: HotelCatalog | null
-}) {
-  const { selectHotel, selectedHotel } = useApp()
-  const { journeyStage, setJourneyStage, updateProfile } = useUserProfileContext()
-  const { sessionState, sessionRef, voiceChatState } = useLiveAvatarContext()
-  const { repeat } = useAvatarActions()
-  useDebugLogger()
-  const { writeEndOfSessionSnapshot } = useIncrementalPersistence()
-  const { userProfile, returningUserData, firebaseUser } = useAuth()
-
-  // --- Pre-populate profile from returning user's persisted preferences ---
-  // Keyed on uid (not a boolean latch) so the effect re-runs if the
-  // authenticated user changes mid-mount — otherwise the first non-null
-  // returningUserData seen during an auth transition would lock in another
-  // user's interests.
-  const hydratedUidRef = useRef<string | null>(null)
-  useEffect(() => {
-    const uid = firebaseUser?.uid ?? null
-    if (!uid || !returningUserData) return
-    if (hydratedUidRef.current === uid) return
-    hydratedUidRef.current = uid
-    const { personality, preferences } = returningUserData
-    updateProfile({
-      interests: personality?.interests ?? [],
-      budgetRange: personality?.budgetTendency ?? undefined,
-      dietaryRestrictions: personality?.dietaryRestrictions ?? [],
-      accessibilityNeeds: personality?.accessibilityNeeds ?? [],
-      amenityPriorities: preferences?.preferredAmenities ?? [],
-      // REMOVED: travelPurpose, guestComposition, familySize — per-trip, collected fresh
-    })
-  }, [firebaseUser, returningUserData, updateProfile])
-
-  // --- Speak opening greeting when avatar stream is ready ---
-  const hasGreetedRef = useRef(false)
-  useEffect(() => {
-    if (voiceChatState !== VoiceChatState.ACTIVE || hasGreetedRef.current || !userProfile) return
-    hasGreetedRef.current = true
-
-    const contextInput: ContextInput = {
-      identity: userProfile,
-      personality: returningUserData?.personality ?? null,
-      preferences: returningUserData?.preferences ?? null,
-      loyalty: returningUserData?.loyalty ?? null,
-    }
-    repeat(buildOpeningText(contextInput))
-  }, [voiceChatState, userProfile, returningUserData, repeat])
-
-  // --- UI panel visibility (local state, driven by orchestrator callbacks) ---
-  const [showRoomsPanel, setShowRoomsPanel] = useState(false)
-
-  // --- UE5 Bridge (WebSocket + fade transitions + unit state) ---
-  // Phase 8: UE5 unit selections are forwarded directly to useJourney via a
-  // forward-referencing ref. `useJourney` is called below (it depends on
-  // `rooms`/`amenities`), so we stash its `onUnitSelectedUE5` handler into
-  // `unitSelectedHandlerRef` after the hook returns, then the bridge calls
-  // `.current?.(...)` at runtime — no pub/sub hop.
-  const unitSelectedHandlerRef = useRef<
-    ((payload: { roomName: string; description?: string; price?: string; level?: string }) => void) | null
-  >(null)
-  const ue5 = useUE5Bridge({
-    onUnitSelected: (payload) => {
-      unitSelectedHandlerRef.current?.(payload)
-    },
-  })
-
-  // --- Stream mode (for debug hud visibility) ---
-  const streamMode = process.env.NEXT_PUBLIC_STREAM_MODE || "local"
-
-  // --- Hotel data ---
-  const selectedHotelData = useMemo(
-    () => (selectedHotel ? getHotelBySlug(selectedHotel) : undefined),
-    [selectedHotel],
-  )
-
-  // Phase 2: when the server-packed catalog matches the currently-selected
-  // hotel, use it as the authoritative room/amenity list. Fields the catalog
-  // doesn't carry (image, hotelId) are hydrated from the client-side lookups
-  // so downstream panels keep the exact `Room` / `Amenity` shapes they expect.
-  // When catalog is null OR the slug mismatches, fall back entirely to the
-  // legacy client-side helpers — this permits a rollback by dropping the
-  // server field.
-  const catalogMatchesSelected =
-    catalog !== null && selectedHotelData !== undefined && catalog.hotelSlug === selectedHotelData.slug
-
-  const rooms = useMemo<Room[]>(() => {
-    if (!selectedHotelData) return []
-    const fallback = getRoomsByHotelId(selectedHotelData.id)
-    if (!catalogMatchesSelected || !catalog) return fallback
-    const byId = new Map(fallback.map((r) => [r.id, r]))
-    return catalog.rooms.map((cr): Room => {
-      const legacy = byId.get(cr.id)
-      return {
-        id: cr.id,
-        name: cr.name,
-        occupancy: String(cr.occupancy),
-        price: cr.price,
-        hotelId: legacy?.hotelId ?? selectedHotelData.id,
-        image: legacy?.image ?? "",
-        book_url: cr.book_url ?? legacy?.book_url ?? "",
-        area: cr.area ?? legacy?.area,
-        roomType: cr.roomType ?? legacy?.roomType,
-        features: cr.features ?? legacy?.features,
-        view: cr.view ?? legacy?.view,
-        bedding: cr.bedding ?? legacy?.bedding,
-        bath: cr.bath ?? legacy?.bath,
-        tech: cr.tech ?? legacy?.tech,
-        services: cr.services ?? legacy?.services,
-      }
-    })
-  }, [selectedHotelData, catalog, catalogMatchesSelected])
-
-  const amenities = useMemo<Amenity[]>(() => {
-    if (!selectedHotelData) return []
-    const fallback = getAmenitiesByHotelId(selectedHotelData.id)
-    if (!catalogMatchesSelected || !catalog) return fallback
-    const byId = new Map(fallback.map((a) => [a.id, a]))
-    return catalog.amenities.map((ca): Amenity => {
-      const legacy = byId.get(ca.id)
-      return {
-        id: ca.id,
-        name: ca.name,
-        scene: ca.scene,
-        hotelId: legacy?.hotelId ?? selectedHotelData.id,
-        image: legacy?.image ?? "",
-      }
-    })
-  }, [selectedHotelData, catalog, catalogMatchesSelected])
-
-  // Phase 2 Room Planner: the LLM-driven plan from `/api/room-planner` is the
-  // sole source of truth for the RoomsPanel. Client-side heuristic plan
-  // composition was deleted; while the planner's response hasn't landed yet
-  // (first paint before Trigger 1), `recommendedPlan` is null and the panel
-  // renders nothing. Phase 1's intermediate `planOverride` / `computedPlan`
-  // fallbacks are gone along with the heuristics that populated them.
-  const omnamStore = useOmnamStore()
-  const currentRoomPlan = omnamStore.state.currentRoomPlan
-  const omnamDispatch = omnamStore.dispatch
-  const plannerPlan = useMemo<import("@/lib/hotel-data").RoomPlan | null>(() => {
-    if (!currentRoomPlan || currentRoomPlan.rooms.length === 0) return null
-    const byId = new Map(rooms.map((r) => [r.id, r]))
-    const entries: import("@/lib/hotel-data").RoomPlanEntry[] = []
-    for (const entry of currentRoomPlan.rooms) {
-      const room = byId.get(entry.roomId)
-      if (!room) continue
-      const occ = parseInt(room.occupancy, 10) || 0
-      entries.push({
-        roomId: room.id,
-        roomName: room.name,
-        quantity: entry.quantity,
-        pricePerNight: room.price,
-        occupancy: occ,
-      })
-    }
-    if (entries.length === 0) return null
-    return {
-      entries,
-      totalCapacity: entries.reduce((s, e) => s + e.occupancy * e.quantity, 0),
-      totalPricePerNight: entries.reduce((s, e) => s + e.pricePerNight * e.quantity, 0),
-    }
-  }, [currentRoomPlan, rooms])
-
-  const recommendedPlan = plannerPlan
-
-  // --- User-driven plan edits from the rooms-panel cards ---
-  // These dispatch into the OmnamStore (which recomputes totals/capacity from
-  // the static room catalog and tags `source: 'user'`). Each edit also aborts
-  // any in-flight planner request so a slow stale response cannot overwrite
-  // the guest's just-made edit. The downstream UE5 `selectedRoom` sync (see
-  // below) is purely derived from `currentRoomPlan` and fires automatically.
-  //
-  // `plannerAbortRef` is forward-referenced — `roomPlanner` is created further
-  // down (it depends on `useOmnamStore` which is read at the top of the
-  // component, but the hook itself is colocated with `useJourney` plumbing).
-  // The ref is populated by a useEffect after `roomPlanner` exists.
-  const plannerAbortRef = useRef<() => void>(() => undefined)
-  const handleAddRoomToPlan = useCallback((roomId: string) => {
-    plannerAbortRef.current()
-    omnamDispatch({ type: "EDIT_ROOM_PLAN", edit: { kind: "add", roomId } })
-  }, [omnamDispatch])
-  const handleSetRoomQuantity = useCallback((roomId: string, quantity: number) => {
-    plannerAbortRef.current()
-    omnamDispatch({ type: "EDIT_ROOM_PLAN", edit: { kind: "setQuantity", roomId, quantity } })
-  }, [omnamDispatch])
-  const handleRemoveRoomFromPlan = useCallback((roomId: string) => {
-    plannerAbortRef.current()
-    omnamDispatch({ type: "EDIT_ROOM_PLAN", edit: { kind: "remove", roomId } })
-  }, [omnamDispatch])
-  const unitDetailRoom = useMemo<Room | null>(() => {
-    const selectedUnitName = ue5.selectedUnit?.roomName?.trim().toLowerCase()
-    if (!selectedUnitName) return null
-    return rooms.find((r) => r.name.trim().toLowerCase() === selectedUnitName) ?? null
-  }, [rooms, ue5.selectedUnit])
-
-  // --- Panel open/close callbacks (passed to useJourney) ---
-  const handleOpenPanel = useCallback((panel: "rooms" | "amenities" | "location") => {
-    if (panel === "rooms") {
-      ue5.navigateToRooms()
-      setShowRoomsPanel(true)
-    } else if (panel === "location") {
-      ue5.navigateToLocation()
-      setShowRoomsPanel(false)
-    }
-    // "amenities" is now voice-driven — no panel to open
-  }, [ue5])
-
-  const handleClosePanels = useCallback(() => {
-    setShowRoomsPanel(false)
-  }, [])
-
-  const handleResetToDefault = useCallback(() => {
-    ue5.resetToDefault()
-    ue5.clearSelectedUnit()
-    setShowRoomsPanel(false)
-  }, [ue5])
-
-  // --- Auto-select hotel (used by pilot mode in the journey state machine) ---
-  const handleAutoSelectHotel = useCallback((slug: string) => {
-    const hotel = hotels.find((h) => h.slug === slug)
-    if (hotel) {
-      updateProfile({ destination: hotel.location })
-    }
-    selectHotel(slug)
-  }, [selectHotel, updateProfile])
-
-  // --- End experience callbacks ---
-  const handleStopAvatar = useCallback(() => {
-    sessionRef.current?.stop()
-  }, [sessionRef])
-
-  // --- Journey orchestrator (runs as a hook, not a component) ---
-  // Phase 6: `getInternalState` is no longer destructured here — the debug
-  // surface below reads JourneyState directly from `useOmnamStore().stateRef`
-  // instead.
-  // --- Room planner (Phase 1) ---
-  // Trigger 1 (panel_opened) fires from the useEffect below; trigger 2
-  // (user_message) fires from useJourney via the `requestRoomPlanRef` it
-  // receives as an option. We forward the stable `requestPlan` through a ref
-  // so useJourney can invoke it without needing it in a dep array.
-  const roomPlanner = useRoomPlanner()
-  const requestRoomPlanRef = useRef(roomPlanner.requestPlan)
-  useEffect(() => {
-    requestRoomPlanRef.current = roomPlanner.requestPlan
-  }, [roomPlanner.requestPlan])
-  // Forward `roomPlanner.abort` to the user-edit handlers declared above.
-  useEffect(() => {
-    plannerAbortRef.current = roomPlanner.abort
-  }, [roomPlanner.abort])
-
-  // Ref view of showRoomsPanel so useJourney can tell whether the rooms panel
-  // is currently visible (Trigger 2 gate) without taking it as a reactive dep.
-  const showRoomsPanelRef = useRef(showRoomsPanel)
-  useEffect(() => {
-    showRoomsPanelRef.current = showRoomsPanel
-  }, [showRoomsPanel])
-
-  const {
-    dispatch: journeyDispatch,
-    onUnitSelectedUE5: journeyOnUnitSelectedUE5,
-  } = useJourney({
-    onOpenPanel: handleOpenPanel,
-    onClosePanels: handleClosePanels,
-    onUE5Command: ue5.sendCommand,
-    onResetToDefault: handleResetToDefault,
-    onFadeTransition: ue5.fadeTransition,
-    onSelectHotel: handleAutoSelectHotel,
-    onStopAvatar: handleStopAvatar,
-    onHideUE5Stream,
-    amenities,
-    rooms,
-    // Phase 1 Room Planner: invoked from inside useJourney's orchestrate
-    // "on"-mode result handler whenever a room-edit intent fires and the
-    // rooms panel is visible. See useJourney.ts for the gate logic.
-    requestRoomPlanRef,
-    isRoomsPanelVisibleRef: showRoomsPanelRef,
-    // Phase 2: forward the server-packed catalog. useJourney stores it for
-    // Phase 3 but does not use it yet — the existing amenities/rooms props
-    // remain the operative channel until Phase 3 plumbs catalog into orchestrate.
-    catalog,
-    // Phase 2.5: default ON. Set NEXT_PUBLIC_PROFILE_FAST_PATH=false to disable.
-    useProfileFastPath: process.env.NEXT_PUBLIC_PROFILE_FAST_PATH !== "false",
-  })
-
-  // --- Debug surface (dev only): wire `window.__omnamDebug` ---
-  // Phase 6: the three legacy contexts collapsed into `OmnamStoreProvider`.
-  // Pull the live mirror ref directly so every call to `__omnamDebug.state()`
-  // returns the freshest committed snapshot, not a render-time closure.
-  const omnamStoreForDebug = useOmnamStore()
-  useEffect(() => {
-    initDebug(() => {
-      const s = omnamStoreForDebug.stateRef.current
-      return {
-        profile: { profile: s.profile, journeyStage: s.journeyStage },
-        app: { selectedHotel: s.app.selectedHotel, bookings: s.app.bookings, isLoading: s.app.isLoading },
-        journey: s.journey,
-      }
-    })
-  }, [omnamStoreForDebug])
-
-  // --- End-of-session snapshot on HeyGen disconnect ---
-  useEffect(() => {
-    if (sessionState === SessionState.DISCONNECTED) {
-      writeEndOfSessionSnapshot()
-    }
-  }, [sessionState, writeEndOfSessionSnapshot])
-
-  // NOTE: visibilitychange persistence is now handled inside useIncrementalPersistence.
-  // Data is written incrementally throughout the session, so closing the tab only
-  // needs to flush the endedAt timestamp and any pending debounced profile writes.
-
-  // --- Reset sun position when hotel changes ---
-  useEffect(() => {
-    if (!selectedHotel) return
-    ue5.changeSunPosition("daylight")
-  }, [selectedHotel]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  // --- Release stuck UE5 input on every parent-DOM pointer release ---
-  // Cross-origin iframes don't forward `mouseup` back to UE5, so the orbit
-  // camera stays stuck if the user releases over an overlay. We ping UE5 to
-  // release on every `pointerup`/`pointercancel` that bubbles to the parent
-  // window. Releases inside the iframe never bubble here, so this naturally
-  // only fires for releases over our UI. UE5 handler is idempotent.
-  const releaseInputUE5 = ue5.releaseInput
-  useEffect(() => {
-    const onRelease = (e: PointerEvent) => {
-      console.log("[ue5] inputRelease ->", e.type)
-      releaseInputUE5()
-    }
-    window.addEventListener("pointerup", onRelease)
-    window.addEventListener("pointercancel", onRelease)
-    return () => {
-      window.removeEventListener("pointerup", onRelease)
-      window.removeEventListener("pointercancel", onRelease)
-    }
-  }, [releaseInputUE5])
-
-  // --- Hotel selection handler ---
-  const handleSelectHotel = useCallback((slug: string) => {
-    const hotel = hotels.find((h) => h.slug === slug)
-    if (hotel) {
-      updateProfile({ destination: hotel.location })
-    }
-    selectHotel(slug)
-    setJourneyStage("HOTEL_EXPLORATION")
-
-    journeyDispatch({
-      type: "HOTEL_PICKED",
-      slug,
-      hotelName: hotel?.name ?? "this property",
-      location: hotel?.location ?? "",
-      description: hotel?.description ?? "delivers a memorable stay with thoughtful design and service",
-    })
-  }, [selectHotel, setJourneyStage, updateProfile, journeyDispatch])
-
-  // --- UE5 selectedRoom sync: fires on every room-plan change ---
-  // The planner (`useRoomPlanner`) is the sole writer of `currentRoomPlan`.
-  // Whenever it lands a new plan we signal UE5 with a comma-joined list of the
-  // unique room-type ids (quantities discarded — UE5 just needs the set of
-  // types to highlight). First fire happens when Trigger 1 (panel_opened)
-  // returns; subsequent fires happen on every voice-driven recompute.
-  //
-  // IMPORTANT: depend on `ue5.selectRoom` (the memoized callback), NOT the
-  // whole `ue5` object — the bridge re-constructs its return literal on every
-  // render, so a dep on `ue5` would re-fire this effect on unrelated renders
-  // (selectedUnit updates, fade overlay flips, etc.) and spam UE5 with
-  // duplicate `selectedRoom` payloads. That spam was overriding the
-  // `unitView=interior` camera move, leaving the guest stuck on the exterior.
-  // `lastSelectedRoomPayloadRef` dedups identical payloads as a second guard.
-  const selectRoomUE5 = ue5.selectRoom
-  const lastSelectedRoomPayloadRef = useRef<string | null>(null)
-  useEffect(() => {
-    const entries = currentRoomPlan?.rooms ?? []
-    if (entries.length === 0) return
-    const ids = Array.from(new Set(entries.map((r) => r.roomId)))
-    if (ids.length === 0) return
-    const payload = ids.join(",")
-    if (lastSelectedRoomPayloadRef.current === payload) return
-    lastSelectedRoomPayloadRef.current = payload
-    selectRoomUE5(payload)
-  }, [currentRoomPlan, selectRoomUE5])
-
-  // --- Trigger 1: rooms panel opens → ask the planner for a fresh plan ---
-  // Fires exactly once on the false → true transition. A ref guards against
-  // React StrictMode double-effect-invocation and any incidental re-renders
-  // while the panel stays open.
-  const prevShowRoomsPanelRef = useRef(false)
-  useEffect(() => {
-    const wasOpen = prevShowRoomsPanelRef.current
-    prevShowRoomsPanelRef.current = showRoomsPanel
-    if (!wasOpen && showRoomsPanel) {
-      // UE5 drops `selectedRoom` state when it leaves the rooms scene, so a
-      // fresh open must re-emit the payload even if the stored plan is
-      // identical to last time. Re-send synchronously from the existing plan
-      // (if any) instead of relying on the planner round-trip — the planner
-      // may skip (user-edited plan) or fail, in which case the sync effect
-      // above never re-fires because `currentRoomPlan`'s reference is stable.
-      lastSelectedRoomPayloadRef.current = null
-      const entries = currentRoomPlan?.rooms ?? []
-      if (entries.length > 0) {
-        const payload = Array.from(new Set(entries.map((r) => r.roomId))).join(",")
-        lastSelectedRoomPayloadRef.current = payload
-        selectRoomUE5(payload)
-      }
-      void requestRoomPlanRef.current("panel_opened")
-    }
-  }, [showRoomsPanel, currentRoomPlan, selectRoomUE5])
-
-  // Phase 8: forward UE5 unit-selection events from the bridge directly to
-  // useJourney. The ref indirection is needed because `useUE5Bridge` is called
-  // above `useJourney` and cannot see the handler at that point.
-  useEffect(() => {
-    unitSelectedHandlerRef.current = journeyOnUnitSelectedUE5
-    return () => {
-      unitSelectedHandlerRef.current = null
-    }
-  }, [journeyOnUnitSelectedUE5])
-
-  // --- Panel close handlers ---
-  const closeRoomsPanel = useCallback(() => {
-    setShowRoomsPanel(false)
-    ue5.resetToDefault()
-  }, [ue5])
-
-  // --- Sun state handler ---
-  const handleSunStateChange = useCallback((value: SunState) => {
-    ue5.changeSunPosition(value)
-  }, [ue5])
-
-  const showDestinationsOverlay = journeyStage === "DESTINATION_SELECT"
-  const avatarThumbnailWidth = 210
-  const avatarThumbnailHeight = Math.round(avatarThumbnailWidth * 1.25)
-  const roomsPanelWidth = Math.round(avatarThumbnailWidth * 1.3)
-  const chatPanelWidth = 360
-  const chatPanelHeight = 420
-
-  const { mode: inputMode } = useInputMode()
-  const isChatMode = inputMode === "chat"
-
-  // -----------------------------------------------------------------------
-  // Render — panels are rendered outside the pointer-events-none wrapper
-  // so they sit as siblings of the iframe and receive events properly.
-  // -----------------------------------------------------------------------
-  return (
-    <>
-      <div className="pointer-events-none relative min-h-screen w-full overflow-hidden" onDragStart={(e) => e.preventDefault()}>
-        {/* Fade overlay for scene transitions */}
-        {ue5.showFadeOverlay && (
-          <div
-            className={`pointer-events-none absolute inset-0 z-[5] bg-black transition-opacity duration-1000 ease-linear ${ue5.isFadeOpaque ? "opacity-100" : "opacity-0"}`}
-          />
-        )}
-
-        {/* Unit detail panel */}
-        <UnitDetailPanel unit={ue5.selectedUnit} room={unitDetailRoom} />
-        {showRoomsPanel && (
-          <div className="pointer-events-auto fixed right-4 top-4 bottom-[calc(4rem+2vh)] z-20">
-            <div className="h-full" style={{ width: roomsPanelWidth }}>
-              <RoomsPanel
-                visible={showRoomsPanel}
-                hotelName={selectedHotelData?.name ?? ""}
-                rooms={rooms}
-                onClose={closeRoomsPanel}
-                recommendedPlan={recommendedPlan}
-                onAddRoom={handleAddRoomToPlan}
-                onSetRoomQuantity={handleSetRoomQuantity}
-                onRemoveRoom={handleRemoveRoomFromPlan}
-              />
-            </div>
-          </div>
-        )}
-
-        <div className="pointer-events-none relative z-10 flex min-h-screen flex-col justify-between px-6 pb-10 pt-12 sm:px-10">
-          <div />
-
-          {/* Avatar control panel */}
-          <div className="mt-auto">
-            <div className="pointer-events-auto inline-flex items-stretch rounded-[20px] border border-white/25 bg-gradient-to-br from-white/20 via-white/10 to-white/5 shadow-[0_20px_60px_-28px_rgba(0,0,0,0.85)] backdrop-blur-2xl">
-              {/* Avatar thumbnail — ALWAYS mounted to keep the HeyGen session
-                  alive. In chat mode we pin it off-screen (visibility:hidden +
-                  absolute position) rather than unmount, because unmounting
-                  SandboxSessionPlayer triggers stopSession() and would tear
-                  down the WebRTC stream. */}
-              <div
-                className={isChatMode ? "pointer-events-none invisible absolute -left-[9999px] top-0" : "p-[5px] pr-0"}
-                aria-hidden={isChatMode}
-              >
-                <div
-                  className="relative overflow-hidden rounded-[16px] bg-black shadow-2xl"
-                  style={{ width: avatarThumbnailWidth, height: avatarThumbnailHeight }}
-                >
-                  <SandboxSessionPlayer fit="cover" />
-                </div>
-              </div>
-
-              {/* Chat surface — takes the thumbnail's layout slot in chat mode. */}
-              {isChatMode && (
-                <div className="p-[5px] pr-0">
-                  <ChatPanel width={chatPanelWidth} height={chatPanelHeight} />
-                </div>
-              )}
-
-              {/* Right body - buttons */}
-              <div className="flex flex-col items-center justify-end gap-3 py-4 px-[15px] min-w-[70px]">
-                {selectedHotel && journeyStage === "HOTEL_EXPLORATION" && (
-                  <SunToggle value={ue5.sunState} onChange={handleSunStateChange} />
-                )}
-                {!isChatMode && <MicToggle />}
-                <ModeToggle />
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Profile Sync (functional, no UI — must run in all modes) */}
-        <ProfileSync />
-
-        {/* Debug HUD (floating, local dev only) */}
-        {streamMode === "local" && (
-          <div className="fixed top-4 right-4 z-30 space-y-3 pointer-events-none">
-            <DebugHud />
-          </div>
-        )}
-      </div>
-
-      {/* --- Overlays rendered outside the wrapper, as siblings of the iframe --- */}
-
-      {/* Destinations overlay */}
-      <DestinationsOverlay
-        visible={showDestinationsOverlay}
-        onSelectHotel={handleSelectHotel}
-        onClose={() => setJourneyStage("PROFILE_COLLECTION")}
-      />
-
-    </>
-  )
-}
-

@@ -36,9 +36,7 @@ import {
   useRef,
   type ReactNode,
 } from "react"
-import type { UserProfile, GuestComposition, JourneyStage } from "@/lib/context"
-import { journeyReducer, INITIAL_JOURNEY_STATE } from "@/lib/orchestrator/journey-machine"
-import type { JourneyState, JourneyAction, JourneyEffect } from "@/lib/orchestrator/types"
+import type { UserProfile, GuestComposition } from "@/lib/context"
 import { rooms as ALL_ROOMS } from "@/lib/hotel-data"
 
 // ---------------------------------------------------------------------------
@@ -99,9 +97,7 @@ export type CurrentRoomPlan = {
 
 export type OmnamStoreState = {
   profile: UserProfile
-  journeyStage: JourneyStage
   app: AppState
-  journey: JourneyState
   currentRoomPlan: CurrentRoomPlan | null
 }
 
@@ -113,7 +109,6 @@ export type OmnamStoreState = {
 export type ProfileAction =
   | { type: "UPDATE_PROFILE"; updates: Partial<UserProfile> }
   | { type: "RESET_PROFILE" }
-  | { type: "SET_JOURNEY_STAGE"; stage: JourneyStage }
 
 export type AppAction =
   | { type: "UPDATE_SEARCH_CRITERIA"; criteria: Partial<AppSearchCriteria> }
@@ -142,19 +137,9 @@ export type RoomPlanAction =
         | { kind: "remove"; roomId: string }
     }
 
-/**
- * Imperative override used to replace the pre-Phase-6 direct
- * `stateRef.current = {...}` writes in `useJourney`. Does not run the journey
- * reducer — it simply pins the internal JourneyState to the provided value.
- * Use sparingly; reducer actions are preferred.
- */
-export type JourneyOverrideAction = { type: "JOURNEY_STATE_OVERRIDE"; state: JourneyState }
-
 export type OmnamStoreAction =
   | ProfileAction
   | AppAction
-  | JourneyAction
-  | JourneyOverrideAction
   | RoomPlanAction
 
 // ---------------------------------------------------------------------------
@@ -225,9 +210,7 @@ const INITIAL_APP_STATE: AppState = {
 
 export const INITIAL_OMNAM_STORE_STATE: OmnamStoreState = {
   profile: createEmptyProfile(),
-  journeyStage: "PROFILE_COLLECTION",
   app: INITIAL_APP_STATE,
-  journey: INITIAL_JOURNEY_STATE,
   currentRoomPlan: null,
 }
 
@@ -235,7 +218,7 @@ export const INITIAL_OMNAM_STORE_STATE: OmnamStoreState = {
 // Action discriminant helpers
 // ---------------------------------------------------------------------------
 
-const PROFILE_ACTION_TYPES = new Set(["UPDATE_PROFILE", "RESET_PROFILE", "SET_JOURNEY_STAGE"])
+const PROFILE_ACTION_TYPES = new Set(["UPDATE_PROFILE", "RESET_PROFILE"])
 const APP_ACTION_TYPES = new Set([
   "UPDATE_SEARCH_CRITERIA",
   "SELECT_HOTEL",
@@ -248,9 +231,6 @@ function isProfileAction(a: OmnamStoreAction): a is ProfileAction {
 }
 function isAppAction(a: OmnamStoreAction): a is AppAction {
   return APP_ACTION_TYPES.has(a.type)
-}
-function isJourneyOverride(a: OmnamStoreAction): a is JourneyOverrideAction {
-  return a.type === "JOURNEY_STATE_OVERRIDE"
 }
 function isRoomPlanAction(a: OmnamStoreAction): a is RoomPlanAction {
   return a.type === "SET_ROOM_PLAN" || a.type === "EDIT_ROOM_PLAN"
@@ -292,8 +272,6 @@ function omnamRootReducer(
         return { ...state, profile: mergeProfile(state.profile, action.updates) }
       case "RESET_PROFILE":
         return { ...state, profile: createEmptyProfile() }
-      case "SET_JOURNEY_STAGE":
-        return { ...state, journeyStage: action.stage }
     }
   }
 
@@ -324,11 +302,6 @@ function omnamRootReducer(
       case "SET_LOADING":
         return { ...state, app: { ...state.app, isLoading: action.loading } }
     }
-  }
-
-  // Journey-state override (replaces old `stateRef.current = {...}` writes)
-  if (isJourneyOverride(action)) {
-    return { ...state, journey: action.state }
   }
 
   // Room planner (Phase 1) — additive, writes only the plan slice.
@@ -390,23 +363,15 @@ function omnamRootReducer(
     }
   }
 
-  // Journey action — delegate to the pure journey reducer. Effects are
-  // discarded in this reducer body (the `dispatch` wrapper runs the journey
-  // reducer separately against the live mirror so it can collect them).
-  const { nextState } = journeyReducer(state.journey, action)
-  return { ...state, journey: nextState }
+  // Unknown action — no-op (the journey machine was removed in D.3).
+  return state
 }
 
 // ---------------------------------------------------------------------------
 // Context
 // ---------------------------------------------------------------------------
 
-/**
- * Dispatch return contract:
- *   • Journey actions → returns the reducer's effect list.
- *   • Profile / App / Override actions → returns [].
- */
-export type OmnamDispatch = (action: OmnamStoreAction) => JourneyEffect[]
+export type OmnamDispatch = (action: OmnamStoreAction) => void
 
 export type OmnamStoreContextValue = {
   state: OmnamStoreState
@@ -434,36 +399,13 @@ export function OmnamStoreProvider({ children }: { children: ReactNode }) {
   const stateRef = useRef<OmnamStoreState>(state)
 
   const dispatch = useCallback<OmnamDispatch>((action) => {
-    // Compute the next state + effect list synchronously against the mirror.
-    // This is cheap because all reducers here are pure; it also matches what
-    // React's next render will commit (the same pure reducer, same inputs).
-    //
-    // We derive effects only for journey actions; for profile/app/override
-    // actions the effect list is always empty.
-    let effects: JourneyEffect[] = []
-    if (
-      !isProfileAction(action) &&
-      !isAppAction(action) &&
-      !isJourneyOverride(action) &&
-      !isRoomPlanAction(action)
-    ) {
-      // Journey action — run journeyReducer directly to capture effects.
-      const journeyResult = journeyReducer(stateRef.current.journey, action)
-      effects = journeyResult.effects
-    }
-
-    // Compute the full next state via the root reducer and update the mirror.
+    // Compute the next state synchronously against the mirror so synchronous
+    // consumers observe the write before React's next render, then schedule
+    // the React re-render (the reducer is pure, so React converges on the same
+    // nextState).
     const nextState = omnamRootReducer(stateRef.current, action)
     stateRef.current = nextState
-
-    // Schedule the React re-render. The reducer we hand React is pure and
-    // deterministic given the same inputs, so React will converge on the
-    // same `nextState` we just stamped into the mirror. If StrictMode
-    // double-invokes the reducer in dev, the mirror stays untouched (that
-    // runs inside `reactDispatch`, not here), and effects aren't duplicated.
     reactDispatch(action)
-
-    return effects
   }, [])
 
   const value = useMemo<OmnamStoreContextValue>(

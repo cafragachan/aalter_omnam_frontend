@@ -66,8 +66,6 @@ export type JourneyStage =
 
 type UserProfileContextValue = {
   profile: UserProfile
-  journeyStage: JourneyStage
-  setJourneyStage: (stage: JourneyStage) => void
   updateProfile: (updates: Partial<UserProfile>) => void
   resetProfile: () => void
 }
@@ -85,13 +83,6 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
 export function useUserProfileContext(): UserProfileContextValue {
   const { state, dispatch } = useOmnamStore()
 
-  const setJourneyStage = useCallback(
-    (stage: JourneyStage) => {
-      dispatch({ type: "SET_JOURNEY_STAGE", stage })
-    },
-    [dispatch],
-  )
-
   const updateProfile = useCallback(
     (updates: Partial<UserProfile>) => {
       dispatch({ type: "UPDATE_PROFILE", updates })
@@ -103,16 +94,8 @@ export function useUserProfileContext(): UserProfileContextValue {
     dispatch({ type: "RESET_PROFILE" })
   }, [dispatch])
 
-  // Memoize the returned object against the slices this hook actually reads,
-  // so consumers' dependency arrays stay stable when unrelated slices change.
   return useMemo<UserProfileContextValue>(
-    () => ({
-      profile: state.profile,
-      journeyStage: state.journeyStage,
-      setJourneyStage,
-      updateProfile,
-      resetProfile,
-    }),
-    [state.profile, state.journeyStage, setJourneyStage, updateProfile, resetProfile],
+    () => ({ profile: state.profile, updateProfile, resetProfile }),
+    [state.profile, updateProfile, resetProfile],
   )
 }

@@ -5,8 +5,6 @@ import { ref as dbRef, set, remove } from "firebase/database"
 import { auth, database } from "@/lib/firebase"
 import { useUserProfileContext } from "@/lib/context"
 import { useGuestIntelligence } from "@/lib/guest-intelligence"
-import { useUserProfile as useHeyGenUserProfile } from "@/lib/liveavatar"
-import { useLiveAvatarContext as useHeyGenLiveAvatarContext } from "@/lib/liveavatar"
 import type { LiveAvatarSessionMessage } from "@/lib/liveavatar/types"
 import { useApp } from "@/lib/store"
 import { initSessionPointer, updateSessionPointerFields, uploadSessionSnapshot } from "./session-service"
@@ -18,7 +16,7 @@ import {
   updateConsent,
 } from "./user-profile-service"
 import type { SessionSnapshot } from "./types"
-import type { UserProfile } from "@/lib/context"
+import type { UserProfile, JourneyStage } from "@/lib/context"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -62,10 +60,15 @@ export function useIncrementalPersistence(hooks?: IncrementalPersistenceHooks) {
   const lastConsentKeyRef = useRef("")
   const endOfSessionDoneRef = useRef(false)
 
-  const { profile, journeyStage } = useUserProfileContext()
+  const { profile } = useUserProfileContext()
+  // Journey stages were removed in D.3; the realtime path has no stage. Kept as
+  // a constant so the persisted snapshot/pointer shape is unchanged.
+  const journeyStage: JourneyStage = "HOTEL_EXPLORATION"
   const guestIntelligence = useGuestIntelligence()
-  const useProfileFn = hooks?.useProfile ?? useHeyGenUserProfile
-  const useContextFn = hooks?.useContext ?? useHeyGenLiveAvatarContext
+  // Callers (the realtime path) supply DI hooks. The defaults are empty no-ops
+  // now that the old HeyGen-FULL context is gone.
+  const useProfileFn = hooks?.useProfile ?? (() => ({ userMessages: [] as { message: string; timestamp: number }[] }))
+  const useContextFn = hooks?.useContext ?? (() => ({ messages: [] as LiveAvatarSessionMessage[] }))
   const { userMessages } = useProfileFn()
   const { messages } = useContextFn()
   const { selectedHotel } = useApp()
@@ -84,7 +87,8 @@ export function useIncrementalPersistence(hooks?: IncrementalPersistenceHooks) {
         endedAt: new Date().toISOString(),
         profile: serializeProfile(profile),
         guestIntelligence: gi,
-        journeyStage,
+        // Journey stages were removed in D.3; the realtime path has no stage.
+        journeyStage: "HOTEL_EXPLORATION",
         conversationMessages: messages.map((m) => ({
           sender: m.sender,
           message: m.message,
@@ -93,7 +97,7 @@ export function useIncrementalPersistence(hooks?: IncrementalPersistenceHooks) {
         hotel: selectedHotel,
       }
     },
-    [sessionId, profile, journeyStage, guestIntelligence, messages, selectedHotel],
+    [sessionId, profile, guestIntelligence, messages, selectedHotel],
   )
 
   // =========================================================================
@@ -293,21 +297,6 @@ export function useIncrementalPersistence(hooks?: IncrementalPersistenceHooks) {
     }
   }, [messages, journeyStage, sessionId])
 
-  // =========================================================================
-  // 6.6 Clear the active session pointer when the journey reaches a terminal
-  //     stage. A refresh after END_EXPERIENCE should start fresh, not resume
-  //     into a farewell state.
-  // =========================================================================
-
-  useEffect(() => {
-    if (!database || !sessionInitializedRef.current) return
-    if (journeyStage !== "END_EXPERIENCE") return
-    const uid = getUid()
-    if (!uid) return
-    remove(dbRef(database, `omnam/users/${uid}/activeSession`)).catch((err) =>
-      console.error("[incremental-persist] Failed to clear activeSession on terminal stage:", err),
-    )
-  }, [journeyStage])
 
   // =========================================================================
   // 7. End-of-session snapshot (final flush with AI analysis)
