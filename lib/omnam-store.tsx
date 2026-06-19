@@ -76,21 +76,21 @@ export type AppState = {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Room Planner (Phase 1) — single source of truth for the room plan displayed
-// in the rooms panel. Populated by the `useRoomPlanner` hook whenever the
-// `/api/room-planner` endpoint returns a fresh plan (on panel open or on a
-// room-edit voice message while the panel is open). `null` means "no planner
-// call has landed yet"; RoomsPanel falls back to its static catalog render.
+// Room Plan — single source of truth for the room plan displayed in the rooms
+// panel. Written by two paths: the realtime brain's `propose_room_plan` tool
+// (via the dispatcher's `setRoomPlan` hook) and the guest's RoomsPanel card
+// edits. `null` means no plan has landed yet; RoomsPanel falls back to its
+// static catalog render.
 // ---------------------------------------------------------------------------
 export type CurrentRoomPlan = {
   rooms: Array<{ roomId: string; quantity: number }>
   totalPerNight: number
   capacity: number
   /**
-   * Origin of the current plan. `'planner'` means it came from
-   * `/api/room-planner`; `'user'` means the guest edited it through the
-   * RoomsPanel cards. Used to gate the panel-open re-plan trigger so a fresh
-   * planner call doesn't clobber manual edits when the panel is reopened.
+   * Origin of the current plan. `'planner'` means Ava proposed it via the
+   * `propose_room_plan` tool; `'user'` means the guest edited it through the
+   * RoomsPanel cards. The reducer recomputes totals/capacity from the static
+   * catalog on user edits.
    */
   source: "planner" | "user"
 }
