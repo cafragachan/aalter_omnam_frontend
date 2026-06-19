@@ -24,10 +24,11 @@ export async function POST(req: Request) {
   }
 
   const { runId, scenarioId, sessionId, kind, payload } = parsed.data
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-")
   const dir = path.join(process.cwd(), "debug-conversations", safeName(runId))
-  const nameParts = [stamp, kind, scenarioId, sessionId].filter(Boolean).map((part) => safeName(String(part)))
-  const filename = `${nameParts.join("__")}.json`
+  const stableName = kind === "synthetic"
+    ? scenarioId ?? sessionId ?? "synthetic"
+    : sessionId ?? scenarioId ?? "manual"
+  const filename = `${safeName(`${kind}__${stableName}`)}.json`
   const filePath = path.join(dir, filename)
 
   await mkdir(dir, { recursive: true })
@@ -39,4 +40,3 @@ export async function POST(req: Request) {
 
   return NextResponse.json({ ok: true, path: filePath })
 }
-

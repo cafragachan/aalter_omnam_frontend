@@ -37,7 +37,40 @@ type ScenarioRun = {
   summary?: string
 }
 
+type SimDiagnostic = {
+  type: "missing_checkpoint" | "premature_room_plan" | "repeated_question" | "bundled_questions"
+  label: string
+  detail: string
+  severity: "info" | "warning"
+}
+
+const MAX_AGENT_RUNS = 10
 const emptyProfile = (): UserProfile => ({ interests: [], startDate: null, endDate: null })
+
+function clampAgentCount(value: number) {
+  return Math.max(1, Math.min(MAX_AGENT_RUNS, Math.floor(value) || 1))
+}
+
+function makeScenarioRun(scenario: DebugScenario): ScenarioRun {
+  return {
+    scenario,
+    status: "queued",
+    sessionId: typeof crypto === "undefined" ? `pending-${scenario.id}` : crypto.randomUUID(),
+    transcript: [],
+    events: [],
+    profile: emptyProfile(),
+    roomPlan: null,
+  }
+}
+
+function shuffleScenarioRuns(runs: ScenarioRun[]) {
+  const next = runs.slice()
+  for (let i = next.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[next[i], next[j]] = [next[j], next[i]]
+  }
+  return next
+}
 
 function mergeProfile(prev: UserProfile, updates: Partial<UserProfile>): UserProfile {
   const guestComposition = updates.guestComposition
@@ -73,19 +106,95 @@ function checkpointScore(checkpoints: DebugCheckpoint[]) {
   return { done: done.length, total: required.length, pct: required.length ? (done.length / required.length) * 100 : 0 }
 }
 
+function checkpointTopicScore(message: string) {
+  const text = message.toLowerCase()
+  const topics = [
+    /\b(date|dates|arrive|arrival|check-?in|check-?out|depart|departure|night|stay)\b/.test(text),
+    /\b(adult|child|children|kid|kids|age|ages|party|travelling|traveling|who is coming)\b/.test(text),
+    /\b(room|rooms|suite|together|separate|connecting|adjoining)\b/.test(text),
+    /\b(purpose|occasion|celebrat|business|family|romantic|honeymoon|anniversary|work|meeting)\b/.test(text),
+  ]
+  return topics.filter(Boolean).length
+}
+
+function asksAboutCheckpoint(message: string, checkpoint: DebugCheckpoint) {
+  const text = message.toLowerCase()
+  switch (checkpoint.id) {
+    case "travel_dates":
+      return /\b(date|dates|arrive|arrival|check-?in|check-?out|depart|departure|night|stay)\b/.test(text)
+    case "party_composition":
+      return /\b(adult|child|children|kid|kids|party|travelling|traveling|who is coming)\b/.test(text)
+    case "children_ages":
+      return /\b(age|ages|old|child|children|kid|kids)\b/.test(text)
+    case "room_composition":
+      return /\b(room|rooms|suite|together|separate|connecting|adjoining)\b/.test(text)
+    case "trip_purpose":
+      return /\b(purpose|occasion|celebrat|business|family|romantic|honeymoon|anniversary|work|meeting)\b/.test(text)
+    default:
+      return false
+  }
+}
+
+function deriveDiagnostics(
+  checkpoints: DebugCheckpoint[],
+  transcript: DebugTranscriptMessage[],
+  roomPlan: CurrentRoomPlan | null,
+): SimDiagnostic[] {
+  const diagnostics: SimDiagnostic[] = []
+  const missing = checkpoints.filter((c) => c.required && c.status === "missing")
+
+  for (const checkpoint of missing) {
+    diagnostics.push({
+      type: "missing_checkpoint",
+      label: "Missing checkpoint",
+      detail: checkpoint.label,
+      severity: "warning",
+    })
+  }
+
+  if (roomPlan && missing.length) {
+    diagnostics.push({
+      type: "premature_room_plan",
+      label: "Room plan before complete intake",
+      detail: `Room plan exists while missing: ${missing.map((c) => c.label).join(", ")}`,
+      severity: "warning",
+    })
+  }
+
+  const avaQuestions = transcript.filter((m) => m.sender === "ava" && m.message.includes("?"))
+  for (const msg of avaQuestions) {
+    const questionCount = (msg.message.match(/\?/g) ?? []).length
+    const topicCount = checkpointTopicScore(msg.message)
+    if (questionCount > 1 || topicCount > 1) {
+      diagnostics.push({
+        type: "bundled_questions",
+        label: "Bundled question",
+        detail: msg.message,
+        severity: "info",
+      })
+    }
+  }
+
+  for (const checkpoint of checkpoints) {
+    if (!checkpoint.required || checkpoint.status !== "collected" || !checkpoint.collectedAt) continue
+    const repeated = avaQuestions.find((msg) => msg.timestamp > checkpoint.collectedAt! && asksAboutCheckpoint(msg.message, checkpoint))
+    if (repeated) {
+      diagnostics.push({
+        type: "repeated_question",
+        label: "Possible repeated ask",
+        detail: `${checkpoint.label}: ${repeated.message}`,
+        severity: "info",
+      })
+    }
+  }
+
+  return diagnostics
+}
+
 export default function AgentSimulationPage() {
   const [runId, setRunId] = useState("debug-run")
-  const [runs, setRuns] = useState<ScenarioRun[]>(() =>
-    DEBUG_SCENARIOS.map((scenario) => ({
-      scenario,
-      status: "queued",
-      sessionId: `pending-${scenario.id}`,
-      transcript: [],
-      events: [],
-      profile: emptyProfile(),
-      roomPlan: null,
-    })),
-  )
+  const [runCount, setRunCount] = useState(() => Math.min(5, MAX_AGENT_RUNS, DEBUG_SCENARIOS.length))
+  const [runs, setRuns] = useState<ScenarioRun[]>(() => DEBUG_SCENARIOS.map(makeScenarioRun))
   const [active, setActive] = useState(false)
   const [mounted, setMounted] = useState(false)
   const stopRef = useRef(false)
@@ -96,11 +205,13 @@ export default function AgentSimulationPage() {
     setRuns((prev) => prev.map((run) => ({ ...run, sessionId: crypto.randomUUID() })))
   }, [])
 
+  const selectedRuns = useMemo(() => runs.slice(0, clampAgentCount(runCount)), [runCount, runs])
+
   const overall = useMemo(() => {
-    const completed = runs.filter((r) => r.status === "completed").length
-    const failed = runs.filter((r) => r.status === "failed").length
-    return { completed, failed, pct: runs.length ? ((completed + failed) / runs.length) * 100 : 0 }
-  }, [runs])
+    const completed = selectedRuns.filter((r) => r.status === "completed").length
+    const failed = selectedRuns.filter((r) => r.status === "failed").length
+    return { completed, failed, pct: selectedRuns.length ? ((completed + failed) / selectedRuns.length) * 100 : 0 }
+  }, [selectedRuns])
 
   const patchRun = useCallback((scenarioId: string, patch: Partial<ScenarioRun> | ((run: ScenarioRun) => Partial<ScenarioRun>)) => {
     setRuns((prev) =>
@@ -132,9 +243,17 @@ export default function AgentSimulationPage() {
   const persistSnapshot = useCallback(async (run: ScenarioRun) => {
     if (!database) return
     const checkpoints = deriveCheckpoints(run.profile, run.transcript, run.events)
+    const diagnostics = deriveDiagnostics(checkpoints, run.transcript, run.roomPlan)
     const payload = toDebugRecord({
       scenarioId: run.scenario.id,
       displayName: run.scenario.displayName,
+      behavior: {
+        experienceLevel: run.scenario.experienceLevel,
+        guidanceNeed: run.scenario.guidanceNeed,
+        disclosureStyle: run.scenario.disclosureStyle,
+        frictionStyle: run.scenario.frictionStyle,
+        expectedCheckpointPath: run.scenario.expectedCheckpointPath,
+      },
       status: run.status,
       uid: run.uid ?? null,
       sessionId: run.sessionId,
@@ -145,6 +264,7 @@ export default function AgentSimulationPage() {
       profile: run.profile,
       expected: run.scenario.tripFacts,
       checkpoints,
+      diagnostics,
       roomPlan: run.roomPlan,
       error: run.error ?? null,
       updatedAt: new Date().toISOString(),
@@ -292,8 +412,14 @@ export default function AgentSimulationPage() {
       session.stop()
       const finalRun = await getLatestRun(scenario.id)
       const checkpoints = deriveCheckpoints(profile, transcript, events)
+      const diagnostics = deriveDiagnostics(checkpoints, transcript, roomPlan)
       const missing = checkpoints.filter((c) => c.required && c.status === "missing").map((c) => c.label)
-      const summary = missing.length ? `Missing: ${missing.join(", ")}` : "All required checkpoints collected."
+      const warningCount = diagnostics.filter((d) => d.severity === "warning").length
+      const summary = missing.length
+        ? `Missing: ${missing.join(", ")}`
+        : warningCount
+          ? `All required checkpoints collected; ${warningCount} warning${warningCount === 1 ? "" : "s"}.`
+          : "All required checkpoints collected."
       patchRun(scenario.id, { status: "completed", profile, transcript, events, roomPlan, summary })
       await persistSnapshot({ ...finalRun, status: "completed", profile, transcript, events, roomPlan, summary })
       appendEvent(scenario.id, makeDebugEvent("session_completed", "Synthetic session completed", summary))
@@ -308,24 +434,35 @@ export default function AgentSimulationPage() {
   const startBatch = useCallback(async () => {
     setActive(true)
     stopRef.current = false
+    const count = Math.min(clampAgentCount(runCount), DEBUG_SCENARIOS.length)
+    const batchRuns = runs.slice(0, count).map((run) => makeScenarioRun(run.scenario))
+    setRuns((prev) => [
+      ...batchRuns,
+      ...prev.filter((run) => !batchRuns.some((batchRun) => batchRun.scenario.id === run.scenario.id)),
+    ])
     if (database) {
       await set(dbRef(database, `omnamDebug/debugRuns/${runId}`), toDebugRecord({
         runId,
         startedAt: new Date().toISOString(),
         isSynthetic: true,
-        scenarioCount: runs.length,
+        scenarioCount: count,
+        requestedScenarioCount: runCount,
       })).catch(() => {})
     }
-    for (const run of runs) {
+    for (const run of batchRuns) {
       if (stopRef.current) break
       await runScenario(run)
     }
     setActive(false)
-  }, [runId, runScenario, runs])
+  }, [runCount, runId, runScenario, runs])
 
   const stopBatch = useCallback(() => {
     stopRef.current = true
     setActive(false)
+  }, [])
+
+  const shuffleAgents = useCallback(() => {
+    setRuns((prev) => shuffleScenarioRuns(prev))
   }, [])
 
   if (!mounted) {
@@ -345,7 +482,8 @@ export default function AgentSimulationPage() {
             <p className="text-xs text-white/40">Text-only customer bots. Real Ava Realtime session. Real Firebase writes.</p>
           </div>
           <div className="flex items-center gap-2">
-            <Button onClick={() => void startBatch()} disabled={active}>Run {runs.length} customers</Button>
+            <Button variant="outline" className="border-white/20 text-white/70" onClick={shuffleAgents} disabled={active}>Shuffle</Button>
+            <Button onClick={() => void startBatch()} disabled={active}>Run {selectedRuns.length} customers</Button>
             <Button variant="outline" className="border-white/20 text-white/70" onClick={stopBatch} disabled={!active}>Stop</Button>
           </div>
         </div>
@@ -363,6 +501,19 @@ export default function AgentSimulationPage() {
                 className="mt-1 w-full rounded border border-white/15 bg-black/25 px-3 py-2 text-sm text-white"
               />
             </div>
+            <div className="w-40">
+              <p className="text-xs uppercase tracking-wider text-white/40">Agents to run</p>
+              <input
+                type="number"
+                min={1}
+                max={MAX_AGENT_RUNS}
+                value={runCount}
+                onChange={(e) => setRunCount(clampAgentCount(Number(e.target.value)))}
+                disabled={active}
+                className="mt-1 w-full rounded border border-white/15 bg-black/25 px-3 py-2 text-sm text-white"
+              />
+              <p className="mt-1 text-[11px] text-white/35">Min 1, max {MAX_AGENT_RUNS}. Shuffle picks from the full scenario pool.</p>
+            </div>
             <div className="w-64">
               <p className="mb-2 text-xs text-white/45">{overall.completed} completed, {overall.failed} failed</p>
               <Progress value={overall.pct} className="h-2 bg-white/10" />
@@ -372,9 +523,10 @@ export default function AgentSimulationPage() {
         </Card>
 
         <div className="grid gap-5">
-          {runs.map((run) => {
+          {selectedRuns.map((run) => {
             const checkpoints = deriveCheckpoints(run.profile, run.transcript, run.events)
             const score = checkpointScore(checkpoints)
+            const diagnostics = deriveDiagnostics(checkpoints, run.transcript, run.roomPlan)
             return (
               <Card key={run.scenario.id} className="border-white/10 bg-white/5">
                 <CardHeader className="pb-3">
@@ -382,6 +534,12 @@ export default function AgentSimulationPage() {
                     <div>
                       <CardTitle className="text-base text-white/90">{run.scenario.displayName}</CardTitle>
                       <p className="mt-1 text-xs text-white/40">{run.scenario.speakingStyle}</p>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        <Badge variant="outline" className="border-sky-400/25 text-sky-200">{run.scenario.experienceLevel}</Badge>
+                        <Badge variant="outline" className="border-violet-400/25 text-violet-200">{run.scenario.guidanceNeed} guidance</Badge>
+                        <Badge variant="outline" className="border-white/15 text-white/55">{run.scenario.disclosureStyle.replace(/_/g, " ")}</Badge>
+                        <Badge variant="outline" className="border-white/15 text-white/55">{run.scenario.frictionStyle.replace(/_/g, " ")}</Badge>
+                      </div>
                     </div>
                     <div className="flex items-center gap-2">
                       <Badge variant="outline" className={statusClass(run.status)}>{run.status}</Badge>
@@ -397,6 +555,20 @@ export default function AgentSimulationPage() {
                       {run.roomPlan && <p className="text-xs text-emerald-300">Room plan: ${run.roomPlan.totalPerNight}/night, sleeps {run.roomPlan.capacity}</p>}
                       {run.summary && <p className="text-xs text-white/55">{run.summary}</p>}
                       {run.error && <p className="text-xs text-red-300">{run.error}</p>}
+                      {diagnostics.length > 0 && (
+                        <div className="space-y-1 rounded-lg border border-white/10 bg-black/20 p-2">
+                          <p className="text-[11px] uppercase tracking-wider text-white/35">Diagnostics</p>
+                          {diagnostics.slice(0, 5).map((diagnostic, i) => (
+                            <p
+                              key={`${diagnostic.type}-${i}`}
+                              className={diagnostic.severity === "warning" ? "text-xs text-amber-300" : "text-xs text-white/50"}
+                            >
+                              {diagnostic.label}: {diagnostic.detail}
+                            </p>
+                          ))}
+                          {diagnostics.length > 5 && <p className="text-xs text-white/35">+{diagnostics.length - 5} more</p>}
+                        </div>
+                      )}
                     </div>
                     <div className="grid grid-cols-2 gap-2 md:grid-cols-5">
                       {checkpoints.filter((c) => c.required).map((cp) => (
@@ -425,7 +597,19 @@ export default function AgentSimulationPage() {
                     <div className="max-h-80 overflow-y-auto rounded-lg border border-white/10 bg-black/20 p-3">
                       <p className="mb-2 text-xs uppercase tracking-wider text-white/40">Expected vs collected</p>
                       <pre className="text-[11px] leading-relaxed text-white/60">
-                        {JSON.stringify(toDebugRecord({ expected: run.scenario.tripFacts, collected: run.profile, events: run.events.slice(-8) }), null, 2)}
+                        {JSON.stringify(toDebugRecord({
+                          behavior: {
+                            experienceLevel: run.scenario.experienceLevel,
+                            guidanceNeed: run.scenario.guidanceNeed,
+                            disclosureStyle: run.scenario.disclosureStyle,
+                            frictionStyle: run.scenario.frictionStyle,
+                            expectedCheckpointPath: run.scenario.expectedCheckpointPath,
+                          },
+                          expected: run.scenario.tripFacts,
+                          collected: run.profile,
+                          diagnostics,
+                          events: run.events.slice(-8),
+                        }), null, 2)}
                       </pre>
                     </div>
                   </div>
