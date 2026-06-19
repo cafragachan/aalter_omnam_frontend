@@ -27,6 +27,12 @@ export interface DispatcherHooks {
   onArrived?: (arrived: boolean) => void
   /** Current party size (adults + children), for the capacity guardrail. */
   getPartySize?: () => number | undefined
+  /** Whether UE5 has finished loading (first stream message received). Gates
+   *  travel_to_hotel so Ava never "arrives" before the 3D scene exists. */
+  isUe5Ready?: () => boolean
+  /** Proactively speak to the guest outside a tool call — used to tell them the
+   *  scene finished loading after a gated travel. Wired to session.injectContext. */
+  notify?: (text: string) => void
 }
 
 export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}) {
@@ -47,6 +53,16 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
   const TRAVEL_SETTLE_MS = 3500
   const SCENE_SETTLE_MS = 1200
   let sceneReadyAt = 0
+
+  // UE5 may still be loading when Ava (which starts independently) is already
+  // chatting. Gate travel on the stream-ready signal: if the guest asks to
+  // travel before UE5 is up, hold the startTEST and poll until it's ready, then
+  // fire it and tell Ava she's arrived — so she never narrates a hotel that
+  // doesn't exist yet. (Mirrors the old /home ue5Ready gate, but lets the lounge
+  // intake overlap the UE5 load instead of blocking on it.)
+  const UE5_READY_POLL_MS = 400
+  const UE5_READY_TIMEOUT_MS = 30000
+  let travelPending = false
   const whenSceneReady = (fn: () => void) => {
     const wait = sceneReadyAt - Date.now()
     if (wait <= 0) fn()
@@ -59,12 +75,47 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
   ): Promise<string> {
     switch (name) {
       case "travel_to_hotel": {
-        ue5.startTest() // emits { type: "startTEST", value: "startTEST" }
-        arrived = true
-        sceneReadyAt = Date.now() + TRAVEL_SETTLE_MS
-        hooks.onArrived?.(true)
-        hooks.onScene?.("traveling to the hotel")
-        return "Arriving at the EDITION Lake Como. Now recommend the best room(s) for their party by calling propose_room_plan, and mention they can also explore the amenities or the surrounding area."
+        // Actually depart — only ever called once UE5 is confirmed ready.
+        const depart = () => {
+          ue5.startTest() // emits { type: "startTEST", value: "startTEST" }
+          arrived = true
+          sceneReadyAt = Date.now() + TRAVEL_SETTLE_MS
+          hooks.onArrived?.(true)
+          hooks.onScene?.("traveling to the hotel")
+        }
+
+        const ready = hooks.isUe5Ready?.() ?? true // no hook → don't block
+        if (ready) {
+          depart()
+          return "Arriving at the EDITION Lake Como. Now recommend the best room(s) for their party by calling propose_room_plan, and mention they can also explore the amenities or the surrounding area."
+        }
+
+        // UE5 not loaded yet — hold the travel and poll until it is.
+        if (!travelPending) {
+          travelPending = true
+          hooks.onScene?.("loading the experience…")
+          const startedAt = Date.now()
+          const poll = () => {
+            if (hooks.isUe5Ready?.()) {
+              travelPending = false
+              depart()
+              hooks.notify?.(
+                "[scene ready] The 3D experience just finished loading and you've now arrived at the EDITION Lake Como. Briefly let the guest know you're there, then recommend the best room(s) for their party by calling propose_room_plan.",
+              )
+              return
+            }
+            if (Date.now() - startedAt > UE5_READY_TIMEOUT_MS) {
+              travelPending = false
+              hooks.notify?.(
+                "[scene error] The 3D experience is taking unusually long to load. Apologize briefly to the guest and offer to try again in a moment.",
+              )
+              return
+            }
+            setTimeout(poll, UE5_READY_POLL_MS)
+          }
+          setTimeout(poll, UE5_READY_POLL_MS)
+        }
+        return "The 3D experience is still loading — do NOT say you've arrived. Tell the guest you're getting everything ready and you'll bring them in the moment it's set; you can keep chatting meanwhile."
       }
 
       case "return_to_lounge": {

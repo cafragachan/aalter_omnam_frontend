@@ -16,6 +16,11 @@ import type { SunState } from "@/components/SunToggle"
 
 export type UE5BridgeState = {
   isConnected: boolean
+  /** True once UE5 has sent its FIRST message — the definitive "the pixel
+   *  stream is alive and the level is loaded" signal (stronger than the
+   *  transport-only `isConnected`). Matches the old /home `ue5Ready` gate;
+   *  fires for both Vagon (onApplicationMessage) and local (ws.onmessage). */
+  isReady: boolean
   showFadeOverlay: boolean
   isFadeOpaque: boolean
   selectedUnit: UnitSelectionMessage | null
@@ -54,6 +59,9 @@ export function useUE5Bridge(opts: UE5BridgeOptions = {}) {
   const [selectedUnit, setSelectedUnit] = useState<UnitSelectionMessage | null>(null)
   const [sunState, setSunState] = useState<SunState>("daylight")
 
+  // --- UE5 readiness (first inbound message) ---
+  const [isReady, setIsReady] = useState(false)
+
   const clearFadeTimeouts = useCallback(() => {
     fadeTimeoutsRef.current.forEach((id) => window.clearTimeout(id))
     fadeTimeoutsRef.current = []
@@ -87,9 +95,11 @@ export function useUE5Bridge(opts: UE5BridgeOptions = {}) {
   // --- WebSocket handlers ---
   const handleUE5Message = useCallback((msg: UE5IncomingMessage) => {
     console.log("UE5 message received:", msg)
+    setIsReady(true)
   }, [])
 
   const handleUnitSelected = useCallback((unit: UnitSelectionMessage) => {
+    setIsReady(true)
     setSelectedUnit(unit)
     onUnitSelectedRef.current?.({
       roomName: unit.roomName,
@@ -168,6 +178,7 @@ export function useUE5Bridge(opts: UE5BridgeOptions = {}) {
   return {
     // State
     isConnected,
+    isReady,
     showFadeOverlay,
     isFadeOpaque,
     selectedUnit,

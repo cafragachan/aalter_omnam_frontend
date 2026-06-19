@@ -95,6 +95,13 @@ export default function HomePageContentRealtime() {
 
   const ue5 = useUE5Bridge({ onUnitSelected })
 
+  // Live mirror of UE5 readiness so the dispatcher (created once at start) can
+  // poll the CURRENT value rather than the false captured at session start.
+  const ue5ReadyRef = useRef(false)
+  useEffect(() => {
+    ue5ReadyRef.current = ue5.isReady
+  }, [ue5.isReady])
+
   const selectRoomUE5 = ue5.selectRoom
   const lastSelectedPayloadRef = useRef<string | null>(null)
   // GUEST-driven plan edits (panel cards) — always re-send the unit array so UE5
@@ -156,6 +163,8 @@ export default function HomePageContentRealtime() {
           const n = (gc?.adults ?? 0) + (gc?.children ?? 0)
           return n > 0 ? n : undefined
         },
+        isUe5Ready: () => ue5ReadyRef.current,
+        notify: (text) => sessionRef.current?.injectContext(text, { respond: true }),
       }),
     )
     sessionRef.current = session
