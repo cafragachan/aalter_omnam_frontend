@@ -135,26 +135,52 @@ export class RealtimeSession {
     try {
       await this.startAvatar()
     } catch (err) {
+      if (this.superseded()) return void (await this.teardown())
       this.log(`❌ avatar start failed: ${(err as Error).message}`)
       this.status("error")
       await this.stop()
       return
     }
+    // stop() may have fired while the avatar was coming up (classic React
+    // StrictMode mount→cleanup→mount, where the cleanup's stop() runs while this
+    // async start() is still awaiting). Abandon this startup and release whatever
+    // it created, so we never leave a zombie session running alongside the new one.
+    if (this.superseded()) return void (await this.teardown())
     // Start the mic/Realtime SEPARATELY: a getUserMedia/permission/AudioContext
     // failure must NOT tear the avatar down (that left a black thumbnail).
     try {
       await this.startRealtimeAndMic()
-      this.status("LIVE — speak to Ava")
     } catch (err) {
+      if (this.superseded()) return void (await this.teardown())
       this.log(`⚠️ mic/realtime start failed (avatar stays up): ${(err as Error).message}`)
       this.status("avatar ready — mic unavailable")
+      return
     }
+    if (this.superseded()) return void (await this.teardown())
+    this.status("LIVE — speak to Ava")
+  }
+
+  /** True when this startup has been cancelled (stop() ran) mid-flight — any
+   *  async start step that sees this must bail and release what it created. */
+  private superseded(): boolean {
+    return this.stopping || !this.running
   }
 
   async stop() {
     this.running = false
     this.stopping = true
     this.avatarReady = false
+    await this.teardown()
+    this.status("stopped")
+  }
+
+  /**
+   * Release every live resource. Idempotent (null-guards + try/catch), so it's
+   * safe to call from stop() AND from an aborted start() that discovered it had
+   * been superseded mid-flight. Deliberately does NOT touch running/stopping —
+   * the caller owns the lifecycle flags.
+   */
+  private async teardown() {
     this.stopKeepAlive()
     if (this.greetTimer) {
       clearTimeout(this.greetTimer)
@@ -192,7 +218,6 @@ export class RealtimeSession {
     this.avatar = null
     this.heygenSessionToken = null
     this.pendingCalls.clear()
-    this.status("stopped")
   }
 
   /**
@@ -227,6 +252,10 @@ export class RealtimeSession {
     const json = await res.json()
     if (!res.ok) throw new Error(json.error || "heygen-lite-session failed")
     this.heygenSessionToken = json.session_token
+    // Superseded while minting? Bail BEFORE creating/attaching the avatar (the
+    // token is set, so teardown() will serverStop it). Prevents a stopped
+    // session from grabbing the shared <video> element out from under the new one.
+    if (this.superseded()) return
 
     const avatar = new LiveAvatarSession(json.session_token, {
       voiceChat: false, // BYO audio — we push PCM via repeatAudio()
@@ -264,6 +293,7 @@ export class RealtimeSession {
 
     this.status("connecting avatar…")
     await avatar.start()
+    if (this.superseded()) return // stop() raced us — teardown() will drop this avatar
     this.avatarReady = true
     this.startKeepAlive()
     this.maybeGreet()
@@ -349,12 +379,14 @@ export class RealtimeSession {
     const tokRes = await fetch(this.opts.tokenUrl, { method: "POST" })
     const tok = await tokRes.json()
     if (!tokRes.ok) throw new Error(tok.error || "realtime-token failed")
+    if (this.superseded()) return // stopped mid-startup — don't grab the mic
     this.log(`🧠 OpenAI model ${tok.model}, VAD ${JSON.stringify(tok.vad)}`)
 
     // Mic capture at 24kHz so no resampling is needed.
     this.micStream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
     })
+    if (this.superseded()) return // teardown() stops the tracks we just acquired
     const ctx = new AudioContext({ sampleRate: 24000 })
     this.audioCtx = ctx
     if (ctx.state === "suspended") await ctx.resume()
@@ -362,6 +394,7 @@ export class RealtimeSession {
       this.log(`⚠️ AudioContext is ${ctx.sampleRate}Hz, not 24000Hz — input may need resampling`)
     }
     await ctx.audioWorklet.addModule("/pcm-recorder-worklet.js")
+    if (this.superseded()) return // teardown() closes the ctx we just built
     this.sourceNode = ctx.createMediaStreamSource(this.micStream)
     this.workletNode = new AudioWorkletNode(ctx, "pcm-recorder")
     // The worklet needs a path to ctx.destination or Chrome won't run process().
