@@ -13,6 +13,7 @@ import { useAuth } from "@/lib/auth-context"
 import { useIncrementalPersistence } from "@/lib/firebase/useIncrementalPersistence"
 import { SunToggle } from "@/components/SunToggle"
 import { Volume2, VolumeX, MessageSquare, Send } from "lucide-react"
+import { MessageSender, type LiveAvatarSessionMessage } from "@/lib/liveavatar/types"
 
 // D.1b — the realtime brain mounted inside /home's shell (auth + login overlay +
 // UE5 iframe live in HomePage). Reuses the real OmnamStore + auth, so returning
@@ -39,14 +40,6 @@ export default function HomePageContentRealtime() {
   const stateRef = useRef(state)
   stateRef.current = state
 
-  // Persist the session (profile + guest intelligence) to Firebase so returning
-  // guests accumulate data. DI hooks supply an empty transcript (the realtime
-  // transcript isn't in LiveAvatarContext); profile/personality still persist.
-  useIncrementalPersistence({
-    useContext: () => ({ messages: [] }),
-    useProfile: () => ({ userMessages: [] }),
-  })
-
   const [active, setActive] = useState(false)
   const [atHotel, setAtHotel] = useState(false)
   const [showRoomsPanel, setShowRoomsPanel] = useState(false)
@@ -54,6 +47,32 @@ export default function HomePageContentRealtime() {
   const [muted, setMuted] = useState(false)
   const [chatOpen, setChatOpen] = useState(false)
   const [chatText, setChatText] = useState("")
+  const [messages, setMessages] = useState<LiveAvatarSessionMessage[]>([])
+
+  // Persist the session (profile + guest intelligence) to Firebase so returning
+  // guests accumulate data. The realtime transcript is captured from
+  // RealtimeSession callbacks and fed through the same persistence hook.
+  useIncrementalPersistence({
+    useContext: () => ({ messages }),
+    useProfile: () => ({
+      userMessages: messages
+        .filter((m) => m.sender === MessageSender.USER)
+        .map((m) => ({ message: m.message, timestamp: m.timestamp })),
+    }),
+  })
+
+  const recordTranscript = useCallback((who: "user" | "ava", text: string) => {
+    const clean = text.trim()
+    if (!clean) return
+    setMessages((prev) => [
+      ...prev,
+      {
+        sender: who === "user" ? MessageSender.USER : MessageSender.AVATAR,
+        message: clean,
+        timestamp: Date.now(),
+      },
+    ])
+  }, [])
 
   const { rooms, hotelName } = useMemo(() => {
     const hotel = getHotelBySlug(PILOT_HOTEL_SLUG)
@@ -150,7 +169,11 @@ export default function HomePageContentRealtime() {
   const start = useCallback(async () => {
     if (!videoRef.current || sessionRef.current) return
     setActive(true)
-    const session = new RealtimeSession(videoRef.current, {}, { greetOnReady: true })
+    const session = new RealtimeSession(
+      videoRef.current,
+      { onTranscript: recordTranscript },
+      { greetOnReady: true },
+    )
     session.setToolHandler(
       createToolDispatcher(ue5, {
         onScene: setScene,
@@ -173,7 +196,7 @@ export default function HomePageContentRealtime() {
     // double welcome), and the persona still drives the intake.
     if (hydration) session.injectContext(hydration, { respond: false })
     await session.start()
-  }, [ue5, dispatch, hydration, userProfile])
+  }, [ue5, dispatch, hydration, userProfile, recordTranscript])
 
   // Auto-start once the avatar's <video> is mounted — no "Begin" gate. The
   // avatar and the mic/Realtime start INDEPENDENTLY (see RealtimeSession.start),
