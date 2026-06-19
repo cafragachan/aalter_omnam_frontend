@@ -11,6 +11,8 @@ import { ChromaAvatar } from "@/components/realtime/ChromaAvatar"
 import { getHotelBySlug, getRoomsByHotelId, type RoomPlan, type RoomPlanEntry } from "@/lib/hotel-data"
 import { useAuth } from "@/lib/auth-context"
 import { useIncrementalPersistence } from "@/lib/firebase/useIncrementalPersistence"
+import { SunToggle } from "@/components/SunToggle"
+import { Volume2, VolumeX, MessageSquare, Send } from "lucide-react"
 
 // D.1b — the realtime brain mounted inside /home's shell (auth + login overlay +
 // UE5 iframe live in HomePage). Reuses the real OmnamStore + auth, so returning
@@ -45,6 +47,20 @@ function tripGuests(p: { guestComposition?: { adults?: number; children?: number
   return `${a} adult${a === 1 ? "" : "s"}${c > 0 ? ` · ${c} child${c === 1 ? "" : "ren"}` : ""}`
 }
 
+const iconBtnStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  width: 40,
+  height: 40,
+  borderRadius: 999,
+  background: "rgba(255,255,255,.15)",
+  border: "1px solid rgba(255,255,255,.3)",
+  color: "#fff",
+  cursor: "pointer",
+  backdropFilter: "blur(8px)",
+}
+
 export default function HomePageContentRealtime() {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const sessionRef = useRef<RealtimeSession | null>(null)
@@ -70,6 +86,9 @@ export default function HomePageContentRealtime() {
   const [showRoomsPanel, setShowRoomsPanel] = useState(false)
   const [scene, setScene] = useState("lounge")
   const [transcript, setTranscript] = useState<{ who: string; text: string }[]>([])
+  const [muted, setMuted] = useState(false)
+  const [chatOpen, setChatOpen] = useState(false)
+  const [chatText, setChatText] = useState("")
 
   const { rooms, hotelName } = useMemo(() => {
     const hotel = getHotelBySlug(PILOT_HOTEL_SLUG)
@@ -201,6 +220,21 @@ export default function HomePageContentRealtime() {
   const onSetRoomQuantity = useCallback((roomId: string, quantity: number) => dispatch({ type: "EDIT_ROOM_PLAN", edit: { kind: "setQuantity", roomId, quantity } }), [dispatch])
   const onRemoveRoom = useCallback((roomId: string) => dispatch({ type: "EDIT_ROOM_PLAN", edit: { kind: "remove", roomId } }), [dispatch])
 
+  const toggleMute = useCallback(() => {
+    setMuted((m) => {
+      const next = !m
+      if (videoRef.current) videoRef.current.muted = next
+      return next
+    })
+  }, [])
+  const sendChat = useCallback(() => {
+    const text = chatText.trim()
+    if (!text || !sessionRef.current) return
+    sessionRef.current.injectContext(text, { respond: true })
+    setTranscript((prev) => [...prev, { who: "user", text }].slice(-30))
+    setChatText("")
+  }, [chatText])
+
   return (
     <div style={{ position: "absolute", inset: 0, zIndex: 20, pointerEvents: "none" }}>
       {/* Start gate (mic needs a user gesture) */}
@@ -230,6 +264,33 @@ export default function HomePageContentRealtime() {
                 <span style={{ color: t.who === "ava" ? "#60a5fa" : "#a3e635" }}>{t.who === "ava" ? "Ava" : "You"}:</span> {t.text}
               </div>
             ))}
+          </div>
+        )}
+        {active && (
+          <div style={{ display: "flex", gap: 8, alignItems: "center", pointerEvents: "auto" }}>
+            <button onClick={toggleMute} title={muted ? "Unmute Ava" : "Mute Ava"} style={iconBtnStyle}>
+              {muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
+            </button>
+            <SunToggle value={ue5.sunState} onChange={ue5.changeSunPosition} />
+            <button onClick={() => setChatOpen((o) => !o)} title="Type to Ava" style={iconBtnStyle}>
+              <MessageSquare size={16} />
+            </button>
+          </div>
+        )}
+        {active && chatOpen && (
+          <div style={{ display: "flex", gap: 6, pointerEvents: "auto" }}>
+            <input
+              value={chatText}
+              onChange={(e) => setChatText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") sendChat()
+              }}
+              placeholder="Type to Ava…"
+              style={{ flex: 1, background: "rgba(20,24,35,.9)", border: "1px solid #232838", borderRadius: 8, padding: "6px 10px", color: "#e7e9ee", fontSize: 13, outline: "none" }}
+            />
+            <button onClick={sendChat} style={iconBtnStyle}>
+              <Send size={16} />
+            </button>
           </div>
         )}
         <ChromaAvatar videoRef={videoRef} fit="contain" style={{ width: 340, height: 460 }} />
