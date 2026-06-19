@@ -271,10 +271,10 @@ export class RealtimeSession {
       this.greetTimer = null
       this.greeted = true
       this.injectContext(
-        "[The experience has just begun and the guest is here — greet them now, once, following your persona.]",
+        "[Begin now — give a brief, warm welcome (for a first-time guest, note this is an early demo of the EDITION Lake Como, with more hotels coming), then ask ONLY for their travel dates. Don't ask anything else yet.]",
         { respond: true },
       )
-    }, 3000)
+    }, 900)
   }
 
   // ---- HeyGen session lifecycle (server-proxied; CORS-safe) -------------
