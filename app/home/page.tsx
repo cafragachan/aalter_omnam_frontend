@@ -34,11 +34,11 @@ import { useIncrementalPersistence } from "@/lib/firebase/useIncrementalPersiste
 import { useActiveSessionHydration } from "@/lib/firebase/useActiveSessionHydration"
 import HomePageContentRealtime from "./HomePageContentRealtime"
 
-// D.1b — opt-in flag for the realtime brain (gpt-realtime + HeyGen LITE). When
-// on, /home renders HomePageContentRealtime inside the same shell (auth, login
-// overlay, UE5 iframe) instead of the legacy HeyGen-FULL + useJourney path.
-// Old brain stays the default until the explicit D.2 flip.
-const REALTIME_BRAIN = process.env.NEXT_PUBLIC_REALTIME_BRAIN === "1"
+// D.2 — the realtime brain (gpt-realtime + HeyGen LITE) is now the DEFAULT for
+// /home, rendered inside the same shell (auth, login overlay, UE5 iframe). The
+// legacy HeyGen-FULL + useJourney path remains as a fallback: set
+// NEXT_PUBLIC_REALTIME_BRAIN=0 to opt out. (The fallback is removed in D.3.)
+const REALTIME_BRAIN = process.env.NEXT_PUBLIC_REALTIME_BRAIN !== "0"
 import { initDebug } from "@/lib/debug"
 import { SessionState, VoiceChatState } from "@heygen/liveavatar-web-sdk"
 
