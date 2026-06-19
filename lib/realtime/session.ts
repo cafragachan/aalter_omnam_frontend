@@ -104,6 +104,9 @@ export class RealtimeSession {
   // One-shot proactive greeting (~3s after avatar + WS are ready).
   private greeted = false
   private greetTimer: ReturnType<typeof setTimeout> | null = null
+  // Anti-echo: while Ava is speaking (+tail), don't forward mic audio to OpenAI,
+  // so her own voice can't re-trigger VAD and make her respond/greet twice.
+  private outputActiveUntil = 0
 
   constructor(videoEl: HTMLMediaElement, cb: RealtimeCallbacks = {}, opts: RealtimeOptions = {}) {
     this.videoEl = videoEl
@@ -240,6 +243,7 @@ export class RealtimeSession {
       void this.handleAvatarDisconnect(reason)
     })
     avatar.on(AgentEventsEnum.AVATAR_SPEAK_STARTED, () => {
+      this.outputActiveUntil = Date.now() + 1000 // anti-echo while the avatar speaks
       if (this.cur && this.cur.t3 == null) {
         this.cur.t3 = performance.now()
         this.finalizeTurn()
@@ -360,6 +364,8 @@ export class RealtimeSession {
     this.sinkGain.connect(ctx.destination)
 
     this.workletNode.port.onmessage = (ev: MessageEvent) => {
+      // Anti-echo: drop mic frames while Ava is speaking (+ a short tail).
+      if (Date.now() < this.outputActiveUntil) return
       const buf = ev.data as ArrayBuffer
       if (this.oaWs && this.oaWs.readyState === WebSocket.OPEN) {
         const b64 = arrayBufferToBase64(buf)
@@ -426,6 +432,7 @@ export class RealtimeSession {
       case "response.audio.delta": {
         const b64 = msg.delta as string
         if (!b64) break
+        this.outputActiveUntil = Date.now() + 1000 // keep mic gated while audio flows (+tail)
         if (this.cur && this.cur.t1 == null) {
           this.cur.t1 = performance.now()
           this.log(`🔊 t1 first Realtime audio (+${(this.cur.t1 - this.cur.t0).toFixed(0)}ms)`)

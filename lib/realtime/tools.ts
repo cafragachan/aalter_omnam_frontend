@@ -31,6 +31,13 @@ export function buildToolSchemas(slug: string = PILOT_HOTEL_SLUG): RealtimeTool[
     },
     {
       type: "function",
+      name: "return_to_lounge",
+      description:
+        "Take the guest back to the virtual lounge — the experience's landing space. Call this whenever they ask to go back to the lounge, home, or the start.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+    {
+      type: "function",
       name: "save_profile",
       description:
         "Quietly remember a detail the guest shares about their trip, so you can tailor the tour and recommendations. Call this whenever you learn something new (multiple times is fine). Include ONLY the fields you actually learned this turn — never guess.",

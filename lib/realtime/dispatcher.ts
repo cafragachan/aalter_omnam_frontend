@@ -63,6 +63,15 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
         return "Arriving at the EDITION Lake Como. Now recommend the best room(s) for their party by calling propose_room_plan, and mention they can also explore the amenities or the surrounding area."
       }
 
+      case "return_to_lounge": {
+        ue5.sendCommand("virtualLounge", "virtualLounge")
+        arrived = false
+        sceneReadyAt = Date.now() + TRAVEL_SETTLE_MS
+        hooks.onRoomsPanel?.(false)
+        hooks.onScene?.("virtual lounge")
+        return "Heading back to the virtual lounge."
+      }
+
       case "save_profile": {
         const updates: Partial<UserProfile> = {}
         if (typeof args.firstName === "string" && args.firstName.trim()) {
