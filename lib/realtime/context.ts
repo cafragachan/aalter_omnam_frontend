@@ -18,8 +18,11 @@ export const PILOT_HOTEL_SLUG = "edition-lake-como"
 export function buildL1Instruction(slug: string = PILOT_HOTEL_SLUG): string {
   const cat = getHotelCatalog(slug)
   if (!cat) return CONCIERGE_PERSONA
+  const today = new Date().toISOString().slice(0, 10)
   return [
     CONCIERGE_PERSONA,
+    "",
+    `Today's date is ${today}. When the guest gives dates without a year (e.g. "August 15–20"), assume the nearest UPCOMING occurrence — if that month/day is still ahead this year, use this year; if it has already passed, use next year. NEVER ask the guest which year.`,
     "",
     "=== PROPERTY DOSSIER (your single source of truth) ===",
     renderHotel(cat),
