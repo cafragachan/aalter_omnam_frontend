@@ -113,12 +113,14 @@ export default function HomePageContentRealtime() {
 
   const selectRoomUE5 = ue5.selectRoom
   const lastSelectedPayloadRef = useRef<string | null>(null)
+  // GUEST-driven plan edits (panel cards) — always re-send the unit array so UE5
+  // restays in sync. (Planner proposals are highlighted by the dispatcher, which
+  // gates them behind UE5's post-travel/scene settle.)
   useEffect(() => {
-    const entries = currentRoomPlan?.rooms ?? []
-    if (entries.length === 0) return
-    const ids = Array.from(new Set(entries.map((r) => r.roomId)))
+    const plan = currentRoomPlan
+    if (!plan || plan.source !== "user") return
+    const ids = Array.from(new Set(plan.rooms.map((r) => r.roomId)))
     const payload = ids.join(",")
-    if (!payload || lastSelectedPayloadRef.current === payload) return
     lastSelectedPayloadRef.current = payload
     selectRoomUE5(payload)
   }, [currentRoomPlan, selectRoomUE5])

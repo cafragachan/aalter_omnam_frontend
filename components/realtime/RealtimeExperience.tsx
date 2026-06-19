@@ -90,15 +90,13 @@ export default function RealtimeExperience() {
 
   // currentRoomPlan → UE5 selectedRoom highlight (deduped). Mirrors /home.
   const selectRoomUE5 = ue5.selectRoom
-  const lastSelectedPayloadRef = useRef<string | null>(null)
+  // Guest-driven edits re-send the unit array; planner proposals are highlighted
+  // by the dispatcher (settle-gated).
   useEffect(() => {
-    const entries = currentRoomPlan?.rooms ?? []
-    if (entries.length === 0) return
-    const ids = Array.from(new Set(entries.map((r) => r.roomId)))
-    const payload = ids.join(",")
-    if (!payload || lastSelectedPayloadRef.current === payload) return
-    lastSelectedPayloadRef.current = payload
-    selectRoomUE5(payload)
+    const plan = currentRoomPlan
+    if (!plan || plan.source !== "user") return
+    const ids = Array.from(new Set(plan.rooms.map((r) => r.roomId)))
+    selectRoomUE5(ids.join(","))
   }, [currentRoomPlan, selectRoomUE5])
 
   const start = useCallback(async () => {

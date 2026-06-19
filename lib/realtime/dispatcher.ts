@@ -38,6 +38,18 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
   let arrived = false
   const LOUNGE_GATE = "The guest is still in the virtual lounge — call travel_to_hotel first."
 
+  // UE5 drops commands sent while a scene is still loading — especially the
+  // ~3.5s server-travel after startTEST (mirrors the old UE5_POST_TRAVEL_DELAY_MS).
+  // Gate scene-dependent sends (room highlight, POI markers) behind a "ready" time.
+  const TRAVEL_SETTLE_MS = 3500
+  const SCENE_SETTLE_MS = 1200
+  let sceneReadyAt = 0
+  const whenSceneReady = (fn: () => void) => {
+    const wait = sceneReadyAt - Date.now()
+    if (wait <= 0) fn()
+    else setTimeout(fn, wait)
+  }
+
   return async function dispatch(
     name: string,
     args: Record<string, unknown>,
@@ -46,6 +58,7 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
       case "travel_to_hotel": {
         ue5.startTest() // emits { type: "startTEST", value: "startTEST" }
         arrived = true
+        sceneReadyAt = Date.now() + TRAVEL_SETTLE_MS
         hooks.onScene?.("traveling to the hotel")
         return "Arriving at the EDITION Lake Como. Now recommend the best room(s) for their party by calling propose_room_plan, and mention they can also explore the amenities or the surrounding area."
       }
@@ -103,6 +116,7 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
         }
         hooks.onRoomsPanel?.(area === "rooms")
         hooks.onScene?.(area)
+        sceneReadyAt = Date.now() + SCENE_SETTLE_MS
         if (area === "location") {
           return "Now viewing the surrounding area. Call show_points_of_interest with a category (fine dining, landmarks, lakeside towns…) to map nearby places, then describe a couple."
         }
@@ -121,7 +135,9 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
           if (!res.ok) return `Couldn't fetch nearby ${category} right now.`
           const data = (await res.json()) as { points?: Array<{ name?: string }> }
           const points = Array.isArray(data.points) ? data.points : []
-          ue5.sendOSMData(JSON.stringify({ points })) // osm_data — array of places by name+type
+          console.log("[POI] /api/locate-interest-points returned", points.length, "points for", category)
+          // osm_data — array of places by name+type; gate until the location scene is loaded.
+          whenSceneReady(() => ue5.sendOSMData(JSON.stringify({ points })))
           hooks.onScene?.(`points of interest: ${category}`)
           if (!points.length) return `I couldn't find notable ${category} nearby to map right now.`
           const names = points.slice(0, 5).map((p) => p.name).filter(Boolean).join(", ")
@@ -149,6 +165,7 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
           return `"${args.amenity}" is not a visitable amenity.`
         }
         ue5.navigateToAmenity(match.id)
+        sceneReadyAt = Date.now() + SCENE_SETTLE_MS
         hooks.onScene?.(match.name)
         return `Walking the guest into ${match.name}.`
       }
@@ -211,6 +228,14 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
         hooks.setRoomPlan?.({ rooms: planRooms, totalPerNight, capacity, source: "planner" })
         hooks.onRoomsPanel?.(true)
         lastPlanFirstRoomId = planRooms[0].roomId
+        // Show + highlight the rooms once UE5 has settled (e.g. after travel) —
+        // navigate to the rooms scene, then send the unit array a beat later.
+        const idsStr = Array.from(new Set(planRooms.map((p) => p.roomId))).join(",")
+        whenSceneReady(() => {
+          ue5.navigateToRooms()
+          hooks.onScene?.("rooms")
+          setTimeout(() => ue5.selectRoom(idsStr), SCENE_SETTLE_MS)
+        })
         const names = planRooms
           .map((p) => `${p.quantity}× ${cat?.rooms.find((x) => x.id === p.roomId)?.name ?? p.roomId}`)
           .join(", ")
