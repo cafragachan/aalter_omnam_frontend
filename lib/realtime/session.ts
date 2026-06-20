@@ -107,6 +107,9 @@ export class RealtimeSession {
   // Anti-echo: while Ava is speaking (+tail), don't forward mic audio to OpenAI,
   // so her own voice can't re-trigger VAD and make her respond/greet twice.
   private outputActiveUntil = 0
+  // Mic mute (user toggle + chat mode). When true, captured PCM is dropped before
+  // it reaches OpenAI (server VAD never fires), so the guest can talk freely.
+  private micMuted = false
 
   constructor(videoEl: HTMLMediaElement, cb: RealtimeCallbacks = {}, opts: RealtimeOptions = {}) {
     this.videoEl = videoEl
@@ -121,6 +124,18 @@ export class RealtimeSession {
   /** Register the tool-call handler (function calling → UE5). */
   setToolHandler(handler: ToolHandler) {
     this.toolHandler = handler
+  }
+
+  /** Mute/unmute the guest mic. Muted → captured PCM is dropped before it reaches
+   *  OpenAI (server VAD never fires), and the track is disabled so the browser
+   *  shows the mic as off. Used by the mic button and by chat (text-only) mode. */
+  setMicMuted(muted: boolean) {
+    this.micMuted = muted
+    try {
+      this.micStream?.getAudioTracks().forEach((t) => {
+        t.enabled = !muted
+      })
+    } catch {}
   }
 
   // ---- lifecycle ---------------------------------------------------------
@@ -287,9 +302,9 @@ export class RealtimeSession {
         this.finalizeTurn()
       }
     })
-    avatar.on(AgentEventsEnum.AVATAR_TRANSCRIPTION, (e: { text?: string }) => {
-      if (e?.text) this.cb.onTranscript?.("ava", e.text)
-    })
+    // NB: Ava's transcript is emitted once per turn from `response.done`
+    // (the OpenAI-side text), NOT from HeyGen AVATAR_TRANSCRIPTION — wiring both
+    // would double every avatar bubble in the chat transcript.
 
     this.status("connecting avatar…")
     await avatar.start()
@@ -406,6 +421,8 @@ export class RealtimeSession {
     this.sinkGain.connect(ctx.destination)
 
     this.workletNode.port.onmessage = (ev: MessageEvent) => {
+      // Mic mute (user toggle / chat mode): drop everything before it leaves.
+      if (this.micMuted) return
       // Anti-echo: drop mic frames while Ava is speaking (+ a short tail).
       if (Date.now() < this.outputActiveUntil) return
       const buf = ev.data as ArrayBuffer
