@@ -17,9 +17,9 @@ import { Separator } from "@/components/ui/separator"
 import { MessageSender, type LiveAvatarSessionMessage } from "@/lib/liveavatar/types"
 import { createDebugToolDispatcher } from "@/lib/debug-agent/dispatcher"
 import {
-  deriveCheckpoints,
+  deriveDebugBookingGate,
   makeDebugEvent,
-  type DebugCheckpoint,
+  type DebugGate,
   type DebugEvent,
   type DebugTranscriptMessage,
 } from "@/lib/debug-agent/types"
@@ -69,48 +69,50 @@ function profileSummary(profile: UserProfile) {
 
 function Field({ label, value }: { label: string; value?: string | number | null }) {
   return (
-    <div>
+    <div className="min-w-0">
       <p className="text-[11px] uppercase tracking-wider text-white/40">{label}</p>
-      <p className="mt-1 text-sm text-white/85">{value || "-"}</p>
+      <p className="mt-1 break-words text-sm text-white/85">{value || "-"}</p>
     </div>
   )
 }
 
-function CheckpointTable({ checkpoints }: { checkpoints: DebugCheckpoint[] }) {
+function GateTable({ gates }: { gates: DebugGate[] }) {
   return (
-    <div className="overflow-hidden rounded-lg border border-white/10">
-      <table className="w-full text-sm">
+    <div className="overflow-x-auto rounded-lg border border-white/10">
+      <table className="min-w-[42rem] w-full table-fixed text-sm">
         <thead className="bg-white/5 text-left text-[11px] uppercase tracking-wider text-white/40">
           <tr>
-            <th className="px-3 py-2">Checkpoint</th>
-            <th className="px-3 py-2">Status</th>
-            <th className="px-3 py-2">Value</th>
-            <th className="px-3 py-2">Collected</th>
+            <th className="w-[11rem] px-3 py-2">Gate</th>
+            <th className="w-[8rem] px-3 py-2">Status</th>
+            <th className="w-[14rem] px-3 py-2">Value</th>
+            <th className="px-3 py-2">Reason</th>
           </tr>
         </thead>
         <tbody>
-          {checkpoints.map((cp) => (
-            <tr key={cp.id} className="border-t border-white/5">
+          {gates.map((gate) => (
+            <tr key={gate.id} className="border-t border-white/5">
               <td className="px-3 py-2 text-white/80">
-                {cp.label}
-                {cp.required && <span className="ml-1 text-amber-300">*</span>}
+                {gate.label}
+                {gate.required && <span className="ml-1 text-amber-300">*</span>}
               </td>
               <td className="px-3 py-2">
                 <Badge
                   variant="outline"
                   className={
-                    cp.status === "collected"
+                    gate.status === "ready"
                       ? "border-emerald-400/30 text-emerald-300"
-                      : cp.status === "not_applicable"
+                      : gate.status === "not_required"
                         ? "border-white/20 text-white/50"
-                        : "border-amber-400/30 text-amber-300"
+                        : gate.status === "waiting"
+                          ? "border-sky-400/30 text-sky-300"
+                          : "border-amber-400/30 text-amber-300"
                   }
                 >
-                  {cp.status.replace("_", " ")}
+                  {gate.status.replace("_", " ")}
                 </Badge>
               </td>
-              <td className="max-w-[24rem] px-3 py-2 text-white/65">{cp.value || "-"}</td>
-              <td className="px-3 py-2 text-white/45">{cp.collectedAt ? `${fmtTime(cp.collectedAt)}${cp.turnIndex ? ` / turn ${cp.turnIndex}` : ""}` : "-"}</td>
+              <td className="break-words px-3 py-2 text-white/65">{gate.value || gate.source || "-"}</td>
+              <td className="break-words px-3 py-2 text-white/45">{gate.reason || "-"}</td>
             </tr>
           ))}
         </tbody>
@@ -133,6 +135,7 @@ export default function DebugAgentPage() {
   const [status, setStatus] = useState("idle")
   const [error, setError] = useState<string | null>(null)
   const [chatText, setChatText] = useState("")
+  const [selfMuted, setSelfMuted] = useState(false)
   const [messages, setMessages] = useState<LiveAvatarSessionMessage[]>([])
   const [events, setEvents] = useState<DebugEvent[]>([])
   const [persisted, setPersisted] = useState<DebugGuestRecord | null>(null)
@@ -156,7 +159,7 @@ export default function DebugAgentPage() {
       })),
     [messages],
   )
-  const checkpoints = useMemo(() => deriveCheckpoints(profile, transcriptMessages, events), [profile, transcriptMessages, events])
+  const bookingGate = useMemo(() => deriveDebugBookingGate(profile, state.currentRoomPlan), [profile, state.currentRoomPlan])
   const latestMessages = useMemo(() => messages.slice().reverse(), [messages])
 
   const refreshPersisted = useCallback(async () => {
@@ -225,13 +228,13 @@ export default function DebugAgentPage() {
       updatedAt: new Date().toISOString(),
       profile,
       transcript: transcriptMessages,
-      checkpoints,
+      bookingGate,
       events,
       roomPlan: state.currentRoomPlan,
     })
     set(dbRef(database, `omnamDebug/users/${uid}/activeSession`), payload).catch(() => {})
     set(dbRef(database, `omnamDebug/users/${uid}/sessions/${sessionId}`), payload).catch(() => {})
-  }, [checkpoints, events, profile, sessionId, state.currentRoomPlan, transcriptMessages])
+  }, [bookingGate, events, profile, sessionId, state.currentRoomPlan, transcriptMessages])
 
   const handleRegister = async (e: FormEvent) => {
     e.preventDefault()
@@ -323,7 +326,8 @@ export default function DebugAgentPage() {
     sessionRef.current = session
     addEvent(makeDebugEvent("session_started", "Ava debug session started", `sessionId=${sessionId}`))
     await session.start()
-  }, [addEvent, dispatch, recordTranscript, sessionId, stateRef])
+    session.setMicrophoneMuted(selfMuted)
+  }, [addEvent, dispatch, recordTranscript, selfMuted, sessionId, stateRef])
 
   const stopAva = useCallback(async () => {
     await sessionRef.current?.stop()
@@ -342,7 +346,7 @@ export default function DebugAgentPage() {
         payload: {
           firebaseUid: uid,
           transcript: transcriptMessages,
-          checkpoints,
+          bookingGate,
           events,
           profile,
           persisted,
@@ -351,7 +355,16 @@ export default function DebugAgentPage() {
     }).catch(() => {})
     addEvent(makeDebugEvent("session_completed", "Ava debug session stopped", `sessionId=${sessionId}`))
     setStatus("stopped")
-  }, [addEvent, checkpoints, events, firebaseUser?.uid, persisted, profile, sessionId, transcriptMessages])
+  }, [addEvent, bookingGate, events, firebaseUser?.uid, persisted, profile, sessionId, transcriptMessages])
+
+  const toggleSelfMuted = useCallback(() => {
+    setSelfMuted((prev) => {
+      const next = !prev
+      sessionRef.current?.setMicrophoneMuted(next)
+      addEvent(makeDebugEvent("tool_called", next ? "Self muted" : "Self unmuted"))
+      return next
+    })
+  }, [addEvent])
 
   const sendChat = useCallback(() => {
     const text = chatText.trim()
@@ -370,8 +383,8 @@ export default function DebugAgentPage() {
   return (
     <div className="min-h-screen bg-[#0a0a12] text-white">
       <header className="sticky top-0 z-30 border-b border-white/10 bg-[#0a0a12]/90 backdrop-blur-xl">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
-          <div>
+        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 px-4 py-4 sm:px-6">
+          <div className="min-w-0">
             <h1 className="text-sm font-semibold text-white/90">Ava Debug Agent</h1>
             <p className="text-xs text-white/40">No Unreal. Real OpenAI Realtime, HeyGen, Firebase.</p>
           </div>
@@ -383,8 +396,8 @@ export default function DebugAgentPage() {
         </div>
       </header>
 
-      <main className="mx-auto grid max-w-7xl gap-5 px-6 py-6 lg:grid-cols-[360px_1fr]">
-        <div className="space-y-5">
+      <main className="mx-auto grid w-full max-w-7xl gap-5 px-4 py-6 sm:px-6 lg:grid-cols-[minmax(0,340px)_minmax(0,1fr)]">
+        <div className="min-w-0 space-y-5">
           <Card className="border-white/10 bg-white/5">
             <CardHeader><CardTitle className="text-base text-white/90">Quick Auth</CardTitle></CardHeader>
             <CardContent>
@@ -410,18 +423,21 @@ export default function DebugAgentPage() {
           <Card className="border-white/10 bg-white/5">
             <CardHeader><CardTitle className="text-base text-white/90">Ava</CardTitle></CardHeader>
             <CardContent className="space-y-4">
-              <div className="overflow-hidden rounded-lg bg-black" style={{ width: 300, height: 360 }}>
+              <div className="mx-auto aspect-[5/6] w-full max-w-[300px] overflow-hidden rounded-lg bg-black">
                 <ChromaAvatar videoRef={videoRef} fit="cover" style={{ width: "100%", height: "100%" }} />
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
                 <Badge variant="outline" className="border-white/20 text-white/70">{status}</Badge>
-                <span className="text-xs text-white/35">session {sessionId.slice(0, 8)}</span>
+                <span className="break-all text-xs text-white/35">session {sessionId.slice(0, 8)}</span>
               </div>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <Button onClick={() => void startAva()} disabled={!isAuthenticated || !!sessionRef.current}>Start Ava</Button>
                 <Button variant="outline" className="border-white/20 text-white/70" onClick={() => void stopAva()} disabled={!sessionRef.current}>Stop + Flush</Button>
+                <Button variant="outline" className={selfMuted ? "border-red-400/40 text-red-300" : "border-white/20 text-white/70"} onClick={toggleSelfMuted} disabled={!sessionRef.current}>
+                  {selfMuted ? "Unmute me" : "Mute me"}
+                </Button>
               </div>
-              <div className="flex gap-2">
+              <div className="flex min-w-0 gap-2">
                 <Input
                   value={chatText}
                   onChange={(e) => setChatText(e.target.value)}
@@ -435,10 +451,10 @@ export default function DebugAgentPage() {
           </Card>
         </div>
 
-        <div className="space-y-5">
+        <div className="min-w-0 space-y-5">
           <Card className="border-white/10 bg-white/5">
             <CardHeader><CardTitle className="text-base text-white/90">Current Profile</CardTitle></CardHeader>
-            <CardContent className="grid grid-cols-2 gap-4 md:grid-cols-5">
+            <CardContent className="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
               <Field label="Identity" value={debugIdentity ? `${debugIdentity.firstName} ${debugIdentity.lastName}` : "-"} />
               <Field label="Dates" value={summary.dates} />
               <Field label="Party" value={summary.party} />
@@ -453,17 +469,24 @@ export default function DebugAgentPage() {
           </Card>
 
           <Card className="border-white/10 bg-white/5">
-            <CardHeader><CardTitle className="text-base text-white/90">Checkpoint Timeline</CardTitle></CardHeader>
-            <CardContent><CheckpointTable checkpoints={checkpoints} /></CardContent>
+            <CardHeader><CardTitle className="text-base text-white/90">Booking Gate</CardTitle></CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-3 md:grid-cols-3">
+                <Field label="Next action" value={bookingGate.decision.nextAction.type.replace(/_/g, " ")} />
+                <Field label="Can recommend" value={bookingGate.decision.readiness.canRecommendRooms.allowed ? "yes" : "no"} />
+                <Field label="Can prepare booking" value={bookingGate.decision.readiness.canPrepareBooking.allowed ? "yes" : "no"} />
+              </div>
+              <GateTable gates={bookingGate.gates} />
+            </CardContent>
           </Card>
 
-          <div className="grid gap-5 xl:grid-cols-2">
+          <div className="grid min-w-0 gap-5 xl:grid-cols-2">
             <Card className="border-white/10 bg-white/5">
               <CardHeader><CardTitle className="text-base text-white/90">Transcript</CardTitle></CardHeader>
               <CardContent className="max-h-[30rem] space-y-2 overflow-y-auto">
                 {latestMessages.map((msg, i) => (
                   <div key={`${msg.timestamp}-${i}`} className={msg.sender === MessageSender.USER ? "text-right" : "text-left"}>
-                    <div className={`inline-block max-w-[85%] rounded-lg px-3 py-2 text-sm ${msg.sender === MessageSender.USER ? "bg-indigo-500/20 text-indigo-100" : "bg-white/10 text-white/80"}`}>
+                    <div className={`inline-block max-w-[85%] break-words rounded-lg px-3 py-2 text-sm ${msg.sender === MessageSender.USER ? "bg-indigo-500/20 text-indigo-100" : "bg-white/10 text-white/80"}`}>
                       <p className="mb-1 text-[10px] uppercase tracking-wider text-white/35">{msg.sender === MessageSender.USER ? "Guest" : "Ava"} / {fmtTime(msg.timestamp)}</p>
                       {msg.message}
                     </div>
@@ -479,7 +502,7 @@ export default function DebugAgentPage() {
                   <div key={event.id} className="rounded-lg border border-white/10 bg-black/20 p-2">
                     <div className="flex items-center justify-between gap-2">
                       <Badge variant="outline" className="border-white/15 text-white/60">{event.type}</Badge>
-                      <span className="text-[11px] text-white/35">{fmtTime(event.timestamp)}</span>
+                      <span className="shrink-0 text-[11px] text-white/35">{fmtTime(event.timestamp)}</span>
                     </div>
                     <p className="mt-1 text-sm text-white/80">{event.label}</p>
                     {event.detail && <p className="mt-1 text-xs text-white/45">{event.detail}</p>}
@@ -492,13 +515,13 @@ export default function DebugAgentPage() {
           <Card className="border-white/10 bg-white/5">
             <CardHeader><CardTitle className="text-base text-white/90">Firebase Debug Paths</CardTitle></CardHeader>
             <CardContent className="space-y-2 text-xs text-white/50">
-              <p><code>omnamDebug/users/{firebaseUser?.uid ?? "{uid}"}/identity</code></p>
-              <p><code>omnamDebug/users/{firebaseUser?.uid ?? "{uid}"}/sessions/{sessionId}</code></p>
-              <p><code>omnamDebug/users/{firebaseUser?.uid ?? "{uid}"}/activeSession</code></p>
-              <p><code>debug-conversations/manual-agent-debug/*.json</code></p>
+              <p className="break-all"><code>omnamDebug/users/{firebaseUser?.uid ?? "{uid}"}/identity</code></p>
+              <p className="break-all"><code>omnamDebug/users/{firebaseUser?.uid ?? "{uid}"}/sessions/{sessionId}</code></p>
+              <p className="break-all"><code>omnamDebug/users/{firebaseUser?.uid ?? "{uid}"}/activeSession</code></p>
+              <p className="break-all"><code>debug-conversations/manual-agent-debug/*.json</code></p>
               <Separator className="bg-white/10" />
-              <pre className="max-h-72 overflow-auto rounded bg-black/30 p-3 text-[11px] text-white/55">
-                {JSON.stringify(toDebugRecord({ persisted, profile, checkpoints }), null, 2)}
+              <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded bg-black/30 p-3 text-[11px] text-white/55">
+                {JSON.stringify(toDebugRecord({ persisted, profile, bookingGate }), null, 2)}
               </pre>
             </CardContent>
           </Card>

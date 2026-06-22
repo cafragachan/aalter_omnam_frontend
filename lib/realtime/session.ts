@@ -78,6 +78,7 @@ export class RealtimeSession {
 
   private running = false
   private avatarReady = false
+  private microphoneMuted = false
   private turnCounter = 0
   private cur: TurnMetric | null = null
 
@@ -121,6 +122,18 @@ export class RealtimeSession {
   /** Register the tool-call handler (function calling → UE5). */
   setToolHandler(handler: ToolHandler) {
     this.toolHandler = handler
+  }
+
+  setMicrophoneMuted(muted: boolean) {
+    this.microphoneMuted = muted
+    this.micStream?.getAudioTracks().forEach((track) => {
+      track.enabled = !muted
+    })
+    this.log(muted ? "microphone muted" : "microphone unmuted")
+  }
+
+  isMicrophoneMuted() {
+    return this.microphoneMuted
   }
 
   // ---- lifecycle ---------------------------------------------------------
@@ -355,6 +368,7 @@ export class RealtimeSession {
     this.micStream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
     })
+    this.setMicrophoneMuted(this.microphoneMuted)
     const ctx = new AudioContext({ sampleRate: 24000 })
     this.audioCtx = ctx
     if (ctx.state === "suspended") await ctx.resume()
@@ -373,6 +387,7 @@ export class RealtimeSession {
     this.sinkGain.connect(ctx.destination)
 
     this.workletNode.port.onmessage = (ev: MessageEvent) => {
+      if (this.microphoneMuted) return
       // Anti-echo: drop mic frames while Ava is speaking (+ a short tail).
       if (Date.now() < this.outputActiveUntil) return
       const buf = ev.data as ArrayBuffer

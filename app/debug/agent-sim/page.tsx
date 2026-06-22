@@ -14,9 +14,9 @@ import { DEBUG_SCENARIOS, type DebugScenario } from "@/lib/debug-agent/scenarios
 import { TextRealtimeSession } from "@/lib/debug-agent/text-realtime-session"
 import { createDebugToolDispatcher } from "@/lib/debug-agent/dispatcher"
 import {
-  deriveCheckpoints,
+  deriveDebugBookingGate,
   makeDebugEvent,
-  type DebugCheckpoint,
+  type DebugGate,
   type DebugEvent,
   type DebugTranscriptMessage,
 } from "@/lib/debug-agent/types"
@@ -38,7 +38,7 @@ type ScenarioRun = {
 }
 
 type SimDiagnostic = {
-  type: "missing_checkpoint" | "premature_room_plan" | "repeated_question" | "bundled_questions"
+  type: "missing_fact" | "premature_room_plan" | "blocked_booking" | "ready_for_recap"
   label: string
   detail: string
   severity: "info" | "warning"
@@ -100,92 +100,53 @@ function statusClass(status: RunStatus) {
   }
 }
 
-function checkpointScore(checkpoints: DebugCheckpoint[]) {
-  const required = checkpoints.filter((c) => c.required)
-  const done = required.filter((c) => c.status === "collected" || c.status === "not_applicable")
+function gateScore(gates: DebugGate[]) {
+  const required = gates.filter((gate) => gate.required)
+  const done = required.filter((gate) => gate.status === "ready" || gate.status === "not_required" || gate.status === "waiting")
   return { done: done.length, total: required.length, pct: required.length ? (done.length / required.length) * 100 : 0 }
 }
 
-function checkpointTopicScore(message: string) {
-  const text = message.toLowerCase()
-  const topics = [
-    /\b(date|dates|arrive|arrival|check-?in|check-?out|depart|departure|night|stay)\b/.test(text),
-    /\b(adult|child|children|kid|kids|age|ages|party|travelling|traveling|who is coming)\b/.test(text),
-    /\b(room|rooms|suite|together|separate|connecting|adjoining)\b/.test(text),
-    /\b(purpose|occasion|celebrat|business|family|romantic|honeymoon|anniversary|work|meeting)\b/.test(text),
-  ]
-  return topics.filter(Boolean).length
-}
-
-function asksAboutCheckpoint(message: string, checkpoint: DebugCheckpoint) {
-  const text = message.toLowerCase()
-  switch (checkpoint.id) {
-    case "travel_dates":
-      return /\b(date|dates|arrive|arrival|check-?in|check-?out|depart|departure|night|stay)\b/.test(text)
-    case "party_composition":
-      return /\b(adult|child|children|kid|kids|party|travelling|traveling|who is coming)\b/.test(text)
-    case "children_ages":
-      return /\b(age|ages|old|child|children|kid|kids)\b/.test(text)
-    case "room_composition":
-      return /\b(room|rooms|suite|together|separate|connecting|adjoining)\b/.test(text)
-    case "trip_purpose":
-      return /\b(purpose|occasion|celebrat|business|family|romantic|honeymoon|anniversary|work|meeting)\b/.test(text)
-    default:
-      return false
-  }
-}
-
 function deriveDiagnostics(
-  checkpoints: DebugCheckpoint[],
-  transcript: DebugTranscriptMessage[],
+  gate: ReturnType<typeof deriveDebugBookingGate>,
   roomPlan: CurrentRoomPlan | null,
 ): SimDiagnostic[] {
   const diagnostics: SimDiagnostic[] = []
-  const missing = checkpoints.filter((c) => c.required && c.status === "missing")
+  const missing = gate.gates.filter((item) => item.required && item.status === "missing")
 
-  for (const checkpoint of missing) {
+  for (const item of missing) {
     diagnostics.push({
-      type: "missing_checkpoint",
-      label: "Missing checkpoint",
-      detail: checkpoint.label,
+      type: "missing_fact",
+      label: "Missing fact",
+      detail: item.label,
       severity: "warning",
     })
   }
 
-  if (roomPlan && missing.length) {
+  if (roomPlan && !gate.decision.readiness.canRecommendRooms.allowed) {
     diagnostics.push({
       type: "premature_room_plan",
-      label: "Room plan before complete intake",
-      detail: `Room plan exists while missing: ${missing.map((c) => c.label).join(", ")}`,
+      label: "Room plan before recommendation-ready facts",
+      detail: gate.decision.readiness.canRecommendRooms.reason,
       severity: "warning",
     })
   }
 
-  const avaQuestions = transcript.filter((m) => m.sender === "ava" && m.message.includes("?"))
-  for (const msg of avaQuestions) {
-    const questionCount = (msg.message.match(/\?/g) ?? []).length
-    const topicCount = checkpointTopicScore(msg.message)
-    if (questionCount > 1 || topicCount > 1) {
-      diagnostics.push({
-        type: "bundled_questions",
-        label: "Bundled question",
-        detail: msg.message,
-        severity: "info",
-      })
-    }
+  if (!gate.decision.readiness.canPrepareBooking.allowed) {
+    diagnostics.push({
+      type: "blocked_booking",
+      label: "Booking preflight blocked",
+      detail: gate.decision.readiness.canPrepareBooking.reason,
+      severity: missing.length ? "warning" : "info",
+    })
   }
 
-  for (const checkpoint of checkpoints) {
-    if (!checkpoint.required || checkpoint.status !== "collected" || !checkpoint.collectedAt) continue
-    const repeated = avaQuestions.find((msg) => msg.timestamp > checkpoint.collectedAt! && asksAboutCheckpoint(msg.message, checkpoint))
-    if (repeated) {
-      diagnostics.push({
-        type: "repeated_question",
-        label: "Possible repeated ask",
-        detail: `${checkpoint.label}: ${repeated.message}`,
-        severity: "info",
-      })
-    }
+  if (gate.decision.nextAction.type === "PRESENT_FINAL_RECAP") {
+    diagnostics.push({
+      type: "ready_for_recap",
+      label: "Ready for final recap",
+      detail: gate.decision.nextAction.reason,
+      severity: "info",
+    })
   }
 
   return diagnostics
@@ -242,8 +203,8 @@ export default function AgentSimulationPage() {
 
   const persistSnapshot = useCallback(async (run: ScenarioRun) => {
     if (!database) return
-    const checkpoints = deriveCheckpoints(run.profile, run.transcript, run.events)
-    const diagnostics = deriveDiagnostics(checkpoints, run.transcript, run.roomPlan)
+    const bookingGate = deriveDebugBookingGate(run.profile, run.roomPlan)
+    const diagnostics = deriveDiagnostics(bookingGate, run.roomPlan)
     const payload = toDebugRecord({
       scenarioId: run.scenario.id,
       displayName: run.scenario.displayName,
@@ -263,7 +224,7 @@ export default function AgentSimulationPage() {
       events: run.events,
       profile: run.profile,
       expected: run.scenario.tripFacts,
-      checkpoints,
+      bookingGate,
       diagnostics,
       roomPlan: run.roomPlan,
       error: run.error ?? null,
@@ -411,15 +372,15 @@ export default function AgentSimulationPage() {
 
       session.stop()
       const finalRun = await getLatestRun(scenario.id)
-      const checkpoints = deriveCheckpoints(profile, transcript, events)
-      const diagnostics = deriveDiagnostics(checkpoints, transcript, roomPlan)
-      const missing = checkpoints.filter((c) => c.required && c.status === "missing").map((c) => c.label)
+      const bookingGate = deriveDebugBookingGate(profile, roomPlan)
+      const diagnostics = deriveDiagnostics(bookingGate, roomPlan)
+      const missing = bookingGate.gates.filter((gate) => gate.required && gate.status === "missing").map((gate) => gate.label)
       const warningCount = diagnostics.filter((d) => d.severity === "warning").length
       const summary = missing.length
         ? `Missing: ${missing.join(", ")}`
         : warningCount
-          ? `All required checkpoints collected; ${warningCount} warning${warningCount === 1 ? "" : "s"}.`
-          : "All required checkpoints collected."
+          ? `Booking gate ready; ${warningCount} warning${warningCount === 1 ? "" : "s"}.`
+          : `Booking gate next action: ${bookingGate.decision.nextAction.type.replace(/_/g, " ")}.`
       patchRun(scenario.id, { status: "completed", profile, transcript, events, roomPlan, summary })
       await persistSnapshot({ ...finalRun, status: "completed", profile, transcript, events, roomPlan, summary })
       appendEvent(scenario.id, makeDebugEvent("session_completed", "Synthetic session completed", summary))
@@ -524,9 +485,9 @@ export default function AgentSimulationPage() {
 
         <div className="grid gap-5">
           {selectedRuns.map((run) => {
-            const checkpoints = deriveCheckpoints(run.profile, run.transcript, run.events)
-            const score = checkpointScore(checkpoints)
-            const diagnostics = deriveDiagnostics(checkpoints, run.transcript, run.roomPlan)
+            const bookingGate = deriveDebugBookingGate(run.profile, run.roomPlan)
+            const score = gateScore(bookingGate.gates)
+            const diagnostics = deriveDiagnostics(bookingGate, run.roomPlan)
             return (
               <Card key={run.scenario.id} className="border-white/10 bg-white/5">
                 <CardHeader className="pb-3">
@@ -550,8 +511,9 @@ export default function AgentSimulationPage() {
                 <CardContent className="space-y-4">
                   <div className="grid gap-3 md:grid-cols-[220px_1fr]">
                     <div className="space-y-2">
-                      <p className="text-xs text-white/45">Required checkpoints: {score.done}/{score.total}</p>
+                      <p className="text-xs text-white/45">Required gates: {score.done}/{score.total}</p>
                       <Progress value={score.pct} className="h-2 bg-white/10" />
+                      <p className="text-xs text-sky-200">Next action: {bookingGate.decision.nextAction.type.replace(/_/g, " ")}</p>
                       {run.roomPlan && <p className="text-xs text-emerald-300">Room plan: ${run.roomPlan.totalPerNight}/night, sleeps {run.roomPlan.capacity}</p>}
                       {run.summary && <p className="text-xs text-white/55">{run.summary}</p>}
                       {run.error && <p className="text-xs text-red-300">{run.error}</p>}
@@ -571,10 +533,10 @@ export default function AgentSimulationPage() {
                       )}
                     </div>
                     <div className="grid grid-cols-2 gap-2 md:grid-cols-5">
-                      {checkpoints.filter((c) => c.required).map((cp) => (
-                        <div key={cp.id} className="rounded-lg border border-white/10 bg-black/20 p-2">
-                          <p className="text-[11px] text-white/45">{cp.label}</p>
-                          <p className={cp.status === "missing" ? "text-xs text-amber-300" : "text-xs text-emerald-300"}>{cp.status}</p>
+                      {bookingGate.gates.filter((gate) => gate.required).map((gate) => (
+                        <div key={gate.id} className="rounded-lg border border-white/10 bg-black/20 p-2">
+                          <p className="text-[11px] text-white/45">{gate.label}</p>
+                          <p className={gate.status === "missing" ? "text-xs text-amber-300" : gate.status === "waiting" ? "text-xs text-sky-300" : "text-xs text-emerald-300"}>{gate.status.replace(/_/g, " ")}</p>
                         </div>
                       ))}
                     </div>
@@ -607,6 +569,7 @@ export default function AgentSimulationPage() {
                           },
                           expected: run.scenario.tripFacts,
                           collected: run.profile,
+                          bookingGate,
                           diagnostics,
                           events: run.events.slice(-8),
                         }), null, 2)}
