@@ -21,6 +21,9 @@ export type UE5BridgeState = {
    *  transport-only `isConnected`). Matches the old /home `ue5Ready` gate;
    *  fires for both Vagon (onApplicationMessage) and local (ws.onmessage). */
   isReady: boolean
+  /** Increments each time UE5 reports a level has finished loading. Consumers
+   *  watch it to pull the unit inventory at the reliable moment (units exist). */
+  levelLoadedSeq: number
   showFadeOverlay: boolean
   isFadeOpaque: boolean
   selectedUnit: UnitSelectionMessage | null
@@ -34,11 +37,17 @@ export type UE5BridgeOptions = {
    * `/home` now wires it directly to `useJourney().onUnitSelectedUE5`.
    */
   onUnitSelected?: (payload: {
+    /** UnitID of the tapped unit (multi-unit contract). Absent on older UE5. */
+    id?: number
     roomName: string
     description?: string
     price?: string
     level?: string
   }) => void
+  /** Called when UE5 pushes its physical-unit inventory (raw — normalize via
+   *  lib/selection). May arrive chunked (chunk/total); the consumer accumulates.
+   *  Fires on scene-ready and on requestInventory. */
+  onUnitInventory?: (msg: { units: unknown[]; chunk?: number; total?: number }) => void
 }
 
 export function useUE5Bridge(opts: UE5BridgeOptions = {}) {
@@ -46,8 +55,10 @@ export function useUE5Bridge(opts: UE5BridgeOptions = {}) {
   // (a useCallback) stays referentially stable even when callers pass a new
   // function each render. WebSocket hook wiring stays quiet.
   const onUnitSelectedRef = useRef(opts.onUnitSelected)
+  const onUnitInventoryRef = useRef(opts.onUnitInventory)
   useEffect(() => {
     onUnitSelectedRef.current = opts.onUnitSelected
+    onUnitInventoryRef.current = opts.onUnitInventory
   })
 
   // --- Fade overlay state (extracted from old HomePage) ---
@@ -61,6 +72,9 @@ export function useUE5Bridge(opts: UE5BridgeOptions = {}) {
 
   // --- UE5 readiness (first inbound message) ---
   const [isReady, setIsReady] = useState(false)
+  // --- Hotel level fully loaded (units exist); a counter so each load re-fires
+  //     consumers even across return-to-lounge → re-travel. ---
+  const [levelLoadedSeq, setLevelLoadedSeq] = useState(0)
 
   const clearFadeTimeouts = useCallback(() => {
     fadeTimeoutsRef.current.forEach((id) => window.clearTimeout(id))
@@ -102,6 +116,7 @@ export function useUE5Bridge(opts: UE5BridgeOptions = {}) {
     setIsReady(true)
     setSelectedUnit(unit)
     onUnitSelectedRef.current?.({
+      id: unit.id,
       roomName: unit.roomName,
       description: unit.description,
       price: unit.price,
@@ -109,9 +124,24 @@ export function useUE5Bridge(opts: UE5BridgeOptions = {}) {
     })
   }, [])
 
+  const handleUnitInventory = useCallback((msg: { units: unknown[]; chunk?: number; total?: number }) => {
+    const n = Array.isArray(msg.units) ? msg.units.length : 0
+    console.log(`[INV] ← unitInventory from UE5: ${n} units` + (msg.total && msg.total > 1 ? ` (chunk ${(msg.chunk ?? 0) + 1}/${msg.total})` : ""))
+    setIsReady(true)
+    onUnitInventoryRef.current?.(msg)
+  }, [])
+
+  const handleLevelLoaded = useCallback(() => {
+    console.log("[INV] ← levelLoaded from UE5")
+    setIsReady(true)
+    setLevelLoadedSeq((n) => n + 1)
+  }, [])
+
   const { isConnected, sendRawMessage } = useUE5WebSocket({
     onMessage: handleUE5Message,
     onUnitSelected: handleUnitSelected,
+    onUnitInventory: handleUnitInventory,
+    onLevelLoaded: handleLevelLoaded,
   })
 
   // --- Typed commands ---
@@ -138,6 +168,22 @@ export function useUE5Bridge(opts: UE5BridgeOptions = {}) {
   const selectRoom = useCallback((roomId: string) => {
     sendCommand("selectedRoom", roomId)
   }, [sendCommand])
+
+  // Authoritative multi-unit highlight: the green set + the single focused unit.
+  // The frontend owns the FIFO bucket logic; UE5 just renders this set.
+  // `focus` is emitted as -1 (never null) when there's no active unit, so UE5's
+  // Blueprint `Get Integer Field "focus"` always succeeds; UE5 treats focus < 0 as
+  // "clear focus" and focus >= 0 as "look up that unit".
+  const selectUnits = useCallback((unitIds: number[], focus: number | null) => {
+    console.log("[INV] → selectUnits", unitIds.join(","), "focus", focus ?? -1)
+    sendRawMessage({ type: "selectUnits", value: unitIds.join(","), focus: focus ?? -1 })
+  }, [sendRawMessage])
+
+  // Optional pull — ask UE5 to (re)send its full unit inventory.
+  const requestInventory = useCallback(() => {
+    const ok = sendRawMessage({ type: "requestInventory" })
+    console.log("[INV] → requestInventory sent?", ok)
+  }, [sendRawMessage])
 
   const viewUnit = useCallback((view: "interior" | "exterior") => {
     sendCommand("unitView", view)
@@ -179,6 +225,7 @@ export function useUE5Bridge(opts: UE5BridgeOptions = {}) {
     // State
     isConnected,
     isReady,
+    levelLoadedSeq,
     showFadeOverlay,
     isFadeOpaque,
     selectedUnit,
@@ -191,6 +238,8 @@ export function useUE5Bridge(opts: UE5BridgeOptions = {}) {
     navigateToLocation,
     resetToDefault,
     selectRoom,
+    selectUnits,
+    requestInventory,
     viewUnit,
     navigateToAmenity,
     changeSunPosition,

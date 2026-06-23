@@ -39,7 +39,7 @@ export function ChatPanel({
     const el = textareaRef.current
     if (!el) return
     el.style.height = "auto"
-    el.style.height = `${Math.min(el.scrollHeight, 84)}px`
+    el.style.height = `${Math.min(el.scrollHeight, 126)}px`
   }, [draft])
 
   const submit = useCallback(() => {
@@ -65,7 +65,7 @@ export function ChatPanel({
         <span className="text-[11px] uppercase tracking-[0.2em] text-white/60">Chat with Ava</span>
       </div>
 
-      <div ref={listRef} className="flex-1 space-y-2 overflow-y-auto px-3 py-3">
+      <div ref={listRef} className="unit-detail-scroll flex-1 space-y-2 overflow-y-auto px-3 py-3 pr-1">
         {messages.length === 0 ? (
           <div className="flex h-full items-center justify-center px-4 text-center text-sm text-white/50">
             Type below and press Enter to chat with Ava.
@@ -98,7 +98,7 @@ export function ChatPanel({
             onKeyDown={handleKeyDown}
             placeholder="Message Ava…"
             rows={1}
-            className="min-h-[24px] w-full resize-none bg-transparent text-sm leading-[24px] text-white placeholder:text-white/40 outline-none"
+            className="unit-detail-scroll min-h-[24px] w-full resize-none bg-transparent text-sm leading-[24px] text-white placeholder:text-white/40 outline-none"
             style={{ fontFamily: "var(--font-open-sans)" }}
           />
           <button
