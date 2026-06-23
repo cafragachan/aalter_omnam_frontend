@@ -63,6 +63,17 @@ export type ToolHandler = (name: string, args: Record<string, unknown>) => Promi
 
 const OPENAI_WS_BASE = "wss://api.openai.com/v1/realtime"
 
+// Small delay before the one-shot greeting once the avatar + WS are both ready.
+// Just enough headroom for the avatar to accept repeatAudio; kept short so Ava
+// starts talking quickly.
+const GREET_DELAY_MS = 200
+
+// Brief mic-suppression window at the ONSET of each avatar utterance — long
+// enough to swallow the echo spike before browser AEC adapts, short enough that
+// the guest can still barge in mid-sentence. (Not extended per audio chunk, so it
+// no longer gates the whole utterance — that's what blocked interruption.)
+const SELF_ECHO_GUARD_MS = 300
+
 export class RealtimeSession {
   private videoEl: HTMLMediaElement
   private cb: RealtimeCallbacks
@@ -110,6 +121,9 @@ export class RealtimeSession {
   // Mic mute (user toggle + chat mode). When true, captured PCM is dropped before
   // it reaches OpenAI (server VAD never fires), so the guest can talk freely.
   private micMuted = false
+  // Whether an OpenAI response is currently generating — so a barge-in only sends
+  // response.cancel when there's actually something to cancel.
+  private responseActive = false
 
   constructor(videoEl: HTMLMediaElement, cb: RealtimeCallbacks = {}, opts: RealtimeOptions = {}) {
     this.videoEl = videoEl
@@ -146,9 +160,23 @@ export class RealtimeSession {
     this.stopping = false
     this.reconnectAttempts = 0
     this.greeted = false
-    // Start the avatar first. If it fails, that's fatal — tear down.
+    this.responseActive = false
+    // Start the avatar and the mic/Realtime CONCURRENTLY: the OpenAI WS connects
+    // while the HeyGen avatar is still negotiating WebRTC, instead of back-to-back
+    // (which added ~1s+ before Ava's first word). Avatar failure is fatal; a
+    // mic/permission failure must NOT tear the avatar down (it left a black
+    // thumbnail), so the mic path swallows its own error. maybeGreet fires from
+    // whichever of the two finishes last, so order of completion doesn't matter.
+    const avatarP = this.startAvatar()
+    const micP = this.startRealtimeAndMic().catch((err) => {
+      if (this.superseded()) return
+      this.log(`⚠️ mic/realtime start failed (avatar stays up): ${(err as Error).message}`)
+      this.status("avatar ready — mic unavailable")
+    })
+    // Avatar — fatal on failure. stop() may also have fired mid-flight (React
+    // StrictMode mount→cleanup→mount): abandon and release what we created.
     try {
-      await this.startAvatar()
+      await avatarP
     } catch (err) {
       if (this.superseded()) return void (await this.teardown())
       this.log(`❌ avatar start failed: ${(err as Error).message}`)
@@ -156,21 +184,8 @@ export class RealtimeSession {
       await this.stop()
       return
     }
-    // stop() may have fired while the avatar was coming up (classic React
-    // StrictMode mount→cleanup→mount, where the cleanup's stop() runs while this
-    // async start() is still awaiting). Abandon this startup and release whatever
-    // it created, so we never leave a zombie session running alongside the new one.
     if (this.superseded()) return void (await this.teardown())
-    // Start the mic/Realtime SEPARATELY: a getUserMedia/permission/AudioContext
-    // failure must NOT tear the avatar down (that left a black thumbnail).
-    try {
-      await this.startRealtimeAndMic()
-    } catch (err) {
-      if (this.superseded()) return void (await this.teardown())
-      this.log(`⚠️ mic/realtime start failed (avatar stays up): ${(err as Error).message}`)
-      this.status("avatar ready — mic unavailable")
-      return
-    }
+    await micP // already error-handled above; just await completion
     if (this.superseded()) return void (await this.teardown())
     this.status("LIVE — speak to Ava")
   }
@@ -296,7 +311,7 @@ export class RealtimeSession {
       void this.handleAvatarDisconnect(reason)
     })
     avatar.on(AgentEventsEnum.AVATAR_SPEAK_STARTED, () => {
-      this.outputActiveUntil = Date.now() + 1000 // anti-echo while the avatar speaks
+      this.outputActiveUntil = Date.now() + SELF_ECHO_GUARD_MS // brief onset-only echo guard
       if (this.cur && this.cur.t3 == null) {
         this.cur.t3 = performance.now()
         this.finalizeTurn()
@@ -315,20 +330,24 @@ export class RealtimeSession {
     this.log("✅ avatar connected (LITE, BYO audio)")
   }
 
-  // One proactive greeting ~3s after BOTH the avatar and the WS are ready, so
-  // Ava welcomes the guest instead of waiting for them to speak first.
+  // One proactive greeting as soon as BOTH the avatar and the WS are ready, so Ava
+  // welcomes the guest instead of waiting for them to speak first. Called from both
+  // ready-paths (avatar connected / WS open); whichever lands last triggers it.
   private maybeGreet() {
     if (!this.opts.greetOnReady || this.greeted || this.greetTimer) return
     if (!this.avatarReady) return
     if (!this.oaWs || this.oaWs.readyState !== WebSocket.OPEN) return
+    // Claim the one-shot NOW (not when the timer fires) so the other ready-path
+    // can't double-schedule a second welcome. stop()/teardown clears greetTimer,
+    // so an aborted session still never greets.
+    this.greeted = true
     this.greetTimer = setTimeout(() => {
       this.greetTimer = null
-      this.greeted = true
       this.injectContext(
         "[Begin now — give a brief, warm welcome (for a first-time guest, note this is an early demo of the EDITION Lake Como, with more hotels coming), then ask ONLY for their travel dates. Don't ask anything else yet.]",
         { respond: true },
       )
-    }, 900)
+    }, GREET_DELAY_MS)
   }
 
   // ---- HeyGen session lifecycle (server-proxied; CORS-safe) -------------
@@ -423,7 +442,8 @@ export class RealtimeSession {
     this.workletNode.port.onmessage = (ev: MessageEvent) => {
       // Mic mute (user toggle / chat mode): drop everything before it leaves.
       if (this.micMuted) return
-      // Anti-echo: drop mic frames while Ava is speaking (+ a short tail).
+      // Brief echo guard at each utterance's ONSET only (see SELF_ECHO_GUARD_MS);
+      // the rest of Ava's speech flows through so the guest can barge in.
       if (Date.now() < this.outputActiveUntil) return
       const buf = ev.data as ArrayBuffer
       if (this.oaWs && this.oaWs.readyState === WebSocket.OPEN) {
@@ -461,11 +481,18 @@ export class RealtimeSession {
 
     switch (type) {
       case "input_audio_buffer.speech_started": {
-        // Barge-in: user started talking — interrupt the avatar, drop pending audio.
+        // Barge-in: the guest started talking over Ava. Stop her on all three
+        // fronts — (1) interrupt the avatar (clears HeyGen's queued audio), (2)
+        // cancel the in-flight OpenAI response so it stops generating, (3) drop our
+        // own pending PCM. Without (2) the response kept streaming and Ava resumed.
         if (this.avatarReady) {
           try {
             this.avatar?.interrupt()
           } catch {}
+        }
+        if (this.responseActive && this.oaWs && this.oaWs.readyState === WebSocket.OPEN) {
+          this.oaWs.send(JSON.stringify({ type: "response.cancel" }))
+          this.responseActive = false
         }
         this.resetOutBuffer()
         break
@@ -491,7 +518,7 @@ export class RealtimeSession {
       case "response.audio.delta": {
         const b64 = msg.delta as string
         if (!b64) break
-        this.outputActiveUntil = Date.now() + 1000 // keep mic gated while audio flows (+tail)
+        this.responseActive = true // a response is producing audio (barge-in can cancel it)
         if (this.cur && this.cur.t1 == null) {
           this.cur.t1 = performance.now()
           this.log(`🔊 t1 first Realtime audio (+${(this.cur.t1 - this.cur.t0).toFixed(0)}ms)`)
@@ -527,9 +554,14 @@ export class RealtimeSession {
         void this.runToolCall(msg.call_id as string, msg.arguments as string | undefined)
         break
       }
+      case "response.created": {
+        this.responseActive = true // a response started (may be cancelled by barge-in)
+        break
+      }
       case "response.output_audio.done":
       case "response.audio.done":
       case "response.done": {
+        if (type === "response.done") this.responseActive = false
         this.flushOut(true)
         if (type === "response.done" && this.avaTranscript) {
           this.cb.onTranscript?.("ava", this.avaTranscript)
