@@ -6,9 +6,18 @@
 import { getHotelCatalog } from "@/lib/hotel-data"
 import type { useUE5Bridge } from "@/lib/ue5/bridge"
 import type { SunState } from "@/components/SunToggle"
-import type { UserProfile, GuestComposition } from "@/lib/context"
+import type { UserProfile } from "@/lib/context"
 import type { CurrentRoomPlan } from "@/lib/omnam-store"
 import type { UnitInventoryEntry } from "@/lib/selection"
+import {
+  bookingRoomFromPlan,
+  buildRoomPlan,
+  parseProfileUpdates,
+  summarizeProfile,
+  summarizeRoomPlan,
+  validatePlanCapacity,
+  validateUnitSelection,
+} from "@/lib/agent-runtime/tool-core"
 import { PILOT_HOTEL_SLUG } from "./context"
 
 type Ue5Bridge = ReturnType<typeof useUE5Bridge>
@@ -144,30 +153,7 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
       }
 
       case "save_profile": {
-        const updates: Partial<UserProfile> = {}
-        if (typeof args.firstName === "string" && args.firstName.trim()) {
-          updates.firstName = args.firstName.trim()
-        }
-        const gc: Partial<GuestComposition> = {}
-        if (Number.isFinite(Number(args.adults))) gc.adults = Number(args.adults)
-        if (Number.isFinite(Number(args.children))) gc.children = Number(args.children)
-        if (Array.isArray(args.childrenAges)) {
-          gc.childrenAges = (args.childrenAges as unknown[]).map(Number).filter(Number.isFinite)
-        }
-        if (Object.keys(gc).length) updates.guestComposition = gc as GuestComposition
-        const start = parseDate(args.startDate)
-        if (start) updates.startDate = start
-        const end = parseDate(args.endDate)
-        if (end) updates.endDate = end
-        if (Array.isArray(args.interests)) updates.interests = (args.interests as unknown[]).map(String)
-        if (typeof args.travelPurpose === "string") updates.travelPurpose = args.travelPurpose
-        if (typeof args.budgetRange === "string") updates.budgetRange = args.budgetRange
-        if (Array.isArray(args.dietaryRestrictions)) {
-          updates.dietaryRestrictions = (args.dietaryRestrictions as unknown[]).map(String)
-        }
-        if (Array.isArray(args.accessibilityNeeds)) {
-          updates.accessibilityNeeds = (args.accessibilityNeeds as unknown[]).map(String)
-        }
+        const updates = parseProfileUpdates(args)
         if (Object.keys(updates).length === 0) return "Nothing new to remember."
         hooks.saveProfile?.(updates)
         const summary = summarizeProfile(updates)
@@ -277,26 +263,10 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
 
       case "select_units": {
         if (!arrived) return LOUNGE_GATE
-        const ids = Array.isArray(args.unitIds) ? args.unitIds.map(Number).filter(Number.isFinite) : []
-        const inv = hooks.getInventory?.() ?? []
-        const avail = ids.filter((id) => inv.some((u) => u.id === id && u.available))
-        if (!avail.length) return "None of those unit ids are available — pick available ids from the inventory."
-        // Only units whose room TYPE is already in the plan can be highlighted —
-        // mirrors the store (it ignores off-plan types). Adding a type is a
-        // propose_room_plan job, so guide the model there instead of silently no-op.
-        const planTypes = new Set((hooks.getPlan?.()?.rooms ?? []).map((r) => r.roomId))
-        const inPlan = avail.filter((id) => {
-          const u = inv.find((x) => x.id === id)
-          return !!u && planTypes.has(u.roomTypeId)
-        })
-        if (!inPlan.length) {
-          return "Those units aren't part of the current plan's room types — call propose_room_plan to add that room type first, then highlight the unit."
-        }
-        hooks.selectUnits?.(inPlan)       // store reconciles + the emit effect sends selectUnits to UE5
-        const names = inPlan.map((id) => inv.find((u) => u.id === id)?.name ?? id).join(", ")
-        const skipped = avail.length - inPlan.length
-        return `Highlighted ${names}.` +
-          (skipped ? ` (${skipped} unit(s) not in the current plan's room types were skipped — add them with propose_room_plan.)` : "")
+        const selection = validateUnitSelection(args, hooks.getInventory?.() ?? [], hooks.getPlan?.() ?? null)
+        if (!selection.ok) return selection.message
+        hooks.selectUnits?.(selection.unitIds)       // store reconciles + the emit effect sends selectUnits to UE5
+        return selection.message
       }
 
       case "set_lighting": {
@@ -310,28 +280,14 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
       }
 
       case "propose_room_plan": {
-        const raw = Array.isArray(args.rooms) ? (args.rooms as Array<Record<string, unknown>>) : []
-        const planRooms: { roomId: string; quantity: number }[] = []
-        let totalPerNight = 0
-        let capacity = 0
-        for (const r of raw) {
-          const id = String(r.roomId ?? "")
-          const qty = Math.max(1, Math.floor(Number(r.quantity ?? 1)) || 1)
-          const room = cat?.rooms.find((x) => x.id === id)
-          if (!room) continue
-          planRooms.push({ roomId: id, quantity: qty })
-          totalPerNight += room.price * qty
-          capacity += room.occupancy * qty
-        }
-        if (!planRooms.length) return "None of those room ids exist — pick from the catalog."
+        const plan = buildRoomPlan(args.rooms)
+        if (!plan) return "None of those room ids exist. Pick from the catalog."
         // Deterministic capacity guardrail — never propose a plan too small.
-        const party = hooks.getPartySize?.()
-        if (party && capacity < party) {
-          return `That plan only sleeps ${capacity}, but the party is ${party}. Add a room or pick larger ones so everyone fits, then propose again.`
-        }
-        hooks.setRoomPlan?.({ rooms: planRooms, totalPerNight, capacity, source: "planner" })
+        const capacityError = validatePlanCapacity(plan, hooks.getPartySize?.())
+        if (capacityError) return capacityError
+        hooks.setRoomPlan?.(plan)
         hooks.onRoomsPanel?.(true)
-        lastPlanFirstRoomId = planRooms[0].roomId
+        lastPlanFirstRoomId = plan.rooms[0].roomId
         // Navigate to the rooms scene once UE5 has settled (e.g. after travel).
         // Highlighting is now owned by the single emit effect in
         // HomePageContentRealtime (it reconciles the plan → unit selection and
@@ -341,19 +297,11 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
           ue5.navigateToRooms()
           hooks.onScene?.("rooms")
         })
-        const names = planRooms
-          .map((p) => `${p.quantity}× ${cat?.rooms.find((x) => x.id === p.roomId)?.name ?? p.roomId}`)
-          .join(", ")
-        return `Proposed plan: ${names} — $${totalPerNight}/night, sleeps ${capacity}. The matching units are now marked in the scene — invite the guest to tap one of the available units to step inside.`
+        return `Proposed plan: ${summarizeRoomPlan(plan)} - $${plan.totalPerNight}/night, sleeps ${plan.capacity}. The matching units are now marked in the scene - invite the guest to tap one of the available units to step inside.`
       }
 
       case "open_booking": {
-        const id =
-          String(args.roomId ?? "") ||
-          lastPlanFirstRoomId ||
-          hooks.getPlan?.()?.rooms[0]?.roomId ||
-          ""
-        const room = cat?.rooms.find((r) => r.id === id)
+        const room = bookingRoomFromPlan(args, hooks.getPlan?.() ?? null, lastPlanFirstRoomId)
         if (!room) return "I'm not sure which room to book — let's settle on one first."
         if (!room.book_url) return `${room.name} doesn't have a booking link yet.`
         if (typeof window !== "undefined") window.open(room.book_url, "_blank", "noopener,noreferrer")
@@ -364,29 +312,4 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
         return `Unknown tool "${name}".`
     }
   }
-}
-
-function parseDate(v: unknown): Date | undefined {
-  if (typeof v !== "string" || !v.trim()) return undefined
-  const d = new Date(v)
-  return Number.isNaN(d.getTime()) ? undefined : d
-}
-
-function summarizeProfile(u: Partial<UserProfile>): string {
-  const bits: string[] = []
-  if (u.firstName) bits.push(u.firstName)
-  if (u.guestComposition) {
-    const { adults, children } = u.guestComposition
-    const parts: string[] = []
-    if (typeof adults === "number") parts.push(`${adults} adult${adults === 1 ? "" : "s"}`)
-    if (typeof children === "number" && children > 0) parts.push(`${children} child${children === 1 ? "" : "ren"}`)
-    if (parts.length) bits.push(parts.join(" + "))
-  }
-  if (u.startDate) bits.push(`from ${u.startDate.toISOString().slice(0, 10)}${u.endDate ? ` to ${u.endDate.toISOString().slice(0, 10)}` : ""}`)
-  if (u.interests?.length) bits.push(u.interests.join(", "))
-  if (u.travelPurpose) bits.push(u.travelPurpose)
-  if (u.budgetRange) bits.push(u.budgetRange)
-  if (u.dietaryRestrictions?.length) bits.push(`dietary: ${u.dietaryRestrictions.join(", ")}`)
-  if (u.accessibilityNeeds?.length) bits.push(`access: ${u.accessibilityNeeds.join(", ")}`)
-  return bits.join("; ") || "a detail"
 }

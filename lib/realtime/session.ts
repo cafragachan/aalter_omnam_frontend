@@ -157,6 +157,14 @@ export class RealtimeSession {
     } catch {}
   }
 
+  setMicrophoneMuted(muted: boolean) {
+    this.setMicMuted(muted)
+  }
+
+  isMicrophoneMuted() {
+    return this.micMuted
+  }
+
   // ---- lifecycle ---------------------------------------------------------
 
   async start() {

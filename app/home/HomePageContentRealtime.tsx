@@ -307,18 +307,7 @@ export default function HomePageContentRealtime() {
   const start = useCallback(async () => {
     if (!videoRef.current || sessionRef.current) return
     setActive(true)
-    const session = new RealtimeSession(
-      videoRef.current,
-      {
-        // Feed both spoken and typed turns into one shared transcript so the
-        // chat view shows a continuous history (one bubble per finished turn).
-        onTranscript: (who, text) => {
-          const t = text.trim()
-          if (t) setTranscript((prev) => [...prev, { who, text: t }])
-        },
-      },
-      { greetOnReady: true },
-    )
+    const session = new RealtimeSession(videoRef.current, {}, { greetOnReady: true })
     session.setToolHandler(
       createToolDispatcher(ue5, {
         onScene: setScene,
