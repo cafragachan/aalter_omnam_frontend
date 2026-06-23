@@ -7,6 +7,8 @@ export type UE5MessageType =
   | "startTEST"
   | "gameEstate"
   | "selectedRoom"
+  | "selectUnits"
+  | "requestInventory"
   | "selectedAmenity"
   | "unitView"
   | "sunPosition"
@@ -22,10 +24,25 @@ export type UE5IncomingMessage = {
 
 export type UnitSelectionMessage = {
   type: "unit"
+  /** UnitID of the tapped unit (added with the multi-unit contract). Lets the
+   *  frontend correlate a tap to an inventory entry. May be absent on older UE5. */
+  id?: number
   roomName: string
   description?: string
   price?: string
   level?: string
+}
+
+/** Full physical-unit inventory pushed by UE5 on scene-ready (or on our
+ *  requestInventory ping). `units` is raw — normalize via lib/selection. */
+export type UnitInventoryMessage = {
+  type: "unitInventory"
+  units: unknown[]
+  /** Chunking: index of this chunk and total chunk count. Absent / total<=1 means
+   *  the whole inventory is in this single message. UE5 chunks large catalogs so
+   *  the per-message size limit on the channel doesn't drop the payload. */
+  chunk?: number
+  total?: number
 }
 
 type UseUE5WebSocketOptions = {
@@ -33,6 +50,11 @@ type UseUE5WebSocketOptions = {
   autoConnect?: boolean
   onMessage?: (message: UE5IncomingMessage) => void
   onUnitSelected?: (unit: UnitSelectionMessage) => void
+  onUnitInventory?: (msg: { units: unknown[]; chunk?: number; total?: number }) => void
+  /** UE5 reports the hotel level has FINISHED loading (units now exist). The
+   *  reliable moment to pull the unit inventory — arrival fires while the map is
+   *  still loading. */
+  onLevelLoaded?: () => void
   onConnect?: () => void
   onDisconnect?: () => void
   onError?: (error: Event) => void
@@ -52,6 +74,8 @@ export const useUE5WebSocket = (options: UseUE5WebSocketOptions = {}) => {
     autoConnect = true,
     onMessage,
     onUnitSelected,
+    onUnitInventory,
+    onLevelLoaded,
     onConnect,
     onDisconnect,
     onError,
@@ -80,6 +104,12 @@ export const useUE5WebSocket = (options: UseUE5WebSocketOptions = {}) => {
         const parsed = JSON.parse(trimmed)
         return Array.isArray(parsed) ? parsed : [parsed]
       } catch {
+        // UE5 sometimes sends a BARE token (e.g. "levelLoaded") instead of a JSON
+        // object. Treat a simple non-JSON string as a typed signal message so
+        // handlers (levelLoaded, etc.) can still react to it.
+        if (trimmed[0] !== "{" && trimmed[0] !== "[") {
+          return [{ type: trimmed }]
+        }
         console.warn("Failed to parse UE5 message as JSON:", { data: messageData })
         return []
       }
@@ -98,12 +128,29 @@ export const useUE5WebSocket = (options: UseUE5WebSocketOptions = {}) => {
     return payload.type === "unit" && typeof payload.roomName === "string"
   }, [])
 
+  const isUnitInventoryMessage = useCallback((value: unknown): value is UnitInventoryMessage => {
+    if (!value || typeof value !== "object") return false
+    const payload = value as Record<string, unknown>
+    return payload.type === "unitInventory" && Array.isArray(payload.units)
+  }, [])
+
   // ---------------------------------------------------------------------------
   // Vagon SDK message handler (shared with WebSocket path)
   // ---------------------------------------------------------------------------
   const handleIncomingPayloads = useCallback((messages: UE5IncomingMessage[]) => {
     messages.forEach((payload) => {
       console.log("Message from UE5:", payload)
+
+      if (payload?.type === "levelLoaded") {
+        onLevelLoaded?.()
+        onMessage?.(payload) // keep readiness/logging behavior
+        return
+      }
+
+      if (isUnitInventoryMessage(payload)) {
+        onUnitInventory?.({ units: payload.units, chunk: payload.chunk, total: payload.total })
+        return
+      }
 
       if (isUnitSelectionMessage(payload)) {
         onUnitSelected?.(payload)
@@ -112,7 +159,7 @@ export const useUE5WebSocket = (options: UseUE5WebSocketOptions = {}) => {
 
       onMessage?.(payload)
     })
-  }, [isUnitSelectionMessage, onUnitSelected, onMessage])
+  }, [isUnitInventoryMessage, isUnitSelectionMessage, onUnitInventory, onUnitSelected, onLevelLoaded, onMessage])
 
   // ---------------------------------------------------------------------------
   // Vagon SDK mode — communicate via window.Vagon instead of raw WebSocket

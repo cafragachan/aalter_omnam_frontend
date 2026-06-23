@@ -38,6 +38,10 @@ import {
 } from "react"
 import type { UserProfile, GuestComposition } from "@/lib/context"
 import { rooms as ALL_ROOMS } from "@/lib/hotel-data"
+import {
+  EMPTY_SELECTION, type UnitInventoryEntry, type UnitSelectionState, type CapacityMap,
+  reconcileToPlan, tapUnit, deselectUnit, setActiveUnit, inventoryById, computeSelectionTotals,
+} from "@/lib/selection"
 
 // ---------------------------------------------------------------------------
 // AppState — mirror of the old AppContext shape in lib/store.tsx. Kept verbatim
@@ -76,21 +80,21 @@ export type AppState = {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Room Planner (Phase 1) — single source of truth for the room plan displayed
-// in the rooms panel. Populated by the `useRoomPlanner` hook whenever the
-// `/api/room-planner` endpoint returns a fresh plan (on panel open or on a
-// room-edit voice message while the panel is open). `null` means "no planner
-// call has landed yet"; RoomsPanel falls back to its static catalog render.
+// Room Plan — single source of truth for the room plan displayed in the rooms
+// panel. Written by two paths: the realtime brain's `propose_room_plan` tool
+// (via the dispatcher's `setRoomPlan` hook) and the guest's RoomsPanel card
+// edits. `null` means no plan has landed yet; RoomsPanel falls back to its
+// static catalog render.
 // ---------------------------------------------------------------------------
 export type CurrentRoomPlan = {
   rooms: Array<{ roomId: string; quantity: number }>
   totalPerNight: number
   capacity: number
   /**
-   * Origin of the current plan. `'planner'` means it came from
-   * `/api/room-planner`; `'user'` means the guest edited it through the
-   * RoomsPanel cards. Used to gate the panel-open re-plan trigger so a fresh
-   * planner call doesn't clobber manual edits when the panel is reopened.
+   * Origin of the current plan. `'planner'` means Ava proposed it via the
+   * `propose_room_plan` tool; `'user'` means the guest edited it through the
+   * RoomsPanel cards. The reducer recomputes totals/capacity from the static
+   * catalog on user edits.
    */
   source: "planner" | "user"
 }
@@ -99,6 +103,11 @@ export type OmnamStoreState = {
   profile: UserProfile
   app: AppState
   currentRoomPlan: CurrentRoomPlan | null
+  /** Full physical-unit inventory pushed by UE5 (empty until the scene reports). */
+  unitInventory: UnitInventoryEntry[]
+  /** Per-type FIFO selection buckets + the single focused unit. Reconciled
+   *  against the plan capacities whenever the plan or inventory changes. */
+  unitSelection: UnitSelectionState
 }
 
 // ---------------------------------------------------------------------------
@@ -137,10 +146,18 @@ export type RoomPlanAction =
         | { kind: "remove"; roomId: string }
     }
 
+export type SelectionAction =
+  | { type: "SET_UNIT_INVENTORY"; units: UnitInventoryEntry[] }
+  | { type: "TAP_UNIT"; unitId: number }          // from UE5 tap: focus + select-if-new
+  | { type: "DESELECT_UNIT"; unitId: number }     // explicit removal
+  | { type: "SET_ACTIVE_UNIT"; unitId: number }   // focus only (view_unit / AI)
+  | { type: "AI_SELECT_UNITS"; unitIds: number[] } // AI multi-pick
+
 export type OmnamStoreAction =
   | ProfileAction
   | AppAction
   | RoomPlanAction
+  | SelectionAction
 
 // ---------------------------------------------------------------------------
 // Profile merge — copied from lib/context.tsx so the deep-merge semantics for
@@ -212,6 +229,8 @@ export const INITIAL_OMNAM_STORE_STATE: OmnamStoreState = {
   profile: createEmptyProfile(),
   app: INITIAL_APP_STATE,
   currentRoomPlan: null,
+  unitInventory: [],
+  unitSelection: EMPTY_SELECTION,
 }
 
 // ---------------------------------------------------------------------------
@@ -234,6 +253,24 @@ function isAppAction(a: OmnamStoreAction): a is AppAction {
 }
 function isRoomPlanAction(a: OmnamStoreAction): a is RoomPlanAction {
   return a.type === "SET_ROOM_PLAN" || a.type === "EDIT_ROOM_PLAN"
+}
+const SELECTION_ACTION_TYPES = new Set([
+  "SET_UNIT_INVENTORY",
+  "TAP_UNIT",
+  "DESELECT_UNIT",
+  "SET_ACTIVE_UNIT",
+  "AI_SELECT_UNITS",
+])
+function isSelectionAction(a: OmnamStoreAction): a is SelectionAction {
+  return SELECTION_ACTION_TYPES.has(a.type)
+}
+
+// Bucket capacities for the selection model are derived from the plan's
+// per-type quantities (a type appearing twice in the plan sums its quantities).
+function capacitiesOf(plan: CurrentRoomPlan | null): CapacityMap {
+  const caps: CapacityMap = {}
+  for (const e of plan?.rooms ?? []) caps[e.roomId] = (caps[e.roomId] ?? 0) + e.quantity
+  return caps
 }
 
 // Recompute totals from a list of plan entries by reading the static room
@@ -304,62 +341,130 @@ function omnamRootReducer(
     }
   }
 
-  // Room planner (Phase 1) — additive, writes only the plan slice.
+  // Room planner (Phase 1) — additive, writes only the plan slice. Both branches
+  // compute a `nextPlan` (possibly null), then run the SHARED reconcile tail below
+  // so selection always tracks the plan capacities (and totals reflect per-unit
+  // pricing once inventory exists).
   if (isRoomPlanAction(action)) {
+    let nextPlan: CurrentRoomPlan | null
+
     if (action.type === "SET_ROOM_PLAN") {
-      return { ...state, currentRoomPlan: action.plan }
-    }
+      nextPlan = action.plan
+    } else {
+      // EDIT_ROOM_PLAN — user-driven edit from the RoomsPanel cards.
+      const prevEntries = state.currentRoomPlan?.rooms ?? []
+      let nextEntries: Array<{ roomId: string; quantity: number }>
 
-    // EDIT_ROOM_PLAN — user-driven edit from the RoomsPanel cards.
-    const prevEntries = state.currentRoomPlan?.rooms ?? []
-    let nextEntries: Array<{ roomId: string; quantity: number }>
-
-    // Hoist `action.edit` into a local const inside each case so TypeScript's
-    // discriminant narrowing carries through into the `.map()` / `.filter()`
-    // closures below.
-    const edit = action.edit
-    switch (edit.kind) {
-      case "add": {
-        if (prevEntries.some((e) => e.roomId === edit.roomId)) {
-          // Already in plan — leave alone (caller can use setQuantity to bump).
-          nextEntries = prevEntries
-        } else {
-          nextEntries = [...prevEntries, { roomId: edit.roomId, quantity: 1 }]
+      // Hoist `action.edit` into a local const inside each case so TypeScript's
+      // discriminant narrowing carries through into the `.map()` / `.filter()`
+      // closures below.
+      const edit = action.edit
+      switch (edit.kind) {
+        case "add": {
+          if (prevEntries.some((e) => e.roomId === edit.roomId)) {
+            // Already in plan — leave alone (caller can use setQuantity to bump).
+            nextEntries = prevEntries
+          } else {
+            nextEntries = [...prevEntries, { roomId: edit.roomId, quantity: 1 }]
+          }
+          break
         }
-        break
-      }
-      case "setQuantity": {
-        if (edit.quantity <= 0) {
+        case "setQuantity": {
+          if (edit.quantity <= 0) {
+            nextEntries = prevEntries.filter((e) => e.roomId !== edit.roomId)
+          } else {
+            nextEntries = prevEntries.map((e) =>
+              e.roomId === edit.roomId ? { ...e, quantity: edit.quantity } : e,
+            )
+          }
+          break
+        }
+        case "remove": {
           nextEntries = prevEntries.filter((e) => e.roomId !== edit.roomId)
-        } else {
-          nextEntries = prevEntries.map((e) =>
-            e.roomId === edit.roomId ? { ...e, quantity: edit.quantity } : e,
-          )
+          break
         }
-        break
       }
-      case "remove": {
-        nextEntries = prevEntries.filter((e) => e.roomId !== edit.roomId)
-        break
+
+      if (nextEntries.length === 0) {
+        // Empty plan → null. This re-enables the panel-open planner call so a
+        // guest who clears all rooms gets a fresh suggestion next time the
+        // panel reopens. capacitiesOf(null) then clears all buckets below.
+        nextPlan = null
+      } else {
+        const { totalPerNight, capacity } = recomputePlanTotals(nextEntries)
+        nextPlan = { rooms: nextEntries, totalPerNight, capacity, source: "user" }
       }
     }
 
-    if (nextEntries.length === 0) {
-      // Empty plan → null. This re-enables the panel-open planner call so a
-      // guest who clears all rooms gets a fresh suggestion next time the
-      // panel reopens.
-      return { ...state, currentRoomPlan: null }
-    }
+    // Shared tail: reconcile selection to the new plan, then (when inventory is
+    // present) override the catalog totals with per-unit pricing.
+    const nextSelection = reconcileToPlan(
+      state.unitSelection, capacitiesOf(nextPlan), state.unitInventory,
+    )
+    const planWithTotals =
+      nextPlan && state.unitInventory.length
+        ? { ...nextPlan, ...computeSelectionTotals(nextPlan.rooms, nextSelection, inventoryById(state.unitInventory)) }
+        : nextPlan
+    return { ...state, currentRoomPlan: planWithTotals, unitSelection: nextSelection }
+  }
 
-    const { totalPerNight, capacity } = recomputePlanTotals(nextEntries)
-    return {
-      ...state,
-      currentRoomPlan: {
-        rooms: nextEntries,
-        totalPerNight,
-        capacity,
-        source: "user",
-      },
+  // Selection slice — inventory ingest + the three selection input sources
+  // (UE5 taps, AI picks, explicit deselect/focus). All routes funnel through the
+  // pure helpers in lib/selection.ts so the bucket/FIFO/focus rules stay identical.
+  if (isSelectionAction(action)) {
+    switch (action.type) {
+      case "SET_UNIT_INVENTORY": {
+        const sel = reconcileToPlan(state.unitSelection, capacitiesOf(state.currentRoomPlan), action.units)
+        const plan =
+          state.currentRoomPlan && action.units.length
+            ? { ...state.currentRoomPlan, ...computeSelectionTotals(state.currentRoomPlan.rooms, sel, inventoryById(action.units)) }
+            : state.currentRoomPlan
+        return { ...state, unitInventory: action.units, unitSelection: sel, currentRoomPlan: plan }
+      }
+      case "TAP_UNIT": {
+        const u = inventoryById(state.unitInventory).get(action.unitId)
+        if (!u) return state                          // unknown unit → ignore
+        if (!u.available) return state                // never select an unavailable unit
+        const caps = capacitiesOf(state.currentRoomPlan)
+        // Tap on a type NOT in Ava's recommended plan → FOCUS-ONLY: let the guest
+        // view that unit, but never silently rewrite the plan/panel (that churned
+        // the recommendation and mis-fired the "guest edited the plan" feedback).
+        // To add a new room type, Ava calls propose_room_plan.
+        if (!caps[u.roomTypeId]) {
+          return { ...state, unitSelection: setActiveUnit(state.unitSelection, u.id) }
+        }
+        const sel0 = reconcileToPlan(state.unitSelection, caps, state.unitInventory)
+        const sel = tapUnit(sel0, u.id, u.roomTypeId, caps[u.roomTypeId])
+        const planWithTotals =
+          state.currentRoomPlan && state.unitInventory.length
+            ? { ...state.currentRoomPlan, ...computeSelectionTotals(state.currentRoomPlan.rooms, sel, inventoryById(state.unitInventory)) }
+            : state.currentRoomPlan
+        return { ...state, currentRoomPlan: planWithTotals, unitSelection: sel }
+      }
+      case "DESELECT_UNIT": {
+        const u = inventoryById(state.unitInventory).get(action.unitId)
+        if (!u) return state
+        return { ...state, unitSelection: deselectUnit(state.unitSelection, u.id, u.roomTypeId) }
+      }
+      case "SET_ACTIVE_UNIT":
+        return { ...state, unitSelection: setActiveUnit(state.unitSelection, action.unitId) }
+      case "AI_SELECT_UNITS": {
+        const byId = inventoryById(state.unitInventory)
+        const caps = capacitiesOf(state.currentRoomPlan)
+        let sel = state.unitSelection
+        for (const id of action.unitIds) {
+          const u = byId.get(id); if (!u || !u.available) continue   // skip unknown/unavailable
+          // Only select units whose room TYPE is already in the plan — Ava adds
+          // new types via propose_room_plan, never by side-effect of select_units.
+          if (!caps[u.roomTypeId]) continue
+          sel = tapUnit(sel, u.id, u.roomTypeId, caps[u.roomTypeId])
+        }
+        const planWithTotals =
+          state.currentRoomPlan && state.unitInventory.length
+            ? { ...state.currentRoomPlan, ...computeSelectionTotals(state.currentRoomPlan.rooms, sel, byId) }
+            : state.currentRoomPlan
+        return { ...state, currentRoomPlan: planWithTotals, unitSelection: sel }
+      }
     }
   }
 

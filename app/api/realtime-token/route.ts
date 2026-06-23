@@ -15,9 +15,11 @@ export async function POST() {
   const model = process.env.OPENAI_REALTIME_MODEL || "gpt-realtime-2"
   const voice = process.env.OPENAI_REALTIME_VOICE || "marin"
 
-  // Latency knobs. server_vad with a tighter silence window → less hangover
-  // before Ava replies. semantic_vad is the model-based alternative.
-  const vadType = process.env.OPENAI_VAD_TYPE || "server_vad"
+  // Turn detection. Default to semantic_vad: it's model-based, so it ignores
+  // noise / echo / filler ("uhm") and only fires on real speech — which is what
+  // makes barge-in (interrupting Ava) reliable without her interrupting herself.
+  // Override to server_vad via env if needed (silence_duration_ms tunes hangover).
+  const vadType = process.env.OPENAI_VAD_TYPE || "semantic_vad"
   const silenceMs = Number(process.env.OPENAI_VAD_SILENCE_MS || "250")
   const eagerness = process.env.OPENAI_VAD_EAGERNESS || "high"
 
