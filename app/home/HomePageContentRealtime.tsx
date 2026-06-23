@@ -29,6 +29,16 @@ function safeJson(v: unknown): string {
   }
 }
 
+// The first unit highlight after (re)entering the rooms scene waits this long so
+// UE5 has time to spawn the room actors — sending selectUnits into a still-loading
+// scene gets dropped (it has nothing to color yet). Later edits emit immediately.
+const ROOMS_SETTLE_MS = 1200
+
+// Scene labels that still count as "the rooms experience" for highlight emits —
+// includes viewing a unit's interior/exterior, so panel edits keep flowing instead
+// of being frozen the instant the guest (or Ava) steps inside a unit.
+const ROOMS_CONTEXT = new Set(["rooms", "inside the unit", "unit exterior"])
+
 export default function HomePageContentRealtime() {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const sessionRef = useRef<RealtimeSession | null>(null)
@@ -102,11 +112,18 @@ export default function HomePageContentRealtime() {
   // selection echoes UE5 emits when we set selection/focus programmatically — they
   // are NOT user taps, so ignore them (otherwise a programmatic selectUnits makes
   // Ava narrate a phantom "tap"). Once UE5 sends real taps they'll include `id`.
+  // True once the guest has EXPLICITLY picked a unit this plan — a real tap, or
+  // Ava naming one (view_unit unitId / select_units). The plan's auto-focus does
+  // NOT count, so view_unit can't whisk the guest into a room they never chose.
+  // Reset when a new plan is proposed.
+  const explicitPickRef = useRef(false)
+
   const onUnitSelected = useCallback((payload: { id?: number; roomName: string }) => {
     if (typeof payload.id !== "number") {
       console.log("[INV] ignoring unit message without id (legacy echo, not a real tap):", payload.roomName)
       return
     }
+    explicitPickRef.current = true // a real tap is an explicit pick
     dispatch({ type: "TAP_UNIT", unitId: payload.id })
     sessionRef.current?.injectContext(
       `[context] The guest tapped ${payload.roomName} in the scene.`, { respond: true })
@@ -219,12 +236,19 @@ export default function HomePageContentRealtime() {
     return () => window.clearInterval(id)
   }, [atHotel, inventoryCount, ue5RequestInventory, ue5.isConnected])
 
-  // Single authoritative emit: send the reconciled unit selection to UE5 — but
-  // ONLY while the guest is actually viewing the rooms scene. Selection lives in
-  // the store and persists across navigation; re-broadcasting it on every scene
-  // change (e.g. when heading to an amenity) would yank the camera/units back to
-  // the rooms and make UE5 echo a phantom unit (see Bug A). Re-emitting on entry
-  // to the rooms scene keeps the highlight in sync after a detour.
+  // Mark when we (re)enter the rooms scene, so the FIRST highlight after entry
+  // waits out the scene-build settle (see emit effect). Only "rooms" resets it —
+  // stepping into a unit's interior/exterior stays within the same settled scene.
+  const roomsEnteredAtRef = useRef(0)
+  useEffect(() => {
+    if (scene === "rooms") roomsEnteredAtRef.current = Date.now()
+  }, [scene])
+
+  // Single authoritative emit: send the reconciled unit selection to UE5. Stays
+  // active across the whole rooms experience (incl. interior/exterior views) so
+  // panel edits keep flowing; only suppressed when the guest is genuinely elsewhere
+  // (lounge, amenities, location). The first highlight after entering rooms waits
+  // out ROOMS_SETTLE_MS so it doesn't race UE5 spawning the room actors.
   const { unitSelection, unitInventory } = state
   const ue5SelectUnits = ue5.selectUnits
   const ue5SelectRoom = ue5.selectRoom
@@ -232,17 +256,23 @@ export default function HomePageContentRealtime() {
     () => `${selectedUnitIds(unitSelection).join(",")}|${unitSelection.activeUnitId ?? ""}`,
     [unitSelection])
   useEffect(() => {
-    if (scene !== "rooms") return // only (re)highlight while viewing the rooms scene
-    if (unitInventory.length > 0) {
-      // Defensive: never send an unavailable unit to UE5, regardless of how it got
-      // into a bucket (auto-fill + AI already filter; this guards taps/edge cases).
-      const availableIds = new Set(unitInventory.filter((u) => u.available).map((u) => u.id))
-      const ids = selectedUnitIds(unitSelection).filter((id) => availableIds.has(id))
-      ue5SelectUnits(ids, unitSelection.activeUnitId)   // unit-level (new UE5)
-    } else if (currentRoomPlan?.rooms.length) {
-      // FALLBACK pre-inventory: keep the old type-level highlight so nothing breaks.
-      ue5SelectRoom(Array.from(new Set(currentRoomPlan.rooms.map((r) => r.roomId))).join(","))
+    if (!ROOMS_CONTEXT.has(scene)) return // only (re)highlight within the rooms experience
+    const emit = () => {
+      if (unitInventory.length > 0) {
+        // Defensive: never send an unavailable unit to UE5, regardless of how it got
+        // into a bucket (auto-fill + AI already filter; this guards taps/edge cases).
+        const availableIds = new Set(unitInventory.filter((u) => u.available).map((u) => u.id))
+        const ids = selectedUnitIds(unitSelection).filter((id) => availableIds.has(id))
+        ue5SelectUnits(ids, unitSelection.activeUnitId)   // unit-level (new UE5)
+      } else if (currentRoomPlan?.rooms.length) {
+        // FALLBACK pre-inventory: keep the old type-level highlight so nothing breaks.
+        ue5SelectRoom(Array.from(new Set(currentRoomPlan.rooms.map((r) => r.roomId))).join(","))
+      }
     }
+    const wait = roomsEnteredAtRef.current + ROOMS_SETTLE_MS - Date.now()
+    if (wait <= 0) { emit(); return }
+    const id = window.setTimeout(emit, wait)
+    return () => window.clearTimeout(id)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selKey, scene, unitInventory.length])
 
@@ -284,7 +314,12 @@ export default function HomePageContentRealtime() {
       createToolDispatcher(ue5, {
         onScene: setScene,
         saveProfile: (updates) => dispatch({ type: "UPDATE_PROFILE", updates }),
-        setRoomPlan: (plan) => dispatch({ type: "SET_ROOM_PLAN", plan }),
+        setRoomPlan: (plan) => {
+          // A new recommendation resets the explicit-pick gate: the guest hasn't
+          // chosen a specific unit of THIS plan yet (auto-focus doesn't count).
+          explicitPickRef.current = false
+          dispatch({ type: "SET_ROOM_PLAN", plan })
+        },
         onRoomsPanel: setShowRoomsPanel,
         onArrived: (arrived: boolean) => {
           console.log("[INV] onArrived:", arrived)
@@ -303,9 +338,15 @@ export default function HomePageContentRealtime() {
         isUe5Ready: () => ue5ReadyRef.current,
         notify: (text) => sessionRef.current?.injectContext(text, { respond: true }),
         getInventory: () => stateRef.current.unitInventory,
-        selectUnits: (unitIds) => dispatch({ type: "AI_SELECT_UNITS", unitIds }),
-        setActiveUnit: (unitId) => dispatch({ type: "SET_ACTIVE_UNIT", unitId }),
-        getActiveUnitId: () => stateRef.current.unitSelection.activeUnitId,
+        selectUnits: (unitIds) => {
+          explicitPickRef.current = true // Ava naming specific units is an explicit pick
+          dispatch({ type: "AI_SELECT_UNITS", unitIds })
+        },
+        setActiveUnit: (unitId) => {
+          explicitPickRef.current = true // focusing a named unit is an explicit pick
+          dispatch({ type: "SET_ACTIVE_UNIT", unitId })
+        },
+        hasExplicitPick: () => explicitPickRef.current,
         getPlan: () => stateRef.current.currentRoomPlan,
       }),
     )

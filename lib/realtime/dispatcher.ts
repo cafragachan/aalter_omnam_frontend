@@ -40,9 +40,10 @@ export interface DispatcherHooks {
   selectUnits?: (unitIds: number[]) => void
   /** Focus a single unit for interior/exterior view (dispatch SET_ACTIVE_UNIT). */
   setActiveUnit?: (unitId: number) => void
-  /** Currently focused physical unit (store's unitSelection.activeUnitId), so
-   *  view_unit can gate on the REAL focus rather than a stale local flag. */
-  getActiveUnitId?: () => number | null
+  /** Whether the guest has EXPLICITLY picked a unit this plan (a real tap, or Ava
+   *  naming one) — as opposed to the plan's auto-focus. Gates interior view so Ava
+   *  can't step into a room the guest never chose. */
+  hasExplicitPick?: () => boolean
   /** Current room plan (for open_booking's default room when no id is given). */
   getPlan?: () => CurrentRoomPlan | null
 }
@@ -251,17 +252,17 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
           return `view must be "interior" or "exterior".`
         }
         // Focus a named unit first (routes through the reducer → SET_ACTIVE_UNIT).
-        // The store mirror updates synchronously, so getActiveUnitId() below sees
-        // it immediately; the short wait lets the selection emit (focus) reach UE5
-        // BEFORE we switch the view, so it operates on the right unit.
+        // The short wait lets the selection emit (focus) reach UE5 BEFORE we switch
+        // the view, so it operates on the right unit.
         if (typeof args.unitId === "number") {
           hooks.setActiveUnit?.(args.unitId)
           await new Promise((r) => setTimeout(r, 60))
         }
-        // Gate on the REAL focus (store's activeUnitId) — set by a guest tap or by
-        // the unitId above — not a local flag that the new flow never sets.
-        if (view === "interior" && hooks.getActiveUnitId?.() == null) {
-          return `No unit is focused yet — have the guest tap a highlighted unit (or name one), then step inside.`
+        // Interior view requires an EXPLICIT pick — a guest tap or a named unit
+        // (unitId, handled above) — NOT the plan's auto-focus. Otherwise Ava could
+        // whisk the guest into a room they never chose.
+        if (view === "interior" && typeof args.unitId !== "number" && !hooks.hasExplicitPick?.()) {
+          return `No unit picked yet — invite the guest to tap a highlighted green unit (or tell me which one), then I'll step inside.`
         }
         ue5.viewUnit(view)
         hooks.onScene?.(view === "interior" ? "inside the unit" : "unit exterior")
