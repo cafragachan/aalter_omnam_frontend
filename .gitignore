@@ -24,9 +24,6 @@ dev-server.err.log
 # vercel
 .vercel
 
-# package manager lock files
-package-lock.json
-
 # typescript
 *.tsbuildinfo
 next-env.d.ts
