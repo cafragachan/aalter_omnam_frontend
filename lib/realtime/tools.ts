@@ -90,10 +90,13 @@ export function buildToolSchemas(slug: string = PILOT_HOTEL_SLUG): RealtimeTool[
       type: "function",
       name: "view_unit",
       description:
-        "Step the guest INTO (interior) or OUT OF (exterior) the room they have selected. Only valid after a room is selected.",
+        "Step the guest INTO (interior) or OUT OF (exterior) the room they have selected. Only valid after a room/unit is selected. Pass unitId to focus a specific physical unit first.",
       parameters: {
         type: "object",
-        properties: { view: { type: "string", enum: ["interior", "exterior"] } },
+        properties: {
+          view: { type: "string", enum: ["interior", "exterior"] },
+          unitId: { type: "integer", description: "optional: focus this unit first" },
+        },
         required: ["view"],
       },
     },
@@ -140,16 +143,6 @@ export function buildToolSchemas(slug: string = PILOT_HOTEL_SLUG): RealtimeTool[
   if (roomIds.length) {
     tools.push({
       type: "function",
-      name: "select_room",
-      description: `Highlight/focus a specific room type in the scene. Room ids: ${roomLabels}.`,
-      parameters: {
-        type: "object",
-        properties: { roomId: { type: "string", enum: roomIds } },
-        required: ["roomId"],
-      },
-    })
-    tools.push({
-      type: "function",
       name: "propose_room_plan",
       description: `Recommend a specific set of rooms for the guest's stay — highlights them in the scene and shows them in the rooms panel. Use what you know about their party, dates, taste, and budget; make sure total capacity fits the party. Room ids: ${roomLabels}.`,
       parameters: {
@@ -168,6 +161,23 @@ export function buildToolSchemas(slug: string = PILOT_HOTEL_SLUG): RealtimeTool[
           },
         },
         required: ["rooms"],
+      },
+    })
+    // Unit ids arrive at runtime (UE5 pushes the inventory after the token is
+    // baked), so they can't be enum-constrained — accept free-form integers and
+    // validate against the live inventory in the dispatcher.
+    tools.push({
+      type: "function",
+      name: "select_units",
+      description:
+        "Select/highlight specific physical units by their numeric ids (from the unit inventory). " +
+        "Use when the guest names units by floor/view/position, e.g. 'the top-floor lake-view one'. " +
+        "Only ever pass AVAILABLE units (the inventory marks each avail/booked) — never select a booked unit. " +
+        "Respects the room plan's per-type quantities (extra picks of a full type replace the oldest).",
+      parameters: {
+        type: "object",
+        properties: { unitIds: { type: "array", items: { type: "integer" } } },
+        required: ["unitIds"],
       },
     })
   }

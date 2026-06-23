@@ -97,62 +97,78 @@ export default function HomePageContentRealtime() {
     return `[returning guest — background only] ${parts.join(" ")} When you greet them (once), use their name. Still ask for THIS trip's dates, party, and room needs before travelling — never assume them.`
   }, [userProfile, returningUserData])
 
-  // UE5 tap → drive the reducer (focus + select-if-new) AND tell Ava. When the
-  // tap carries an `id` (new UE5 contract) it mutates the selection buckets; the
-  // injectContext keeps Ava aware so she can comment naturally.
+  // UE5 tap → drive the reducer (focus + select-if-new) AND tell Ava. A REAL tap
+  // carries a numeric `id` (new UE5 contract). Messages WITHOUT an id are legacy
+  // selection echoes UE5 emits when we set selection/focus programmatically — they
+  // are NOT user taps, so ignore them (otherwise a programmatic selectUnits makes
+  // Ava narrate a phantom "tap"). Once UE5 sends real taps they'll include `id`.
   const onUnitSelected = useCallback((payload: { id?: number; roomName: string }) => {
-    if (typeof payload.id === "number") dispatch({ type: "TAP_UNIT", unitId: payload.id })
+    if (typeof payload.id !== "number") {
+      console.log("[INV] ignoring unit message without id (legacy echo, not a real tap):", payload.roomName)
+      return
+    }
+    dispatch({ type: "TAP_UNIT", unitId: payload.id })
     sessionRef.current?.injectContext(
       `[context] The guest tapped ${payload.roomName} in the scene.`, { respond: true })
   }, [dispatch])
 
-  // Arrival + planner gating refs. We hold the room recommendation until the live
-  // unit inventory has actually arrived, so the first proposal resolves to real
-  // units at real prices (no empty auto-resolve race). A timeout is a backstop so
-  // Ava still proposes if UE5 never sends inventory (e.g. pre-merge / fallback).
-  const atHotelRef = useRef(false)
-  const plannerNudgedRef = useRef(false)
-  const invTimerRef = useRef<number | null>(null)
+  // Inventory is PRELOADED proactively on travel + levelLoaded (see below) so it's
+  // ready before the guest asks for rooms — but it no longer auto-triggers a room
+  // recommendation. Rooms are on-demand (the guest asks, or asked up front); on
+  // arrival Ava just welcomes + offers options (driven by the persona + the
+  // travel_to_hotel tool result).
 
-  // Release the planner gate ONCE per arrival: nudge Ava to recommend rooms.
-  // `signal` distinguishes the happy path (live inventory loaded) from the
-  // fallback (backstop fired because no inventory ever arrived).
-  const releasePlannerGate = useCallback((signal: "loaded" | "fallback") => {
-    if (!atHotelRef.current || plannerNudgedRef.current) return
-    plannerNudgedRef.current = true
-    if (invTimerRef.current) { window.clearTimeout(invTimerRef.current); invTimerRef.current = null }
-    const lead = signal === "loaded"
-      ? "[room availability loaded] You now have the live unit list."
-      : "[arrived]"
-    sessionRef.current?.injectContext(
-      `${lead} Recommend the best room(s) for their party by calling propose_room_plan (capacity MUST fit everyone), and mention they can also explore the amenities or the surrounding area.`,
-      { respond: true })
-  }, [])
+  // Chunk accumulator — UE5 may split a large catalog across several messages so
+  // the channel's per-message size limit doesn't drop it. Keyed by chunk index;
+  // finalized once all `total` chunks are in.
+  const invAccumRef = useRef<{ total: number; parts: Map<number, unknown[]> }>({ total: 0, parts: new Map() })
+  // Whether Ava has already been briefed with the inventory for THIS arrival.
+  // The store is always refreshed on every finalize, but Ava is told only once
+  // per arrival (reset in onArrived) — repeated full-inventory dumps from the
+  // preload/levelLoaded/poll triggers were bloating her context and confusing her.
+  const injectedInventoryRef = useRef(false)
 
-  // Arm/replace the planner backstop — fires the fallback nudge if no inventory
-  // arrives in `ms` (covers a UE5 that never reports levelLoaded / can't export).
-  const armPlannerBackstop = useCallback((ms: number) => {
-    if (invTimerRef.current) window.clearTimeout(invTimerRef.current)
-    invTimerRef.current = window.setTimeout(() => {
-      invTimerRef.current = null
-      releasePlannerGate("fallback")
-    }, ms)
-  }, [releasePlannerGate])
-
-  // UE5 inventory push → normalize + store. When the FIRST non-empty inventory
-  // lands after arrival, feed Ava a compact table AND release the planner gate
-  // (respond:true) so she recommends rooms against real availability. Empty
-  // payloads (UE5 polled before the hotel level finished loading) are ignored.
-  const onUnitInventory = useCallback((rawUnits: unknown[]) => {
+  // Finalize a COMPLETE inventory → always refresh the store. Brief Ava with a
+  // compact table ONCE per arrival (respond:false — background only; it does NOT
+  // prompt a room recommendation). Rooms stay on-demand.
+  const finalizeInventory = useCallback((rawUnits: unknown[]) => {
     const units = normalizeInventory(rawUnits)
+    console.log("[INV] finalize inventory:", rawUnits.length, "raw →", units.length, "valid (roomTypeId matched)")
     dispatch({ type: "SET_UNIT_INVENTORY", units })
-    if (units.length === 0) return
+    if (units.length === 0) {
+      console.warn("[INV] inventory had 0 VALID units — check each unit's Tag matches a catalog roomTypeId (r1, r2…)")
+      return
+    }
+    if (injectedInventoryRef.current) {
+      console.log("[INV] store refreshed; Ava already briefed this arrival — skipping re-inject")
+      return
+    }
+    injectedInventoryRef.current = true
     const lines = units.map((u) =>
       `#${u.id} ${u.roomTypeId} L${u.level}${u.view ? " " + u.view : ""} $${u.price} ${u.available ? "avail" : "booked"}`)
     sessionRef.current?.injectContext(
-      `[unit inventory] ${units.length} units in the scene:\n${lines.join("\n")}`, { respond: false })
-    releasePlannerGate("loaded")
-  }, [dispatch, releasePlannerGate])
+      `[unit inventory — background] ${units.length} units are loaded and ready for when the guest wants rooms:\n${lines.join("\n")}`, { respond: false })
+  }, [dispatch])
+
+  // UE5 inventory push. Single message (total<=1) finalizes immediately; chunked
+  // messages accumulate by index and finalize when all `total` chunks arrive.
+  const onUnitInventory = useCallback((msg: { units: unknown[]; chunk?: number; total?: number }) => {
+    const units = Array.isArray(msg.units) ? msg.units : []
+    const total = typeof msg.total === "number" ? msg.total : 1
+    const chunk = typeof msg.chunk === "number" ? msg.chunk : 0
+    if (total <= 1) { finalizeInventory(units); return }
+    const acc = invAccumRef.current
+    // (Re)start a fresh set on chunk 0 or when the total changes (a new export run).
+    if (acc.total !== total || chunk === 0) { acc.total = total; acc.parts = new Map() }
+    acc.parts.set(chunk, units)
+    console.log(`[INV] chunk ${chunk + 1}/${total} (${units.length} units) — have ${acc.parts.size}/${total}`)
+    if (acc.parts.size >= total) {
+      const all: unknown[] = []
+      for (let i = 0; i < total; i++) { const p = acc.parts.get(i); if (p) all.push(...p) }
+      invAccumRef.current = { total: 0, parts: new Map() }
+      finalizeInventory(all)
+    }
+  }, [finalizeInventory])
 
   const ue5 = useUE5Bridge({ onUnitSelected, onUnitInventory })
 
@@ -163,23 +179,52 @@ export default function HomePageContentRealtime() {
     ue5ReadyRef.current = ue5.isReady
   }, [ue5.isReady])
 
-  // Hotel level fully loaded (units now exist) → pull the live inventory. This is
-  // the RELIABLE trigger: arrival fires while the map is still loading, so it's
-  // too early. If we're at the hotel, (re)arm a short backstop in case UE5 reports
-  // levelLoaded but can't export inventory.
+  // PRELOAD on levelLoaded — the RELIABLE trigger: the hotel level finished
+  // loading so units exist. (Arrival/startTEST also kicks a pull, but fires while
+  // the map is still loading.) Decoupled from recommending — just fills the store.
   const ue5RequestInventory = ue5.requestInventory
   const ue5LevelLoadedSeq = ue5.levelLoadedSeq
   useEffect(() => {
     if (ue5LevelLoadedSeq <= 0) return
+    console.log("[INV] levelLoaded → requestInventory (seq", ue5LevelLoadedSeq, ")")
     ue5RequestInventory()
-    if (atHotelRef.current) armPlannerBackstop(5000)
-  }, [ue5LevelLoadedSeq, ue5RequestInventory, armPlannerBackstop])
+  }, [ue5LevelLoadedSeq, ue5RequestInventory])
 
-  // Single authoritative emit: send the reconciled unit selection to UE5. Once
-  // an inventory has arrived we emit the unit-level `selectUnits` (green set +
-  // focused unit); before that we keep the legacy type-level `selectedRoom`
-  // highlight as a graceful fallback so nothing breaks pre-UE5-merge. Re-emitting
-  // on `scene` preserves the old "re-signal on entering rooms" behavior.
+  // Lightweight fallback poll after arrival, in case `levelLoaded` isn't emitted
+  // or the first pull raced the map load. A few attempts only — `levelLoaded` is
+  // the primary trigger. Stops the moment `unitInventory` is populated.
+  const inventoryCount = state.unitInventory.length
+  useEffect(() => {
+    if (!atHotel) return
+    if (inventoryCount > 0) {
+      console.log("[INV] inventory present (", inventoryCount, "units) — polling stopped")
+      return
+    }
+    let attempts = 0
+    const MAX = 3
+    const ask = () => {
+      attempts += 1
+      console.log(`[INV] poll requestInventory (attempt ${attempts}/${MAX}), connected=${ue5.isConnected}`)
+      ue5RequestInventory()
+    }
+    ask() // immediate on arrival
+    const id = window.setInterval(() => {
+      if (attempts >= MAX) {
+        console.warn("[INV] poll gave up after", MAX, "attempts — UE5 never returned a non-empty inventory")
+        window.clearInterval(id)
+        return
+      }
+      ask()
+    }, 1500)
+    return () => window.clearInterval(id)
+  }, [atHotel, inventoryCount, ue5RequestInventory, ue5.isConnected])
+
+  // Single authoritative emit: send the reconciled unit selection to UE5 — but
+  // ONLY while the guest is actually viewing the rooms scene. Selection lives in
+  // the store and persists across navigation; re-broadcasting it on every scene
+  // change (e.g. when heading to an amenity) would yank the camera/units back to
+  // the rooms and make UE5 echo a phantom unit (see Bug A). Re-emitting on entry
+  // to the rooms scene keeps the highlight in sync after a detour.
   const { unitSelection, unitInventory } = state
   const ue5SelectUnits = ue5.selectUnits
   const ue5SelectRoom = ue5.selectRoom
@@ -187,8 +232,12 @@ export default function HomePageContentRealtime() {
     () => `${selectedUnitIds(unitSelection).join(",")}|${unitSelection.activeUnitId ?? ""}`,
     [unitSelection])
   useEffect(() => {
+    if (scene !== "rooms") return // only (re)highlight while viewing the rooms scene
     if (unitInventory.length > 0) {
-      const ids = selectedUnitIds(unitSelection)
+      // Defensive: never send an unavailable unit to UE5, regardless of how it got
+      // into a bucket (auto-fill + AI already filter; this guards taps/edge cases).
+      const availableIds = new Set(unitInventory.filter((u) => u.available).map((u) => u.id))
+      const ids = selectedUnitIds(unitSelection).filter((id) => availableIds.has(id))
       ue5SelectUnits(ids, unitSelection.activeUnitId)   // unit-level (new UE5)
     } else if (currentRoomPlan?.rooms.length) {
       // FALLBACK pre-inventory: keep the old type-level highlight so nothing breaks.
@@ -238,17 +287,13 @@ export default function HomePageContentRealtime() {
         setRoomPlan: (plan) => dispatch({ type: "SET_ROOM_PLAN", plan }),
         onRoomsPanel: setShowRoomsPanel,
         onArrived: (arrived: boolean) => {
+          console.log("[INV] onArrived:", arrived)
           setAtHotel(arrived)
-          atHotelRef.current = arrived
-          if (invTimerRef.current) { window.clearTimeout(invTimerRef.current); invTimerRef.current = null }
-          if (arrived) {
-            plannerNudgedRef.current = false
-            // Don't pull inventory here — the hotel map is still loading. The pull
-            // happens on UE5's `levelLoaded` signal (see effect above). Arm a
-            // generous backstop only for the degraded case where UE5 never reports
-            // levelLoaded / can't export inventory, so Ava still proposes.
-            armPlannerBackstop(10000)
-          }
+          // Allow ONE fresh inventory briefing to Ava for this arrival. The actual
+          // pull is driven by `levelLoaded` (reliable) + the fallback poll below —
+          // we no longer fire a preload here (it raced the map load and just added
+          // to the request/inject churn).
+          if (arrived) injectedInventoryRef.current = false
         },
         getPartySize: () => {
           const gc = stateRef.current.profile.guestComposition
@@ -260,6 +305,8 @@ export default function HomePageContentRealtime() {
         getInventory: () => stateRef.current.unitInventory,
         selectUnits: (unitIds) => dispatch({ type: "AI_SELECT_UNITS", unitIds }),
         setActiveUnit: (unitId) => dispatch({ type: "SET_ACTIVE_UNIT", unitId }),
+        getActiveUnitId: () => stateRef.current.unitSelection.activeUnitId,
+        getPlan: () => stateRef.current.currentRoomPlan,
       }),
     )
     sessionRef.current = session
@@ -320,7 +367,7 @@ export default function HomePageContentRealtime() {
     <div className="pointer-events-none absolute inset-0 z-20 overflow-hidden" onDragStart={(e) => e.preventDefault()}>
       {/* Rooms panel — right side */}
       {showRoomsPanel && (
-        <div className="pointer-events-auto fixed right-4 top-4 bottom-[calc(4rem+2vh)] z-20" style={{ width: 273 }}>
+        <div className="pointer-events-auto fixed right-4 top-4 bottom-[calc(4rem+2vh)] z-20" style={{ width: 375 }}>
           <RoomsPanel
             visible={showRoomsPanel}
             hotelName={hotelName}
@@ -355,7 +402,7 @@ export default function HomePageContentRealtime() {
             {/* Chat surface — takes the thumbnail's slot in chat mode. */}
             {mode === "chat" && (
               <div className="p-[5px] pr-0">
-                <ChatPanel messages={transcript} onSend={onSendChat} width={300} height={262} />
+                <ChatPanel messages={transcript} onSend={onSendChat} width={450} height={393} />
               </div>
             )}
 

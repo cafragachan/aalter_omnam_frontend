@@ -8,6 +8,7 @@ import type { useUE5Bridge } from "@/lib/ue5/bridge"
 import type { SunState } from "@/components/SunToggle"
 import type { UserProfile, GuestComposition } from "@/lib/context"
 import type { CurrentRoomPlan } from "@/lib/omnam-store"
+import type { UnitInventoryEntry } from "@/lib/selection"
 import { PILOT_HOTEL_SLUG } from "./context"
 
 type Ue5Bridge = ReturnType<typeof useUE5Bridge>
@@ -33,13 +34,21 @@ export interface DispatcherHooks {
   /** Proactively speak to the guest outside a tool call — used to tell them the
    *  scene finished loading after a gated travel. Wired to session.injectContext. */
   notify?: (text: string) => void
+  /** Current physical-unit inventory (for validating AI unit picks). */
+  getInventory?: () => UnitInventoryEntry[]
+  /** AI multi-pick of physical units (dispatch AI_SELECT_UNITS). */
+  selectUnits?: (unitIds: number[]) => void
+  /** Focus a single unit for interior/exterior view (dispatch SET_ACTIVE_UNIT). */
+  setActiveUnit?: (unitId: number) => void
+  /** Currently focused physical unit (store's unitSelection.activeUnitId), so
+   *  view_unit can gate on the REAL focus rather than a stale local flag. */
+  getActiveUnitId?: () => number | null
+  /** Current room plan (for open_booking's default room when no id is given). */
+  getPlan?: () => CurrentRoomPlan | null
 }
 
 export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}) {
   const cat = getHotelCatalog(PILOT_HOTEL_SLUG)
-  // Track selection locally so we can guard view_unit (the bridge's selectedUnit
-  // only reflects in-world clicks, not tool-driven select_room).
-  let selectedRoomId: string | null = null
   // First room of the latest proposed plan — open_booking defaults to it.
   let lastPlanFirstRoomId: string | null = null
   // The guest starts in the virtual lounge; hotel navigation is gated until they
@@ -87,7 +96,7 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
         const ready = hooks.isUe5Ready?.() ?? true // no hook → don't block
         if (ready) {
           depart()
-          return "Arriving at the EDITION Lake Como. Now recommend the best room(s) for their party by calling propose_room_plan, and mention they can also explore the amenities or the surrounding area."
+          return "Arriving at the EDITION Lake Como. Welcome them warmly to the property and briefly offer what they can explore — the rooms, the amenities, or the surrounding area — and let them choose. Don't recommend rooms unless they ask (or already asked); if they do want rooms, call propose_room_plan / navigate_to rooms (availability is preloaded)."
         }
 
         // UE5 not loaded yet — hold the travel and poll until it is.
@@ -100,7 +109,7 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
               travelPending = false
               depart()
               hooks.notify?.(
-                "[scene ready] The 3D experience just finished loading and you've now arrived at the EDITION Lake Como. Briefly let the guest know you're there, then recommend the best room(s) for their party by calling propose_room_plan.",
+                "[scene ready] The 3D experience just finished loading and you've now arrived at the EDITION Lake Como. Welcome them warmly and briefly offer what they can explore — the rooms, the amenities, or the surrounding area — and let them choose. Don't recommend rooms unless they ask (or already asked).",
               )
               return
             }
@@ -235,29 +244,52 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
         return `Walking the guest into ${match.name}.`
       }
 
-      case "select_room": {
-        if (!arrived) return LOUNGE_GATE
-        const id = String(args.roomId ?? "")
-        const room = cat?.rooms.find((r) => r.id === id)
-        if (!room) return `"${id}" is not a known room id.`
-        ue5.selectRoom(id)
-        selectedRoomId = id
-        hooks.onScene?.(`${room.name} (selected)`)
-        return `Highlighted ${room.name} ($${room.price}/night, sleeps ${room.occupancy}).`
-      }
-
       case "view_unit": {
         if (!arrived) return LOUNGE_GATE
         const view = String(args.view ?? "")
         if (view !== "interior" && view !== "exterior") {
           return `view must be "interior" or "exterior".`
         }
-        if (view === "interior" && !selectedRoomId) {
-          return `No room is selected yet — select a room first, then step inside.`
+        // Focus a named unit first (routes through the reducer → SET_ACTIVE_UNIT).
+        // The store mirror updates synchronously, so getActiveUnitId() below sees
+        // it immediately; the short wait lets the selection emit (focus) reach UE5
+        // BEFORE we switch the view, so it operates on the right unit.
+        if (typeof args.unitId === "number") {
+          hooks.setActiveUnit?.(args.unitId)
+          await new Promise((r) => setTimeout(r, 60))
+        }
+        // Gate on the REAL focus (store's activeUnitId) — set by a guest tap or by
+        // the unitId above — not a local flag that the new flow never sets.
+        if (view === "interior" && hooks.getActiveUnitId?.() == null) {
+          return `No unit is focused yet — have the guest tap a highlighted unit (or name one), then step inside.`
         }
         ue5.viewUnit(view)
         hooks.onScene?.(view === "interior" ? "inside the unit" : "unit exterior")
         return `Now showing the ${view}.`
+      }
+
+      case "select_units": {
+        if (!arrived) return LOUNGE_GATE
+        const ids = Array.isArray(args.unitIds) ? args.unitIds.map(Number).filter(Number.isFinite) : []
+        const inv = hooks.getInventory?.() ?? []
+        const avail = ids.filter((id) => inv.some((u) => u.id === id && u.available))
+        if (!avail.length) return "None of those unit ids are available — pick available ids from the inventory."
+        // Only units whose room TYPE is already in the plan can be highlighted —
+        // mirrors the store (it ignores off-plan types). Adding a type is a
+        // propose_room_plan job, so guide the model there instead of silently no-op.
+        const planTypes = new Set((hooks.getPlan?.()?.rooms ?? []).map((r) => r.roomId))
+        const inPlan = avail.filter((id) => {
+          const u = inv.find((x) => x.id === id)
+          return !!u && planTypes.has(u.roomTypeId)
+        })
+        if (!inPlan.length) {
+          return "Those units aren't part of the current plan's room types — call propose_room_plan to add that room type first, then highlight the unit."
+        }
+        hooks.selectUnits?.(inPlan)       // store reconciles + the emit effect sends selectUnits to UE5
+        const names = inPlan.map((id) => inv.find((u) => u.id === id)?.name ?? id).join(", ")
+        const skipped = avail.length - inPlan.length
+        return `Highlighted ${names}.` +
+          (skipped ? ` (${skipped} unit(s) not in the current plan's room types were skipped — add them with propose_room_plan.)` : "")
       }
 
       case "set_lighting": {
@@ -293,13 +325,14 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
         hooks.setRoomPlan?.({ rooms: planRooms, totalPerNight, capacity, source: "planner" })
         hooks.onRoomsPanel?.(true)
         lastPlanFirstRoomId = planRooms[0].roomId
-        // Show + highlight the rooms once UE5 has settled (e.g. after travel) —
-        // navigate to the rooms scene, then send the unit array a beat later.
-        const idsStr = Array.from(new Set(planRooms.map((p) => p.roomId))).join(",")
+        // Navigate to the rooms scene once UE5 has settled (e.g. after travel).
+        // Highlighting is now owned by the single emit effect in
+        // HomePageContentRealtime (it reconciles the plan → unit selection and
+        // sends selectUnits / the type-level fallback), so we no longer send a
+        // manual selectRoom here.
         whenSceneReady(() => {
           ue5.navigateToRooms()
           hooks.onScene?.("rooms")
-          setTimeout(() => ue5.selectRoom(idsStr), SCENE_SETTLE_MS)
         })
         const names = planRooms
           .map((p) => `${p.quantity}× ${cat?.rooms.find((x) => x.id === p.roomId)?.name ?? p.roomId}`)
@@ -308,7 +341,11 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
       }
 
       case "open_booking": {
-        const id = String(args.roomId ?? "") || lastPlanFirstRoomId || selectedRoomId || ""
+        const id =
+          String(args.roomId ?? "") ||
+          lastPlanFirstRoomId ||
+          hooks.getPlan?.()?.rooms[0]?.roomId ||
+          ""
         const room = cat?.rooms.find((r) => r.id === id)
         if (!room) return "I'm not sure which room to book — let's settle on one first."
         if (!room.book_url) return `${room.name} doesn't have a booking link yet.`
