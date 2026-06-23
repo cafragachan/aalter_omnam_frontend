@@ -243,6 +243,9 @@ export default function HomePageContentRealtime() {
   useEffect(() => {
     if (scene === "rooms") roomsEnteredAtRef.current = Date.now()
   }, [scene])
+  // selKey of the last highlight we actually sent — so a scene change that ISN'T a
+  // selection change (e.g. stepping into a unit) doesn't re-send selectUnits.
+  const lastEmitKeyRef = useRef<string | null>(null)
 
   // Single authoritative emit: send the reconciled unit selection to UE5. Stays
   // active across the whole rooms experience (incl. interior/exterior views) so
@@ -257,7 +260,13 @@ export default function HomePageContentRealtime() {
     [unitSelection])
   useEffect(() => {
     if (!ROOMS_CONTEXT.has(scene)) return // only (re)highlight within the rooms experience
+    // Re-highlight when the SELECTION changed, or when (re)entering the rooms
+    // OVERVIEW. Do NOT re-send for a switch to interior/exterior with an unchanged
+    // selection: selectUnits carries `focus`, which UE5 re-applies as a camera
+    // look-at and cancels the interior transition the guest just asked for.
+    if (lastEmitKeyRef.current === selKey && scene !== "rooms") return
     const emit = () => {
+      lastEmitKeyRef.current = selKey
       if (unitInventory.length > 0) {
         // Defensive: never send an unavailable unit to UE5, regardless of how it got
         // into a bucket (auto-fill + AI already filter; this guards taps/edge cases).
