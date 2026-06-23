@@ -124,6 +124,11 @@ export class RealtimeSession {
   // Whether an OpenAI response is currently generating — so a barge-in only sends
   // response.cancel when there's actually something to cancel.
   private responseActive = false
+  // Whether the active response is producing a function call. We must NOT cancel
+  // those on barge-in: canceling before function_call_arguments.done drops the
+  // tool action (e.g. view_unit), so commands like "show me the penthouse" while
+  // Ava acks would silently never execute.
+  private responseHasFunctionCall = false
 
   constructor(videoEl: HTMLMediaElement, cb: RealtimeCallbacks = {}, opts: RealtimeOptions = {}) {
     this.videoEl = videoEl
@@ -490,7 +495,15 @@ export class RealtimeSession {
             this.avatar?.interrupt()
           } catch {}
         }
-        if (this.responseActive && this.oaWs && this.oaWs.readyState === WebSocket.OPEN) {
+        // Don't cancel a response that's executing a tool call — that would drop
+        // the action (e.g. view_unit) the guest just asked for. Only cancel
+        // speech responses.
+        if (
+          this.responseActive &&
+          !this.responseHasFunctionCall &&
+          this.oaWs &&
+          this.oaWs.readyState === WebSocket.OPEN
+        ) {
           this.oaWs.send(JSON.stringify({ type: "response.cancel" }))
           this.responseActive = false
         }
@@ -540,6 +553,7 @@ export class RealtimeSession {
       case "response.output_item.added": {
         const item = msg.item as { type?: string; name?: string; call_id?: string } | undefined
         if (item?.type === "function_call" && item.call_id && item.name) {
+          this.responseHasFunctionCall = true // protect this response from barge-in cancel
           this.pendingCalls.set(item.call_id, { name: item.name, args: "" })
         }
         break
@@ -556,12 +570,16 @@ export class RealtimeSession {
       }
       case "response.created": {
         this.responseActive = true // a response started (may be cancelled by barge-in)
+        this.responseHasFunctionCall = false // until an output item says otherwise
         break
       }
       case "response.output_audio.done":
       case "response.audio.done":
       case "response.done": {
-        if (type === "response.done") this.responseActive = false
+        if (type === "response.done") {
+          this.responseActive = false
+          this.responseHasFunctionCall = false
+        }
         this.flushOut(true)
         if (type === "response.done" && this.avaTranscript) {
           this.cb.onTranscript?.("ava", this.avaTranscript)
