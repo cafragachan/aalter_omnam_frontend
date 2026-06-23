@@ -73,6 +73,11 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
   const UE5_READY_POLL_MS = 400
   const UE5_READY_TIMEOUT_MS = 30000
   let travelPending = false
+
+  // When the guest moves from one unit's interior to ANOTHER unit, UE5 needs the
+  // new focus (selectUnits) to land and re-frame before we switch the camera
+  // inside, or the interior view targets the old unit / gets canceled. Give it ~1s.
+  const FOCUS_BEFORE_VIEW_MS = 1000
   const whenSceneReady = (fn: () => void) => {
     const wait = sceneReadyAt - Date.now()
     if (wait <= 0) fn()
@@ -251,18 +256,19 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
         if (view !== "interior" && view !== "exterior") {
           return `view must be "interior" or "exterior".`
         }
-        // Focus a named unit first (routes through the reducer → SET_ACTIVE_UNIT).
-        // The short wait lets the selection emit (focus) reach UE5 BEFORE we switch
-        // the view, so it operates on the right unit.
+        // Focus a named unit first (routes through the reducer → SET_ACTIVE_UNIT →
+        // selectUnits emit), then wait for UE5 to re-frame that focus BEFORE we
+        // switch the camera inside — so moving between units' interiors targets the
+        // newly requested unit instead of the one we were already in.
         if (typeof args.unitId === "number") {
           hooks.setActiveUnit?.(args.unitId)
-          await new Promise((r) => setTimeout(r, 60))
+          await new Promise((r) => setTimeout(r, FOCUS_BEFORE_VIEW_MS))
         }
         // Interior view requires an EXPLICIT pick — a guest tap or a named unit
         // (unitId, handled above) — NOT the plan's auto-focus. Otherwise Ava could
         // whisk the guest into a room they never chose.
         if (view === "interior" && typeof args.unitId !== "number" && !hooks.hasExplicitPick?.()) {
-          return `No unit picked yet — invite the guest to tap a highlighted green unit (or tell me which one), then I'll step inside.`
+          return `No unit picked yet — invite the guest to tap one of the available units (or tell me which one), then I'll step inside.`
         }
         ue5.viewUnit(view)
         hooks.onScene?.(view === "interior" ? "inside the unit" : "unit exterior")
@@ -338,7 +344,7 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
         const names = planRooms
           .map((p) => `${p.quantity}× ${cat?.rooms.find((x) => x.id === p.roomId)?.name ?? p.roomId}`)
           .join(", ")
-        return `Proposed plan: ${names} — $${totalPerNight}/night, sleeps ${capacity}. The matching units now glow green in the scene — invite the guest to tap one to step inside.`
+        return `Proposed plan: ${names} — $${totalPerNight}/night, sleeps ${capacity}. The matching units are now marked in the scene — invite the guest to tap one of the available units to step inside.`
       }
 
       case "open_booking": {
