@@ -1,9 +1,17 @@
 "use client"
 
-import type { UserProfile, GuestComposition } from "@/lib/context"
+import type { UserProfile } from "@/lib/context"
 import type { CurrentRoomPlan } from "@/lib/omnam-store"
-import { getHotelCatalog } from "@/lib/hotel-data"
-import { PILOT_HOTEL_SLUG } from "@/lib/realtime/context"
+import type { UnitInventoryEntry } from "@/lib/selection"
+import {
+  bookingRoomFromPlan,
+  buildRoomPlan,
+  parseProfileUpdates,
+  summarizeProfile,
+  summarizeRoomPlan,
+  validatePlanCapacity,
+  validateUnitSelection,
+} from "@/lib/agent-runtime/tool-core"
 import { makeDebugEvent, type DebugEvent } from "./types"
 
 export type DebugToolDispatcherHooks = {
@@ -11,13 +19,21 @@ export type DebugToolDispatcherHooks = {
   setRoomPlan?: (plan: CurrentRoomPlan) => void
   addEvent?: (event: DebugEvent) => void
   getPartySize?: () => number | undefined
+  getInventory?: () => UnitInventoryEntry[]
+  selectUnits?: (unitIds: number[]) => void
+  setActiveUnit?: (unitId: number) => void
+  hasExplicitPick?: () => boolean
+  getPlan?: () => CurrentRoomPlan | null
 }
 
 export function createDebugToolDispatcher(hooks: DebugToolDispatcherHooks = {}) {
-  const cat = getHotelCatalog(PILOT_HOTEL_SLUG)
   let arrived = false
-  let selectedRoomId: string | null = null
+  let currentPlan: CurrentRoomPlan | null = null
   let lastPlanFirstRoomId: string | null = null
+  let explicitPick = false
+
+  const getPlan = () => hooks.getPlan?.() ?? currentPlan
+  const hasExplicitPick = () => hooks.hasExplicitPick?.() ?? explicitPick
 
   return async function dispatch(name: string, args: Record<string, unknown>): Promise<string> {
     hooks.addEvent?.(makeDebugEvent("tool_called", name, JSON.stringify(args), { name, args }))
@@ -33,7 +49,7 @@ export function createDebugToolDispatcher(hooks: DebugToolDispatcherHooks = {}) 
 
       case "travel_to_hotel": {
         arrived = true
-        return "Debug mode: marked the guest as arrived at the EDITION Lake Como. Recommend rooms with propose_room_plan next."
+        return "Debug mode: marked the guest as arrived at EDITION Lake Como. Offer rooms, amenities, or the surrounding area; recommend rooms only when the guest asks."
       }
 
       case "return_to_lounge": {
@@ -43,7 +59,11 @@ export function createDebugToolDispatcher(hooks: DebugToolDispatcherHooks = {}) 
 
       case "navigate_to": {
         if (!arrived) return "Debug mode: guest is still in the lounge. Call travel_to_hotel first."
-        return `Debug mode: would navigate to ${String(args.area ?? "unknown")}.`
+        const area = String(args.area ?? "")
+        if (!["rooms", "amenities", "location", "default"].includes(area)) {
+          return `"${area}" is not a valid area (use rooms, amenities, location, or default).`
+        }
+        return `Debug mode: would navigate to ${area}.`
       }
 
       case "go_to_amenity": {
@@ -51,46 +71,56 @@ export function createDebugToolDispatcher(hooks: DebugToolDispatcherHooks = {}) 
         return `Debug mode: would walk the guest to ${String(args.amenity ?? "that amenity")}.`
       }
 
-      case "select_room": {
+      case "show_points_of_interest": {
         if (!arrived) return "Debug mode: guest is still in the lounge. Call travel_to_hotel first."
-        const id = String(args.roomId ?? "")
-        selectedRoomId = id
-        const room = cat?.rooms.find((r) => r.id === id)
-        return room ? `Debug mode: selected ${room.name}.` : `Debug mode: unknown room id ${id}.`
-      }
-
-      case "view_unit": {
-        if (!selectedRoomId) return "Debug mode: no room is selected yet."
-        return `Debug mode: would show ${String(args.view ?? "interior")} for ${selectedRoomId}.`
+        return `Debug mode: would map nearby ${String(args.category ?? "points of interest")}.`
       }
 
       case "set_lighting": {
         return `Debug mode: would set lighting to ${String(args.mode ?? "unknown")}.`
       }
 
-      case "show_points_of_interest": {
-        return `Debug mode: would map nearby ${String(args.category ?? "points of interest")}.`
-      }
-
       case "propose_room_plan": {
         const plan = buildRoomPlan(args.rooms)
-        if (!plan) return "Debug mode: none of those room ids exist. Pick from the catalog."
-        const party = hooks.getPartySize?.()
-        if (party && plan.capacity < party) {
-          return `That plan only sleeps ${plan.capacity}, but the party is ${party}. Add a room or pick larger ones.`
-        }
+        if (!plan) return "None of those room ids exist. Pick from the catalog."
+        const capacityError = validatePlanCapacity(plan, hooks.getPartySize?.())
+        if (capacityError) return capacityError
+        currentPlan = plan
+        explicitPick = false
         hooks.setRoomPlan?.(plan)
         lastPlanFirstRoomId = plan.rooms[0]?.roomId ?? null
-        const names = plan.rooms
-          .map((p) => `${p.quantity}x ${cat?.rooms.find((r) => r.id === p.roomId)?.name ?? p.roomId}`)
-          .join(", ")
-        return `Debug mode: proposed room plan ${names}, $${plan.totalPerNight}/night, sleeps ${plan.capacity}.`
+        return `Debug mode: proposed room plan ${summarizeRoomPlan(plan)}, $${plan.totalPerNight}/night, sleeps ${plan.capacity}.`
+      }
+
+      case "select_units": {
+        if (!arrived) return "Debug mode: guest is still in the lounge. Call travel_to_hotel first."
+        const inventory = hooks.getInventory?.() ?? []
+        if (!inventory.length) return "Debug mode: no unit inventory is loaded, so physical unit selection cannot be validated."
+        const selection = validateUnitSelection(args, inventory, getPlan())
+        if (!selection.ok) return selection.message
+        explicitPick = true
+        hooks.selectUnits?.(selection.unitIds)
+        return `Debug mode: ${selection.message}`
+      }
+
+      case "view_unit": {
+        if (!arrived) return "Debug mode: guest is still in the lounge. Call travel_to_hotel first."
+        const view = String(args.view ?? "")
+        if (view !== "interior" && view !== "exterior") return `view must be "interior" or "exterior".`
+        if (typeof args.unitId === "number") {
+          explicitPick = true
+          hooks.setActiveUnit?.(args.unitId)
+          return `Debug mode: would focus unit ${args.unitId} and show its ${view}.`
+        }
+        if (view === "interior" && !hasExplicitPick()) {
+          return "No unit picked yet. Invite the guest to tap one of the available units, or name a specific unit, then step inside."
+        }
+        return `Debug mode: would show the selected unit's ${view}.`
       }
 
       case "open_booking": {
-        const id = String(args.roomId ?? "") || lastPlanFirstRoomId || selectedRoomId
-        const room = cat?.rooms.find((r) => r.id === id)
-        return room ? `Debug mode: would open booking page for ${room.name}: ${room.book_url ?? "no URL"}.` : "Debug mode: no room selected to book."
+        const room = bookingRoomFromPlan(args, getPlan(), lastPlanFirstRoomId)
+        return room ? `Debug mode: would open booking page for ${room.name}: ${room.book_url ?? "no URL"}.` : "I'm not sure which room to book. Let's settle on one first."
       }
 
       default:
@@ -98,72 +128,3 @@ export function createDebugToolDispatcher(hooks: DebugToolDispatcherHooks = {}) 
     }
   }
 }
-
-function parseProfileUpdates(args: Record<string, unknown>): Partial<UserProfile> {
-  const updates: Partial<UserProfile> = {}
-  if (typeof args.firstName === "string" && args.firstName.trim()) updates.firstName = args.firstName.trim()
-
-  const gc: Partial<GuestComposition> = {}
-  if (Number.isFinite(Number(args.adults))) gc.adults = Number(args.adults)
-  if (Number.isFinite(Number(args.children))) gc.children = Number(args.children)
-  if (Array.isArray(args.childrenAges)) {
-    gc.childrenAges = (args.childrenAges as unknown[]).map(Number).filter(Number.isFinite)
-  }
-  if (Object.keys(gc).length) updates.guestComposition = gc as GuestComposition
-
-  const start = parseDate(args.startDate)
-  const end = parseDate(args.endDate)
-  if (start) updates.startDate = start
-  if (end) updates.endDate = end
-  if (Array.isArray(args.interests)) updates.interests = (args.interests as unknown[]).map(String)
-  if (typeof args.travelPurpose === "string") updates.travelPurpose = args.travelPurpose
-  if (typeof args.budgetRange === "string") updates.budgetRange = args.budgetRange
-  if (Array.isArray(args.dietaryRestrictions)) updates.dietaryRestrictions = (args.dietaryRestrictions as unknown[]).map(String)
-  if (Array.isArray(args.accessibilityNeeds)) updates.accessibilityNeeds = (args.accessibilityNeeds as unknown[]).map(String)
-  return updates
-}
-
-function parseDate(v: unknown): Date | undefined {
-  if (typeof v !== "string" || !v.trim()) return undefined
-  const d = new Date(v)
-  return Number.isNaN(d.getTime()) ? undefined : d
-}
-
-function summarizeProfile(u: Partial<UserProfile>): string {
-  const bits: string[] = []
-  if (u.firstName) bits.push(u.firstName)
-  if (u.guestComposition) {
-    const { adults, children, childrenAges } = u.guestComposition
-    if (typeof adults === "number") bits.push(`${adults} adult${adults === 1 ? "" : "s"}`)
-    if (typeof children === "number") bits.push(`${children} child${children === 1 ? "" : "ren"}`)
-    if (childrenAges?.length) bits.push(`ages ${childrenAges.join(", ")}`)
-  }
-  if (u.startDate) bits.push(`from ${u.startDate.toISOString().slice(0, 10)}`)
-  if (u.endDate) bits.push(`to ${u.endDate.toISOString().slice(0, 10)}`)
-  if (u.travelPurpose) bits.push(u.travelPurpose)
-  if (u.interests?.length) bits.push(u.interests.join(", "))
-  if (u.budgetRange) bits.push(u.budgetRange)
-  if (u.dietaryRestrictions?.length) bits.push(`dietary: ${u.dietaryRestrictions.join(", ")}`)
-  if (u.accessibilityNeeds?.length) bits.push(`access: ${u.accessibilityNeeds.join(", ")}`)
-  return bits.join("; ") || "a detail"
-}
-
-function buildRoomPlan(rawRooms: unknown): CurrentRoomPlan | null {
-  const cat = getHotelCatalog(PILOT_HOTEL_SLUG)
-  const raw = Array.isArray(rawRooms) ? (rawRooms as Array<Record<string, unknown>>) : []
-  const rooms: CurrentRoomPlan["rooms"] = []
-  let totalPerNight = 0
-  let capacity = 0
-  for (const item of raw) {
-    const roomId = String(item.roomId ?? "")
-    const quantity = Math.max(1, Math.floor(Number(item.quantity ?? 1)) || 1)
-    const room = cat?.rooms.find((r) => r.id === roomId)
-    if (!room) continue
-    rooms.push({ roomId, quantity })
-    totalPerNight += room.price * quantity
-    capacity += room.occupancy * quantity
-  }
-  if (!rooms.length) return null
-  return { rooms, totalPerNight, capacity, source: "planner" }
-}
-
