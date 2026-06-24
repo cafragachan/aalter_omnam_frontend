@@ -94,6 +94,15 @@ export const useUE5WebSocket = (options: UseUE5WebSocketOptions = {}) => {
   const labelRef = useRef(debugLabel)
   labelRef.current = debugLabel
 
+  // --- Flood-resistant debug counters. UE5/Vagon emits messages every frame, so
+  //     per-message logging is useless. Instead: log the FIRST payload of each
+  //     distinct `type` once (so we can see whether `ue5Init` ever arrives), a
+  //     first-empty warning, and a periodic heartbeat count. ---
+  const inboundCountRef = useRef(0)
+  const emptyCountRef = useRef(0)
+  const firstEmptyLoggedRef = useRef(false)
+  const loggedTypesRef = useRef<Set<string>>(new Set())
+
   const websocketRef = useRef<WebSocket | null>(null)
   const [state, setState] = useState<UE5WebSocketState>({
     isConnected: false,
@@ -151,9 +160,20 @@ export const useUE5WebSocket = (options: UseUE5WebSocketOptions = {}) => {
   // Vagon SDK message handler (shared with WebSocket path)
   // ---------------------------------------------------------------------------
   const handleIncomingPayloads = useCallback((messages: UE5IncomingMessage[]) => {
-    console.log(`[UE5:${labelRef.current}] ◀ RECEIVED ${messages.length} payload(s) from UE5`)
+    const lbl = labelRef.current
     messages.forEach((payload) => {
-      console.log(`[UE5:${labelRef.current}] Message from UE5:`, payload)
+      // First time we ever see each distinct `type`, log it loudly (warn = easy to
+      // filter). This is how we tell whether `ue5Init` actually arrives.
+      const t = typeof payload?.type === "string" ? payload.type : "(no type field)"
+      if (!loggedTypesRef.current.has(t)) {
+        loggedTypesRef.current.add(t)
+        console.warn(`🟢 [UE5-DEBUG][${lbl}] FIRST payload of type "${t}":`, payload)
+      }
+      // Heartbeat so we know messages keep flowing, without flooding (1 per ~2000).
+      inboundCountRef.current += 1
+      if (inboundCountRef.current % 2000 === 0) {
+        console.warn(`🔵 [UE5-DEBUG][${lbl}] inbound message count ≈ ${inboundCountRef.current}; types seen: [${[...loggedTypesRef.current].join(", ")}]`)
+      }
 
       if (payload?.type === "ue5Init") {
         onUe5Init?.()
@@ -226,8 +246,14 @@ export const useUE5WebSocket = (options: UseUE5WebSocketOptions = {}) => {
 
     // Listen for incoming messages from UE5
     vagon.onApplicationMessage(async (evt) => {
-      console.log(`[UE5:${lbl}] ◀ raw vagon application message:`, evt?.message)
       const messages = await normalizeIncomingMessage(evt.message)
+      if (messages.length === 0) {
+        emptyCountRef.current += 1
+        if (!firstEmptyLoggedRef.current) {
+          firstEmptyLoggedRef.current = true
+          console.warn(`🟡 [UE5-DEBUG][${lbl}] inbound vagon message normalized to EMPTY (won't trigger readiness). Raw sample:`, evt?.message)
+        }
+      }
       handleIncomingPayloads(messages)
     })
     console.log(`[UE5:${lbl}] onApplicationMessage handler registered — waiting for UE5 messages`)
@@ -266,8 +292,14 @@ export const useUE5WebSocket = (options: UseUE5WebSocketOptions = {}) => {
       }
 
       ws.onmessage = async (event) => {
-        console.log(`[UE5:${lbl}] ◀ raw ws message:`, event.data)
         const messages = await normalizeIncomingMessage(event.data)
+        if (messages.length === 0) {
+          emptyCountRef.current += 1
+          if (!firstEmptyLoggedRef.current) {
+            firstEmptyLoggedRef.current = true
+            console.warn(`🟡 [UE5-DEBUG][${lbl}] inbound ws message normalized to EMPTY (won't trigger readiness). Raw sample:`, event.data)
+          }
+        }
         handleIncomingPayloads(messages)
       }
 

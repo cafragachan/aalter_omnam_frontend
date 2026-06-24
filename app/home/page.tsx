@@ -613,9 +613,14 @@ export default function HomePage() {
   // UE5 is live. Local mode doesn't connect this listener (UE5 is local/instant and
   // the brain mounts immediately) — avoids a redundant second ws://localhost:7788.
   const [ue5Ready, setUe5Ready] = useState(false)
+  // Log the FIRST readiness signal only — the listener fires every frame.
+  const ue5ReadyLoggedRef = useRef(false)
   const markUe5Ready = useCallback((src: string) => {
-    console.log(`[UE5-DEBUG][page] readiness signal from "${src}" → ue5Ready=true`)
     setUe5Ready(true)
+    if (!ue5ReadyLoggedRef.current) {
+      ue5ReadyLoggedRef.current = true
+      console.warn(`🟢 [UE5-DEBUG][page] FIRST readiness signal from "${src}" → ue5Ready=true`)
+    }
   }, [])
   useUE5WebSocket({
     debugLabel: "page",
@@ -628,7 +633,7 @@ export default function HomePage() {
   // Surface the gating decision in the console so we can see, in the deployed
   // build, whether the realtime brain is being mounted (and why / why not).
   useEffect(() => {
-    console.log("[UE5-DEBUG][page] state:", {
+    console.warn("🟣 [UE5-DEBUG][page] state:", {
       streamMode,
       isVagonMode,
       introComplete,

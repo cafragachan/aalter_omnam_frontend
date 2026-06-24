@@ -379,13 +379,13 @@ export default function HomePageContentRealtime({ onEnded, ue5Ready = false }: {
 
   const start = useCallback(async () => {
     if (!videoRef.current || sessionRef.current) {
-      console.log("[UE5-DEBUG][brain] start() skipped:", {
+      console.warn("🟠 [UE5-DEBUG][brain] start() skipped:", {
         hasVideo: !!videoRef.current,
         alreadyStarted: !!sessionRef.current,
       })
       return
     }
-    console.log("[UE5-DEBUG][brain] start() → booting RealtimeSession (avatar + OpenAI WS + mic)")
+    console.warn("🟢 [UE5-DEBUG][brain] start() → booting RealtimeSession (avatar + OpenAI WS + mic)")
     setActive(true)
     const session = new RealtimeSession(
       videoRef.current,
@@ -461,7 +461,7 @@ export default function HomePageContentRealtime({ onEnded, ue5Ready = false }: {
   // Trace the boot gate so we can see, in the deployed console, whether the brain
   // mounted and what it's waiting on.
   useEffect(() => {
-    console.log("[UE5-DEBUG][brain] mounted/gate:", {
+    console.warn("🟠 [UE5-DEBUG][brain] mounted/gate:", {
       streamMode: STREAM_MODE,
       ue5ReadyProp: ue5Ready,
       bridgeInitialized: ue5.initialized,
