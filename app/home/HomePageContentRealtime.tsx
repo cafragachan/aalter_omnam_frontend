@@ -159,7 +159,7 @@ export default function HomePageContentRealtime({ onEnded, ue5Ready = false }: {
 
   const onUnitSelected = useCallback((payload: { id?: number; roomName: string }) => {
     if (typeof payload.id !== "number") {
-      console.log("[INV] ignoring unit message without id (legacy echo, not a real tap):", payload.roomName)
+      // Legacy selection echo (no id) — not a real tap, ignore.
       return
     }
     explicitPickRef.current = true // a real tap is an explicit pick
@@ -189,14 +189,11 @@ export default function HomePageContentRealtime({ onEnded, ue5Ready = false }: {
   // prompt a room recommendation). Rooms stay on-demand.
   const finalizeInventory = useCallback((rawUnits: unknown[]) => {
     const units = normalizeInventory(rawUnits)
-    console.log("[INV] finalize inventory:", rawUnits.length, "raw →", units.length, "valid (roomTypeId matched)")
     dispatch({ type: "SET_UNIT_INVENTORY", units })
     if (units.length === 0) {
-      console.warn("[INV] inventory had 0 VALID units — check each unit's Tag matches a catalog roomTypeId (r1, r2…)")
       return
     }
     if (injectedInventoryRef.current) {
-      console.log("[INV] store refreshed; Ava already briefed this arrival — skipping re-inject")
       return
     }
     injectedInventoryRef.current = true
@@ -217,7 +214,6 @@ export default function HomePageContentRealtime({ onEnded, ue5Ready = false }: {
     // (Re)start a fresh set on chunk 0 or when the total changes (a new export run).
     if (acc.total !== total || chunk === 0) { acc.total = total; acc.parts = new Map() }
     acc.parts.set(chunk, units)
-    console.log(`[INV] chunk ${chunk + 1}/${total} (${units.length} units) — have ${acc.parts.size}/${total}`)
     if (acc.parts.size >= total) {
       const all: unknown[] = []
       for (let i = 0; i < total; i++) { const p = acc.parts.get(i); if (p) all.push(...p) }
@@ -246,7 +242,6 @@ export default function HomePageContentRealtime({ onEnded, ue5Ready = false }: {
   const ue5LevelLoadedSeq = ue5.levelLoadedSeq
   useEffect(() => {
     if (ue5LevelLoadedSeq <= 0) return
-    console.log("[INV] levelLoaded → requestInventory (seq", ue5LevelLoadedSeq, ")")
     ue5RequestInventory()
   }, [ue5LevelLoadedSeq, ue5RequestInventory])
 
@@ -257,20 +252,18 @@ export default function HomePageContentRealtime({ onEnded, ue5Ready = false }: {
   useEffect(() => {
     if (!atHotel) return
     if (inventoryCount > 0) {
-      console.log("[INV] inventory present (", inventoryCount, "units) — polling stopped")
+      // Inventory already present — no need to poll.
       return
     }
     let attempts = 0
     const MAX = 3
     const ask = () => {
       attempts += 1
-      console.log(`[INV] poll requestInventory (attempt ${attempts}/${MAX}), connected=${ue5.isConnected}`)
       ue5RequestInventory()
     }
     ask() // immediate on arrival
     const id = window.setInterval(() => {
       if (attempts >= MAX) {
-        console.warn("[INV] poll gave up after", MAX, "attempts — UE5 never returned a non-empty inventory")
         window.clearInterval(id)
         return
       }
@@ -397,7 +390,6 @@ export default function HomePageContentRealtime({ onEnded, ue5Ready = false }: {
         },
         onRoomsPanel: setShowRoomsPanel,
         onArrived: (arrived: boolean) => {
-          console.log("[INV] onArrived:", arrived)
           setAtHotel(arrived)
           // Allow ONE fresh inventory briefing to Ava for this arrival. The actual
           // pull is driven by `levelLoaded` (reliable) + the fallback poll below —

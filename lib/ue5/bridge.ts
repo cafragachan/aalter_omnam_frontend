@@ -138,14 +138,11 @@ export function useUE5Bridge(opts: UE5BridgeOptions = {}) {
   }, [])
 
   const handleUnitInventory = useCallback((msg: { units: unknown[]; chunk?: number; total?: number }) => {
-    const n = Array.isArray(msg.units) ? msg.units.length : 0
-    console.log(`[INV] ← unitInventory from UE5: ${n} units` + (msg.total && msg.total > 1 ? ` (chunk ${(msg.chunk ?? 0) + 1}/${msg.total})` : ""))
     setIsReady(true)
     onUnitInventoryRef.current?.(msg)
   }, [])
 
   const handleLevelLoaded = useCallback(() => {
-    console.log("[INV] ← levelLoaded from UE5")
     setIsReady(true)
     setLevelLoadedSeq((n) => n + 1)
   }, [])
@@ -189,14 +186,12 @@ export function useUE5Bridge(opts: UE5BridgeOptions = {}) {
   // Blueprint `Get Integer Field "focus"` always succeeds; UE5 treats focus < 0 as
   // "clear focus" and focus >= 0 as "look up that unit".
   const selectUnits = useCallback((unitIds: number[], focus: number | null) => {
-    console.log("[INV] → selectUnits", unitIds.join(","), "focus", focus ?? -1)
     sendRawMessage({ type: "selectUnits", value: unitIds.join(","), focus: focus ?? -1 })
   }, [sendRawMessage])
 
   // Optional pull — ask UE5 to (re)send its full unit inventory.
   const requestInventory = useCallback(() => {
-    const ok = sendRawMessage({ type: "requestInventory" })
-    console.log("[INV] → requestInventory sent?", ok)
+    sendRawMessage({ type: "requestInventory" })
   }, [sendRawMessage])
 
   const viewUnit = useCallback((view: "interior" | "exterior") => {
