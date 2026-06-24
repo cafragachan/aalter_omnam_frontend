@@ -77,6 +77,52 @@ function TypewriterText({
 }
 
 // ---------------------------------------------------------------------------
+// EndExperienceOverlay — farewell send-off over the intro video background,
+// mounted once the guest has confirmed they want to end and Ava has spoken her
+// goodbye (the UE5 iframe + realtime session are unmounted at the same time).
+// ---------------------------------------------------------------------------
+
+function EndExperienceOverlay({ firstName }: { firstName?: string }) {
+  const name = firstName ?? "guest"
+  const message = `Thank you ${name}, we hope to see you again soon`
+
+  const [phase, setPhase] = useState<"fade-in" | "typing" | "hold">("fade-in")
+
+  useEffect(() => {
+    const timer = setTimeout(() => setPhase("typing"), 500)
+    return () => clearTimeout(timer)
+  }, [])
+
+  return (
+    <div
+      className={`fixed inset-0 z-50 flex items-center justify-center transition-opacity duration-1000 ${phase === "fade-in" ? "opacity-0" : "opacity-100"}`}
+    >
+      <video
+        autoPlay
+        muted
+        loop
+        playsInline
+        className="absolute inset-0 h-full w-full object-cover"
+        src="/videos/omanmBackground_720.mp4"
+      />
+      <div className="absolute inset-0 bg-black/80" />
+
+      <div className="relative z-10 text-center px-8">
+        {phase === "typing" && <TypewriterText text={message} onComplete={() => setPhase("hold")} />}
+        {phase === "hold" && (
+          <span
+            className="text-base tracking-wide text-white md:text-xl"
+            style={{ fontFamily: "var(--font-open-sans)" }}
+          >
+            {message}
+          </span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // LoginOverlay — video + typewriter + login form, overlaid on top of UE5
 // ---------------------------------------------------------------------------
 
@@ -545,8 +591,12 @@ function LoginOverlay({ onComplete, skipIntro = false }: { onComplete: () => voi
 // ---------------------------------------------------------------------------
 
 export default function HomePage() {
-  const { isAuthenticated } = useAuth()
+  const { isAuthenticated, userProfile } = useAuth()
   const [introComplete, setIntroComplete] = useState(false)
+  // Guest confirmed they want to end → tear down the UE5 iframe + realtime
+  // session (by unmounting the content below) and show the farewell overlay.
+  const [ended, setEnded] = useState(false)
+  const handleEnded = useCallback(() => setEnded(true), [])
   const iframeRef = useRef<HTMLIFrameElement>(null)
 
   const streamMode = process.env.NEXT_PUBLIC_STREAM_MODE || "local"
@@ -568,8 +618,9 @@ export default function HomePage() {
 
   return (
     <div className="relative min-h-screen w-full bg-black overflow-hidden select-none">
-      {/* UE5 Pixel Stream — loads immediately, behind everything */}
-      {hasStream ? (
+      {/* UE5 Pixel Stream — loads immediately, behind everything. Unmounted once
+          the guest ends the experience, which drops the pixel-stream connection. */}
+      {hasStream && !ended ? (
         <iframe
           ref={iframeRef}
           id={isVagonMode ? "vagonFrame" : undefined}
@@ -593,8 +644,14 @@ export default function HomePage() {
       {/* Login intro overlay — sits on top of iframe, hides UE5 while loading */}
       {showLoginOverlay && <LoginOverlay onComplete={handleIntroComplete} skipIntro={!isVagonMode} />}
 
-      {/* The realtime brain, once intro completes and the guest is authenticated */}
-      {introComplete && isAuthenticated && <HomePageContentRealtime />}
+      {/* The realtime brain, once intro completes and the guest is authenticated.
+          Unmounting on `ended` runs its cleanup effect → session.stop() (HeyGen +
+          OpenAI WS + mic torn down) and the end-of-session Firebase snapshot. */}
+      {introComplete && isAuthenticated && !ended && <HomePageContentRealtime onEnded={handleEnded} />}
+
+      {/* Farewell send-off — mounted after Ava's goodbye, over the iframe/session
+          teardown. */}
+      {ended && <EndExperienceOverlay firstName={userProfile?.firstName} />}
     </div>
   )
 }

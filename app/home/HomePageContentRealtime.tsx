@@ -45,8 +45,12 @@ const ROOMS_CONTEXT = new Set(["rooms", "inside the unit", "unit exterior"])
 // — start immediately, as before.
 const STREAM_MODE = process.env.NEXT_PUBLIC_STREAM_MODE || "local"
 
-export default function HomePageContentRealtime() {
+export default function HomePageContentRealtime({ onEnded }: { onEnded?: () => void }) {
   const videoRef = useRef<HTMLVideoElement | null>(null)
+  // Latest onEnded in a ref so the session's onFarewellSpoken callback (wired once
+  // at start) always calls the current prop, not the closure captured on mount.
+  const onEndedRef = useRef(onEnded)
+  onEndedRef.current = onEnded
   const sessionRef = useRef<RealtimeSession | null>(null)
   const { state, dispatch } = useOmnamStore()
   const { userProfile, returningUserData } = useAuth()
@@ -335,7 +339,7 @@ export default function HomePageContentRealtime() {
     setActive(true)
     const session = new RealtimeSession(
       videoRef.current,
-      { onTranscript: appendTranscript },
+      { onTranscript: appendTranscript, onFarewellSpoken: () => onEndedRef.current?.() },
       { greetOnReady: true },
     )
     session.setToolHandler(
@@ -376,6 +380,12 @@ export default function HomePageContentRealtime() {
         },
         hasExplicitPick: () => explicitPickRef.current,
         getPlan: () => stateRef.current.currentRoomPlan,
+        // Guest confirmed they want to leave → close panels and start the close:
+        // mute mic, let Ava speak her farewell, then onFarewellSpoken fires onEnded.
+        onEndExperience: () => {
+          setShowRoomsPanel(false)
+          sessionRef.current?.beginClose()
+        },
       }),
     )
     sessionRef.current = session

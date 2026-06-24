@@ -38,6 +38,23 @@ export function buildToolSchemas(slug: string = PILOT_HOTEL_SLUG): RealtimeTool[
     },
     {
       type: "function",
+      name: "end_experience",
+      description:
+        "End and CLOSE the entire experience with a farewell. This is final — the avatar leaves and the 3D scene shuts down. NEVER call this on the guest's first hint that they want to leave: first warmly ask them to confirm, and only call it with confirmed=true once they have clearly said yes. Calling with confirmed=false (or omitted) simply prompts you to ask for confirmation; it does NOT end anything.",
+      parameters: {
+        type: "object",
+        properties: {
+          confirmed: {
+            type: "boolean",
+            description:
+              "true ONLY after the guest has explicitly confirmed they want to end now; false/omitted to ask for confirmation first.",
+          },
+        },
+        required: [],
+      },
+    },
+    {
+      type: "function",
       name: "save_profile",
       description:
         "Quietly remember a detail the guest shares about their trip, so you can tailor the tour and recommendations. Call this whenever you learn something new (multiple times is fine). Include ONLY the fields you actually learned this turn — never guess.",

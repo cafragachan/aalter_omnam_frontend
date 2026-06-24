@@ -55,6 +55,10 @@ export interface DispatcherHooks {
   hasExplicitPick?: () => boolean
   /** Current room plan (for open_booking's default room when no id is given). */
   getPlan?: () => CurrentRoomPlan | null
+  /** Begin the end-of-experience close (mute mic, speak farewell, then tear the
+   *  session + UE5 stream down and show the send-off overlay). Only invoked after
+   *  the guest has confirmed — see the end_experience confirm gate below. */
+  onEndExperience?: () => void
 }
 
 export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}) {
@@ -65,6 +69,33 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
   // travel (startTEST). Mirrors the journey's VIRTUAL_LOUNGE → hotel transition.
   let arrived = false
   const LOUNGE_GATE = "The guest is still in the virtual lounge — call travel_to_hotel first."
+
+  // --- Authoritative scene state (the dispatcher's source of truth for where
+  //     UE5 actually is). The model only "remembers" where it is from its own
+  //     narration, which drifts; this is what we reconcile against so a stale
+  //     belief can never strand us out of sync with UE5. Every nav tool updates
+  //     it; leaving the rooms scene clears the interior/focus (the camera is no
+  //     longer inside a unit), so a later "step back inside" knows it must
+  //     re-navigate to rooms first instead of firing a no-op unitView. ---
+  type SceneArea = "lounge" | "rooms" | "amenities" | "location" | "amenity" | "default"
+  type SceneView = "overview" | "interior" | "exterior"
+  let sceneArea: SceneArea = "lounge"
+  let sceneView: SceneView = "overview"
+  let focusUnitId: number | null = null
+  // A compact, authoritative "you are here" appended to nav tool outputs so every
+  // result re-grounds the model and drift can't accumulate. (Guidance for Ava —
+  // not something to read aloud.)
+  const sceneSummary = (): string => {
+    if (!arrived) return "the virtual lounge"
+    if (sceneArea === "rooms" && sceneView === "interior") return "inside the selected unit"
+    if (sceneArea === "rooms" && sceneView === "exterior") return "the unit exterior"
+    if (sceneArea === "rooms") return "the rooms overview"
+    if (sceneArea === "amenities") return "the amenities overview"
+    if (sceneArea === "amenity") return "an amenity space"
+    if (sceneArea === "location") return "the surrounding area"
+    return "the hotel grounds"
+  }
+  const here = (msg: string) => `${msg} (Scene now: ${sceneSummary()}.)`
 
   // UE5 drops commands sent while a scene is still loading — especially the
   // ~3.5s server-travel after startTEST (mirrors the old UE5_POST_TRAVEL_DELAY_MS).
@@ -87,10 +118,66 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
   // new focus (selectUnits) to land and re-frame before we switch the camera
   // inside, or the interior view targets the old unit / gets canceled. Give it ~1s.
   const FOCUS_BEFORE_VIEW_MS = 1000
+  // When view_unit has to REBUILD the rooms scene first (the guest wandered off to
+  // an amenity, then asked to step back inside), wait out the rooms re-entry +
+  // re-highlight (ROOMS_SETTLE_MS in the page) + a unit re-frame before the camera
+  // moves inside. Larger than FOCUS_BEFORE_VIEW_MS because the whole level reloads.
+  const REENTER_ROOMS_VIEW_MS = 2500
   const whenSceneReady = (fn: () => void) => {
     const wait = sceneReadyAt - Date.now()
     if (wait <= 0) fn()
     else setTimeout(fn, wait)
+  }
+
+  // Actually depart the lounge for the property. Idempotent-safe: only the caller
+  // gates on `arrived`. Sets the authoritative scene state to the post-travel
+  // default view and arms the travel-settle window.
+  const depart = () => {
+    ue5.startTest() // emits { type: "startTEST", value: "startTEST" }
+    arrived = true
+    sceneArea = "default"
+    sceneView = "overview"
+    focusUnitId = null
+    sceneReadyAt = Date.now() + TRAVEL_SETTLE_MS
+    hooks.onArrived?.(true)
+    hooks.onScene?.("traveling to the hotel")
+  }
+
+  // Ensure the guest is at the hotel. Returns "arrived" if we're there now
+  // (departed synchronously, or already arrived), or "pending" if UE5 is still
+  // loading — in which case it polls until ready and runs `onArrivedLater` once it
+  // finally departs (or notifies an error on timeout). Shared by travel_to_hotel
+  // and propose_room_plan's auto-travel so both follow the exact same chain.
+  const ensureArrival = (onArrivedLater?: () => void): "arrived" | "pending" => {
+    if (arrived) return "arrived"
+    const ready = hooks.isUe5Ready?.() ?? true // no hook → don't block
+    if (ready) {
+      depart()
+      return "arrived"
+    }
+    if (!travelPending) {
+      travelPending = true
+      hooks.onScene?.("loading the experience…")
+      const startedAt = Date.now()
+      const poll = () => {
+        if (hooks.isUe5Ready?.()) {
+          travelPending = false
+          depart()
+          onArrivedLater?.()
+          return
+        }
+        if (Date.now() - startedAt > UE5_READY_TIMEOUT_MS) {
+          travelPending = false
+          hooks.notify?.(
+            "[scene error] The 3D experience is taking unusually long to load. Apologize briefly to the guest and offer to try again in a moment.",
+          )
+          return
+        }
+        setTimeout(poll, UE5_READY_POLL_MS)
+      }
+      setTimeout(poll, UE5_READY_POLL_MS)
+    }
+    return "pending"
   }
 
   return async function dispatch(
@@ -99,45 +186,13 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
   ): Promise<string> {
     switch (name) {
       case "travel_to_hotel": {
-        // Actually depart — only ever called once UE5 is confirmed ready.
-        const depart = () => {
-          ue5.startTest() // emits { type: "startTEST", value: "startTEST" }
-          arrived = true
-          sceneReadyAt = Date.now() + TRAVEL_SETTLE_MS
-          hooks.onArrived?.(true)
-          hooks.onScene?.("traveling to the hotel")
-        }
-
-        const ready = hooks.isUe5Ready?.() ?? true // no hook → don't block
-        if (ready) {
-          depart()
+        const status = ensureArrival(() => {
+          hooks.notify?.(
+            "[scene ready] The 3D experience just finished loading and you've now arrived at the EDITION Lake Como. Welcome them warmly and briefly offer what they can explore — the rooms, the amenities, or the surrounding area — and let them choose. Don't recommend rooms unless they ask (or already asked).",
+          )
+        })
+        if (status === "arrived") {
           return "Arriving at the EDITION Lake Como. Welcome them warmly to the property and briefly offer what they can explore — the rooms, the amenities, or the surrounding area — and let them choose. Don't recommend rooms unless they ask (or already asked); if they do want rooms, call propose_room_plan / navigate_to rooms (availability is preloaded)."
-        }
-
-        // UE5 not loaded yet — hold the travel and poll until it is.
-        if (!travelPending) {
-          travelPending = true
-          hooks.onScene?.("loading the experience…")
-          const startedAt = Date.now()
-          const poll = () => {
-            if (hooks.isUe5Ready?.()) {
-              travelPending = false
-              depart()
-              hooks.notify?.(
-                "[scene ready] The 3D experience just finished loading and you've now arrived at the EDITION Lake Como. Welcome them warmly and briefly offer what they can explore — the rooms, the amenities, or the surrounding area — and let them choose. Don't recommend rooms unless they ask (or already asked).",
-              )
-              return
-            }
-            if (Date.now() - startedAt > UE5_READY_TIMEOUT_MS) {
-              travelPending = false
-              hooks.notify?.(
-                "[scene error] The 3D experience is taking unusually long to load. Apologize briefly to the guest and offer to try again in a moment.",
-              )
-              return
-            }
-            setTimeout(poll, UE5_READY_POLL_MS)
-          }
-          setTimeout(poll, UE5_READY_POLL_MS)
         }
         return "The 3D experience is still loading — do NOT say you've arrived. Tell the guest you're getting everything ready and you'll bring them in the moment it's set; you can keep chatting meanwhile."
       }
@@ -145,11 +200,26 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
       case "return_to_lounge": {
         ue5.sendCommand("virtualLounge", "virtualLounge")
         arrived = false
+        sceneArea = "lounge"
+        sceneView = "overview"
+        focusUnitId = null
         sceneReadyAt = Date.now() + TRAVEL_SETTLE_MS
         hooks.onRoomsPanel?.(false)
         hooks.onArrived?.(false)
         hooks.onScene?.("virtual lounge")
         return "Heading back to the virtual lounge."
+      }
+
+      case "end_experience": {
+        // Two-step confirm gate — deterministic, never tears down on a single
+        // call. The guest must explicitly confirm: only confirmed===true ends.
+        // (If the guest declines, Ava simply never calls it again with true.)
+        if (args.confirmed !== true) {
+          return "Before ending, warmly ask the guest to confirm they'd like to end the experience now. Only call end_experience again with confirmed=true once they clearly say yes. If they're unsure or decline, stay with them and continue as normal."
+        }
+        hooks.onEndExperience?.()
+        hooks.onScene?.("ending the experience")
+        return "Give the guest a warm, brief farewell now — thank them and wish them well. This is your last message; right after it the experience will close."
       }
 
       case "save_profile": {
@@ -180,13 +250,19 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
           default:
             return `"${area}" is not a valid area (use rooms, amenities, location, or default).`
         }
+        // Leaving the rooms overview (or moving within the hotel) drops any
+        // interior/exterior camera + unit focus — the guest is no longer inside a
+        // unit, so a later "step back inside" must re-navigate to rooms first.
+        sceneArea = area as SceneArea
+        sceneView = "overview"
+        focusUnitId = null
         hooks.onRoomsPanel?.(area === "rooms")
         hooks.onScene?.(area)
         sceneReadyAt = Date.now() + SCENE_SETTLE_MS
         if (area === "location") {
-          return "Now viewing the surrounding area. Call show_points_of_interest with a category (fine dining, landmarks, lakeside towns…) to map nearby places, then describe a couple."
+          return here("Now viewing the surrounding area. Call show_points_of_interest with a category (fine dining, landmarks, lakeside towns…) to map nearby places, then describe a couple.")
         }
-        return `Navigated to ${area}.`
+        return here(`Navigated to ${area}.`)
       }
 
       case "show_points_of_interest": {
@@ -231,9 +307,13 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
           return `"${args.amenity}" is not a visitable amenity.`
         }
         ue5.navigateToAmenity(match.id)
+        // Walking into an amenity leaves the rooms scene — clear interior/focus.
+        sceneArea = "amenity"
+        sceneView = "overview"
+        focusUnitId = null
         sceneReadyAt = Date.now() + SCENE_SETTLE_MS
         hooks.onScene?.(match.name)
-        return `Walking the guest into ${match.name}.`
+        return here(`Walking the guest into ${match.name}.`)
       }
 
       case "view_unit": {
@@ -242,23 +322,53 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
         if (view !== "interior" && view !== "exterior") {
           return `view must be "interior" or "exterior".`
         }
-        // Focus a named unit first (routes through the reducer → SET_ACTIVE_UNIT →
-        // selectUnits emit), then wait for UE5 to re-frame that focus BEFORE we
-        // switch the camera inside — so moving between units' interiors targets the
-        // newly requested unit instead of the one we were already in.
-        if (typeof args.unitId === "number") {
-          hooks.setActiveUnit?.(args.unitId)
-          await new Promise((r) => setTimeout(r, FOCUS_BEFORE_VIEW_MS))
-        }
         // Interior view requires an EXPLICIT pick — a guest tap or a named unit
-        // (unitId, handled above) — NOT the plan's auto-focus. Otherwise Ava could
-        // whisk the guest into a room they never chose.
+        // (unitId) — NOT the plan's auto-focus. Otherwise Ava could whisk the guest
+        // into a room they never chose. (Checked before any nav so a bare interior
+        // request with nothing picked still gives the right nudge.)
         if (view === "interior" && typeof args.unitId !== "number" && !hooks.hasExplicitPick?.()) {
           return `No unit picked yet — invite the guest to tap one of the available units (or tell me which one), then I'll step inside.`
         }
-        ue5.viewUnit(view)
-        hooks.onScene?.(view === "interior" ? "inside the unit" : "unit exterior")
-        return `Now showing the ${view}.`
+
+        // The guest is the source of truth. If we've wandered out of the rooms
+        // scene (an amenity, the surroundings, a lounge return), a bare unitView
+        // would fire against the wrong level and silently no-op — the desync loop.
+        // Self-heal: rebuild the rooms scene, re-apply the unit focus, wait out the
+        // re-entry + re-highlight, THEN move the camera. A series of calls that
+        // GUARANTEES we end up actually inside the unit, regardless of what the
+        // model believed.
+        const needsReentry = sceneArea !== "rooms"
+
+        // Focus a named unit first (routes through the reducer → SET_ACTIVE_UNIT →
+        // selectUnits emit). Record it so a re-entry can restore the same focus.
+        if (typeof args.unitId === "number") {
+          hooks.setActiveUnit?.(args.unitId)
+          focusUnitId = args.unitId
+        }
+
+        const applyView = () => {
+          ue5.viewUnit(view)
+          sceneArea = "rooms"
+          sceneView = view as SceneView
+          hooks.onScene?.(view === "interior" ? "inside the unit" : "unit exterior")
+        }
+
+        if (needsReentry) {
+          ue5.navigateToRooms()
+          sceneArea = "rooms"
+          sceneView = "overview"
+          hooks.onScene?.("rooms") // re-triggers the page's selectUnits re-highlight
+          await new Promise((r) => setTimeout(r, REENTER_ROOMS_VIEW_MS))
+          applyView()
+          return here(`Brought the guest back into the rooms and now showing the ${view}.`)
+        }
+
+        // Already in the rooms scene — only wait for a fresh focus to re-frame.
+        if (typeof args.unitId === "number") {
+          await new Promise((r) => setTimeout(r, FOCUS_BEFORE_VIEW_MS))
+        }
+        applyView()
+        return here(`Now showing the ${view}.`)
       }
 
       case "select_units": {
@@ -286,18 +396,44 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
         const capacityError = validatePlanCapacity(plan, hooks.getPartySize?.())
         if (capacityError) return capacityError
         hooks.setRoomPlan?.(plan)
-        hooks.onRoomsPanel?.(true)
         lastPlanFirstRoomId = plan.rooms[0].roomId
-        // Navigate to the rooms scene once UE5 has settled (e.g. after travel).
-        // Highlighting is now owned by the single emit effect in
-        // HomePageContentRealtime (it reconciles the plan → unit selection and
-        // sends selectUnits / the type-level fallback), so we no longer send a
+
+        // Reveal the plan in the scene + panel. Navigate to rooms once UE5 has
+        // settled (e.g. after travel). Highlighting is owned by the single emit
+        // effect in HomePageContentRealtime (it reconciles the plan → unit
+        // selection and sends selectUnits / the type-level fallback), so we send no
         // manual selectRoom here.
-        whenSceneReady(() => {
-          ue5.navigateToRooms()
-          hooks.onScene?.("rooms")
-        })
-        return `Proposed plan: ${summarizeRoomPlan(plan)} - $${plan.totalPerNight}/night, sleeps ${plan.capacity}. The matching units are now marked in the scene - invite the guest to tap one of the available units to step inside.`
+        const revealRooms = () => {
+          hooks.onRoomsPanel?.(true)
+          whenSceneReady(() => {
+            ue5.navigateToRooms()
+            sceneArea = "rooms"
+            sceneView = "overview"
+            focusUnitId = null
+            hooks.onScene?.("rooms")
+          })
+        }
+
+        // NEVER surface the plan/panel while the guest is still in the lounge — the
+        // panel would float over the lounge while UE5 drops the gameEstate command,
+        // desyncing the panel from the 3D scene (and stranding `arrived = false`).
+        // Self-heal: take them to the hotel FIRST, then reveal the rooms — the same
+        // depart/settle chain as travel_to_hotel, so model + UE5 + panel converge.
+        if (!arrived) {
+          const status = ensureArrival(() => {
+            revealRooms()
+            hooks.notify?.(
+              `[scene ready] You've arrived at the EDITION Lake Como and the recommended rooms (${summarizeRoomPlan(plan)}) are now marked in the scene. Welcome the guest warmly and invite them to tap a unit to step inside.`,
+            )
+          })
+          if (status === "pending") {
+            return `Plan staged: ${summarizeRoomPlan(plan)} - $${plan.totalPerNight}/night, sleeps ${plan.capacity}. The 3D experience is still loading, so do NOT say it's ready — tell the guest you're bringing them in now and you'll show these rooms the moment it loads.`
+          }
+          // Arrived synchronously — fall through and reveal the rooms now.
+        }
+
+        revealRooms()
+        return here(`Proposed plan: ${summarizeRoomPlan(plan)} - $${plan.totalPerNight}/night, sleeps ${plan.capacity}. The matching units are now marked in the scene - invite the guest to tap one of the available units to step inside.`)
       }
 
       case "open_booking": {

@@ -42,6 +42,10 @@ export interface RealtimeCallbacks {
   onLog?: (line: string) => void
   onMetric?: (metric: TurnMetric) => void
   onTranscript?: (who: "user" | "ava", text: string) => void
+  /** Fired once Ava has spoken her end-of-experience farewell (and the buffered
+   *  HeyGen audio has played out), so the UI can tear the session down and show
+   *  the send-off overlay. Armed by beginClose(). */
+  onFarewellSpoken?: () => void
 }
 
 export interface RealtimeOptions {
@@ -73,6 +77,14 @@ const GREET_DELAY_MS = 200
 // the guest can still barge in mid-sentence. (Not extended per audio chunk, so it
 // no longer gates the whole utterance — that's what blocked interruption.)
 const SELF_ECHO_GUARD_MS = 300
+
+// End-of-experience: after Ava's farewell response completes, wait this long for
+// HeyGen to finish playing the buffered audio before tearing down (analog of the
+// old 4s STOP_AVATAR delay).
+const FAREWELL_TAIL_MS = 3500
+// Safety net: if no spoken farewell ever completes (e.g. an empty response),
+// close anyway so the guest is never stranded mid-goodbye.
+const CLOSE_FALLBACK_MS = 12000
 
 export class RealtimeSession {
   private videoEl: HTMLMediaElement
@@ -129,6 +141,11 @@ export class RealtimeSession {
   // tool action (e.g. view_unit), so commands like "show me the penthouse" while
   // Ava acks would silently never execute.
   private responseHasFunctionCall = false
+  // End-of-experience close: set by beginClose(). The next SPOKEN response to
+  // complete (Ava's farewell) fires onFarewellSpoken after a tail; a fallback
+  // timer guarantees the close even if she says nothing.
+  private closeRequested = false
+  private closeFallbackTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(videoEl: HTMLMediaElement, cb: RealtimeCallbacks = {}, opts: RealtimeOptions = {}) {
     this.videoEl = videoEl
@@ -163,6 +180,22 @@ export class RealtimeSession {
 
   isMicrophoneMuted() {
     return this.micMuted
+  }
+
+  /** Begin the end-of-experience close. Mutes the mic immediately so the guest
+   *  can't barge in over Ava's goodbye, and arranges for onFarewellSpoken to fire
+   *  once she has finished speaking it (or after a fallback, if she says nothing).
+   *  Idempotent — a second call while already closing is a no-op. */
+  beginClose() {
+    if (this.closeRequested) return
+    this.closeRequested = true
+    this.setMicMuted(true)
+    this.closeFallbackTimer = setTimeout(() => {
+      if (!this.closeRequested) return
+      this.closeRequested = false
+      this.closeFallbackTimer = null
+      this.cb.onFarewellSpoken?.()
+    }, CLOSE_FALLBACK_MS)
   }
 
   // ---- lifecycle ---------------------------------------------------------
@@ -228,6 +261,10 @@ export class RealtimeSession {
     if (this.greetTimer) {
       clearTimeout(this.greetTimer)
       this.greetTimer = null
+    }
+    if (this.closeFallbackTimer) {
+      clearTimeout(this.closeFallbackTimer)
+      this.closeFallbackTimer = null
     }
     // Stop the HeyGen session server-side (browser REST stop is CORS-blocked).
     if (this.heygenSessionToken) void this.serverStop(this.heygenSessionToken)
@@ -589,9 +626,24 @@ export class RealtimeSession {
           this.responseHasFunctionCall = false
         }
         this.flushOut(true)
-        if (type === "response.done" && this.avaTranscript) {
-          this.cb.onTranscript?.("ava", this.avaTranscript)
-          this.avaTranscript = ""
+        if (type === "response.done") {
+          const hadSpoken = !!this.avaTranscript
+          if (hadSpoken) {
+            this.cb.onTranscript?.("ava", this.avaTranscript)
+            this.avaTranscript = ""
+          }
+          // End-of-experience: the close was requested by end_experience. The
+          // function-call response that triggered it carries NO audio, so we wait
+          // for the first SPOKEN response to finish (Ava's farewell), let the
+          // buffered HeyGen audio play out, then signal the UI to tear down.
+          if (this.closeRequested && hadSpoken) {
+            this.closeRequested = false
+            if (this.closeFallbackTimer) {
+              clearTimeout(this.closeFallbackTimer)
+              this.closeFallbackTimer = null
+            }
+            setTimeout(() => this.cb.onFarewellSpoken?.(), FAREWELL_TAIL_MS)
+          }
         }
         break
       }
