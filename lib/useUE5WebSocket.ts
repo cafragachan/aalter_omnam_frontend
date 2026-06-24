@@ -48,9 +48,6 @@ export type UnitInventoryMessage = {
 type UseUE5WebSocketOptions = {
   url?: string
   autoConnect?: boolean
-  /** Tag prepended to this listener's console logs so the page-level readiness
-   *  listener and the in-brain bridge can be told apart in the deployed console. */
-  debugLabel?: string
   onMessage?: (message: UE5IncomingMessage) => void
   onUnitSelected?: (unit: UnitSelectionMessage) => void
   onUnitInventory?: (msg: { units: unknown[]; chunk?: number; total?: number }) => void
@@ -79,7 +76,6 @@ export const useUE5WebSocket = (options: UseUE5WebSocketOptions = {}) => {
   const {
     url = "ws://localhost:7788",
     autoConnect = true,
-    debugLabel = "ue5",
     onMessage,
     onUnitSelected,
     onUnitInventory,
@@ -89,19 +85,6 @@ export const useUE5WebSocket = (options: UseUE5WebSocketOptions = {}) => {
     onDisconnect,
     onError,
   } = options
-
-  // Stable tag for logs inside callbacks (debugLabel never changes in practice).
-  const labelRef = useRef(debugLabel)
-  labelRef.current = debugLabel
-
-  // --- Flood-resistant debug counters. UE5/Vagon emits messages every frame, so
-  //     per-message logging is useless. Instead: log the FIRST payload of each
-  //     distinct `type` once (so we can see whether `ue5Init` ever arrives), a
-  //     first-empty warning, and a periodic heartbeat count. ---
-  const inboundCountRef = useRef(0)
-  const emptyCountRef = useRef(0)
-  const firstEmptyLoggedRef = useRef(false)
-  const loggedTypesRef = useRef<Set<string>>(new Set())
 
   const websocketRef = useRef<WebSocket | null>(null)
   const [state, setState] = useState<UE5WebSocketState>({
@@ -160,20 +143,8 @@ export const useUE5WebSocket = (options: UseUE5WebSocketOptions = {}) => {
   // Vagon SDK message handler (shared with WebSocket path)
   // ---------------------------------------------------------------------------
   const handleIncomingPayloads = useCallback((messages: UE5IncomingMessage[]) => {
-    const lbl = labelRef.current
     messages.forEach((payload) => {
-      // First time we ever see each distinct `type`, log it loudly (warn = easy to
-      // filter). This is how we tell whether `ue5Init` actually arrives.
-      const t = typeof payload?.type === "string" ? payload.type : "(no type field)"
-      if (!loggedTypesRef.current.has(t)) {
-        loggedTypesRef.current.add(t)
-        console.warn(`🟢 [UE5-DEBUG][${lbl}] FIRST payload of type "${t}":`, payload)
-      }
-      // Heartbeat so we know messages keep flowing, without flooding (1 per ~2000).
-      inboundCountRef.current += 1
-      if (inboundCountRef.current % 2000 === 0) {
-        console.warn(`🔵 [UE5-DEBUG][${lbl}] inbound message count ≈ ${inboundCountRef.current}; types seen: [${[...loggedTypesRef.current].join(", ")}]`)
-      }
+      console.log("Message from UE5:", payload)
 
       if (payload?.type === "ue5Init") {
         onUe5Init?.()
@@ -215,31 +186,24 @@ export const useUE5WebSocket = (options: UseUE5WebSocketOptions = {}) => {
   }, [])
 
   const connectVagon = useCallback(() => {
-    const lbl = labelRef.current
     if (!isVagonReady()) {
-      const v = typeof window !== "undefined" ? window.Vagon : undefined
-      console.warn(`[UE5:${lbl}] Vagon SDK not fully initialised yet, retrying in 1s…`, {
-        windowVagonExists: !!v,
-        onConnectedType: v ? typeof v.onConnected : "no-window.Vagon",
-        sendApplicationMessageType: v ? typeof v.sendApplicationMessage : "no-window.Vagon",
-        onApplicationMessageType: v ? typeof v.onApplicationMessage : "no-window.Vagon",
-      })
+      console.warn("Vagon SDK not fully initialised yet, retrying in 1s...")
       const retryTimeout = setTimeout(() => connectVagon(), 1000)
       return () => clearTimeout(retryTimeout)
     }
 
     const vagon = window.Vagon!
-    console.log(`[UE5:${lbl}] Using Vagon SDK for UE5 communication — registering listeners`)
+    console.log("Using Vagon SDK for UE5 communication")
 
     // Listen for connection events
     vagon.onConnected(() => {
-      console.log(`[UE5:${lbl}] Vagon: connected to UE5 stream`)
+      console.log("Vagon: connected to UE5 stream")
       setState({ isConnected: true, isConnecting: false, error: null })
       onConnect?.()
     })
 
     vagon.onDisconnected(() => {
-      console.log(`[UE5:${lbl}] Vagon: disconnected from UE5 stream`)
+      console.log("Vagon: disconnected from UE5 stream")
       setState({ isConnected: false, isConnecting: false, error: null })
       onDisconnect?.()
     })
@@ -247,16 +211,8 @@ export const useUE5WebSocket = (options: UseUE5WebSocketOptions = {}) => {
     // Listen for incoming messages from UE5
     vagon.onApplicationMessage(async (evt) => {
       const messages = await normalizeIncomingMessage(evt.message)
-      if (messages.length === 0) {
-        emptyCountRef.current += 1
-        if (!firstEmptyLoggedRef.current) {
-          firstEmptyLoggedRef.current = true
-          console.warn(`🟡 [UE5-DEBUG][${lbl}] inbound vagon message normalized to EMPTY (won't trigger readiness). Raw sample:`, evt?.message)
-        }
-      }
       handleIncomingPayloads(messages)
     })
-    console.log(`[UE5:${lbl}] onApplicationMessage handler registered — waiting for UE5 messages`)
 
     // Check if already connected (guard in case isConnected is not yet available)
     if (typeof vagon.isConnected === "function" && vagon.isConnected()) {
@@ -280,37 +236,28 @@ export const useUE5WebSocket = (options: UseUE5WebSocketOptions = {}) => {
     setState((prev) => ({ ...prev, isConnecting: true, error: null }))
 
     try {
-      const lbl = labelRef.current
-      console.log(`[UE5:${lbl}] opening WebSocket to ${url}…`)
       const ws = new WebSocket(url)
       websocketRef.current = ws
 
       ws.onopen = () => {
-        console.log(`[UE5:${lbl}] Connected to UE5 WebSocket at ${url}`)
+        console.log(`Connected to UE5 WebSocket at ${url}`)
         setState({ isConnected: true, isConnecting: false, error: null })
         onConnect?.()
       }
 
       ws.onmessage = async (event) => {
         const messages = await normalizeIncomingMessage(event.data)
-        if (messages.length === 0) {
-          emptyCountRef.current += 1
-          if (!firstEmptyLoggedRef.current) {
-            firstEmptyLoggedRef.current = true
-            console.warn(`🟡 [UE5-DEBUG][${lbl}] inbound ws message normalized to EMPTY (won't trigger readiness). Raw sample:`, event.data)
-          }
-        }
         handleIncomingPayloads(messages)
       }
 
       ws.onerror = (error) => {
-        console.error(`[UE5:${lbl}] UE5 WebSocket error:`, error)
+        console.error("UE5 WebSocket error:", error)
         setState((prev) => ({ ...prev, error: "WebSocket connection error" }))
         onError?.(error)
       }
 
       ws.onclose = () => {
-        console.log(`[UE5:${lbl}] UE5 WebSocket closed`)
+        console.log("UE5 WebSocket closed")
         setState({ isConnected: false, isConnecting: false, error: null })
         onDisconnect?.()
       }
@@ -325,7 +272,6 @@ export const useUE5WebSocket = (options: UseUE5WebSocketOptions = {}) => {
   }, [url, onConnect, onDisconnect, onError, normalizeIncomingMessage, handleIncomingPayloads])
 
   const connect = useCallback(() => {
-    console.log(`[UE5:${labelRef.current}] connect() — STREAM_MODE=${STREAM_MODE}`)
     if (STREAM_MODE === "vagon") {
       connectVagon()
     } else {
@@ -403,11 +349,8 @@ export const useUE5WebSocket = (options: UseUE5WebSocketOptions = {}) => {
 
   // Auto-connect on mount
   useEffect(() => {
-    console.log(`[UE5:${labelRef.current}] mount — autoConnect=${autoConnect}, STREAM_MODE=${STREAM_MODE}`)
     if (autoConnect) {
       connect()
-    } else {
-      console.log(`[UE5:${labelRef.current}] autoConnect=false — NOT connecting this listener`)
     }
 
     return () => {

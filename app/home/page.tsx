@@ -604,51 +604,25 @@ export default function HomePage() {
   const isVagonMode = streamMode === "vagon"
   const showLoginOverlay = !introComplete
 
-  // UE5 readiness — mirrors the pre-refactor /home. This listener is mounted at
-  // page load (NOT behind the login/intro overlay), so it's subscribed before the
-  // UE5 stream connects and catches the FIRST message of any type — UE5 fires its
-  // `ue5Init` (and other messages) once, and the bridge inside the realtime brain
-  // mounts too late (post-intro) to catch that one-shot. In vagon mode we then gate
-  // the realtime brain's mount on this signal so the avatar UI never appears before
-  // UE5 is live. Local mode doesn't connect this listener (UE5 is local/instant and
-  // the brain mounts immediately) — avoids a redundant second ws://localhost:7788.
+  // UE5 readiness — a listener mounted at page load (NOT behind the login/intro
+  // overlay) so it's subscribed before the stream connects. Primary signal is the
+  // Vagon SDK's `onConnect` ("stream connected") event, which fires reliably and
+  // doesn't depend on UE5 pushing application messages (those can be dropped by our
+  // parser, or sent over a separate WebSocket that never reaches the browser in
+  // cloud mode). The message callbacks are a fallback — whichever fires first wins.
+  // In vagon mode the realtime brain's mount is gated on this so the avatar UI never
+  // appears before the stream is live. Local mode doesn't connect this listener (UE5
+  // is local/instant; the brain mounts immediately) — avoids a redundant second
+  // ws://localhost:7788 connection.
   const [ue5Ready, setUe5Ready] = useState(false)
-  // Log the FIRST readiness signal only — the listener fires every frame.
-  const ue5ReadyLoggedRef = useRef(false)
-  const markUe5Ready = useCallback((src: string) => {
-    setUe5Ready(true)
-    if (!ue5ReadyLoggedRef.current) {
-      ue5ReadyLoggedRef.current = true
-      console.warn(`🟢 [UE5-DEBUG][page] FIRST readiness signal from "${src}" → ue5Ready=true`)
-    }
-  }, [])
+  const markUe5Ready = useCallback(() => setUe5Ready(true), [])
   useUE5WebSocket({
-    debugLabel: "page",
     autoConnect: isVagonMode,
-    // PRIMARY readiness signal: the Vagon SDK's own "stream connected" event. It
-    // fires once when the pixel stream comes up and does NOT depend on UE5 pushing
-    // application messages (which our parser may drop, or which UE5 sends over a
-    // separate WebSocket that never reaches the browser in cloud mode). The
-    // message callbacks below remain as a fallback — whichever fires first wins.
-    onConnect: () => markUe5Ready("vagon-connected"),
-    onMessage: () => markUe5Ready("onMessage"),
-    onUnitSelected: () => markUe5Ready("onUnitSelected"),
-    onUnitInventory: () => markUe5Ready("onUnitInventory"),
+    onConnect: markUe5Ready,
+    onMessage: markUe5Ready,
+    onUnitSelected: markUe5Ready,
+    onUnitInventory: markUe5Ready,
   })
-
-  // Surface the gating decision in the console so we can see, in the deployed
-  // build, whether the realtime brain is being mounted (and why / why not).
-  useEffect(() => {
-    console.warn("🟣 [UE5-DEBUG][page] state:", {
-      streamMode,
-      isVagonMode,
-      introComplete,
-      isAuthenticated,
-      ended,
-      ue5Ready,
-      willMountBrain: introComplete && isAuthenticated && !ended && (!isVagonMode || ue5Ready),
-    })
-  }, [streamMode, isVagonMode, introComplete, isAuthenticated, ended, ue5Ready])
 
   const handleIframeMouseEnter = useCallback(() => {
     iframeRef.current?.focus()

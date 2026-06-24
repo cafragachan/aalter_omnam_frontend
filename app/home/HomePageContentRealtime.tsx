@@ -378,14 +378,7 @@ export default function HomePageContentRealtime({ onEnded, ue5Ready = false }: {
   }, [active, atHotel, lastGuestTurnTs])
 
   const start = useCallback(async () => {
-    if (!videoRef.current || sessionRef.current) {
-      console.warn("🟠 [UE5-DEBUG][brain] start() skipped:", {
-        hasVideo: !!videoRef.current,
-        alreadyStarted: !!sessionRef.current,
-      })
-      return
-    }
-    console.warn("🟢 [UE5-DEBUG][brain] start() → booting RealtimeSession (avatar + OpenAI WS + mic)")
+    if (!videoRef.current || sessionRef.current) return
     setActive(true)
     const session = new RealtimeSession(
       videoRef.current,
@@ -457,18 +450,6 @@ export default function HomePageContentRealtime({ onEnded, ue5Ready = false }: {
   // time we mount — start immediately. The `ue5.initialized` fallback covers the case
   // where the bridge itself catches `ue5Init` first. Local always starts immediately.
   const canStart = STREAM_MODE !== "vagon" || ue5Ready || ue5.initialized
-
-  // Trace the boot gate so we can see, in the deployed console, whether the brain
-  // mounted and what it's waiting on.
-  useEffect(() => {
-    console.warn("🟠 [UE5-DEBUG][brain] mounted/gate:", {
-      streamMode: STREAM_MODE,
-      ue5ReadyProp: ue5Ready,
-      bridgeInitialized: ue5.initialized,
-      bridgeIsReady: ue5.isReady,
-      canStart,
-    })
-  }, [ue5Ready, ue5.initialized, ue5.isReady, canStart])
 
   // Session lifecycle (mount-only): beforeunload + teardown on unmount. Kept
   // separate from the gated start so the gate flipping doesn't tear down/restart
