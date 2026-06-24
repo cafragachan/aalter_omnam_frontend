@@ -39,6 +39,11 @@ const ROOMS_SETTLE_MS = 1200
 // of being frozen the instant the guest (or Ava) steps inside a unit.
 const ROOMS_CONTEXT = new Set(["rooms", "inside the unit", "unit exterior"])
 
+// In vagon mode the UE5 stream launches slowly (AWS/Vagon spin-up), so we hold
+// the avatar boot until UE5 signals it's connected (`ue5Init`). Local UE5 is fast
+// — start immediately, as before.
+const STREAM_MODE = process.env.NEXT_PUBLIC_STREAM_MODE || "local"
+
 export default function HomePageContentRealtime() {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const sessionRef = useRef<RealtimeSession | null>(null)
@@ -356,14 +361,16 @@ export default function HomePageContentRealtime() {
     await session.start()
   }, [ue5, dispatch, hydration, userProfile])
 
-  // Auto-start once the avatar's <video> is mounted — no "Begin" gate. The
-  // avatar and the mic/Realtime start INDEPENDENTLY (see RealtimeSession.start),
-  // so a getUserMedia/permission hiccup never tears the avatar down to black.
-  // start() is idempotent (guards on sessionRef), and the cleanup stops the
-  // session, so React StrictMode's mount→unmount→mount only yields one live
-  // session.
+  // Gate the avatar boot: in vagon mode UE5 launches slowly, so hold the start
+  // until UE5 sends `ue5Init` (bridge.initialized). Local mode starts immediately.
+  // Reactive — flips when ue5.initialized arrives, re-running the gated effect.
+  const canStart = STREAM_MODE !== "vagon" || ue5.initialized
+
+  // Session lifecycle (mount-only): beforeunload + teardown on unmount. Kept
+  // separate from the gated start so the gate flipping doesn't tear down/restart
+  // a live session. The cleanup stops the session, so React StrictMode's
+  // mount→unmount→mount only yields one live session.
   useEffect(() => {
-    void start()
     const onUnload = () => {
       void sessionRef.current?.stop()
     }
@@ -373,8 +380,16 @@ export default function HomePageContentRealtime() {
       void sessionRef.current?.stop()
       sessionRef.current = null
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Auto-start once the gate is open — no "Begin" gate. The avatar and the
+  // mic/Realtime start INDEPENDENTLY (see RealtimeSession.start), so a
+  // getUserMedia/permission hiccup never tears the avatar down to black.
+  // start() is idempotent (guards on sessionRef), so a re-run is a no-op.
+  useEffect(() => {
+    if (canStart) void start()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canStart])
 
   const onAddRoom = useCallback((roomId: string) => dispatch({ type: "EDIT_ROOM_PLAN", edit: { kind: "add", roomId } }), [dispatch])
   const onSetRoomQuantity = useCallback((roomId: string, quantity: number) => dispatch({ type: "EDIT_ROOM_PLAN", edit: { kind: "setQuantity", roomId, quantity } }), [dispatch])

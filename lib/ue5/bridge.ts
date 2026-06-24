@@ -21,6 +21,10 @@ export type UE5BridgeState = {
    *  transport-only `isConnected`). Matches the old /home `ue5Ready` gate;
    *  fires for both Vagon (onApplicationMessage) and local (ws.onmessage). */
   isReady: boolean
+  /** True once UE5 has emitted the `ue5Init` token (Blueprint on WebSocket
+   *  OnConnected) — "the experience is connected". Used to gate the avatar boot
+   *  in vagon mode, where the UE5 stream launches slowly. */
+  initialized: boolean
   /** Increments each time UE5 reports a level has finished loading. Consumers
    *  watch it to pull the unit inventory at the reliable moment (units exist). */
   levelLoadedSeq: number
@@ -72,6 +76,9 @@ export function useUE5Bridge(opts: UE5BridgeOptions = {}) {
 
   // --- UE5 readiness (first inbound message) ---
   const [isReady, setIsReady] = useState(false)
+  // --- UE5 "experience connected" (the explicit `ue5Init` token). Gates the
+  //     avatar boot in vagon mode (UE5 launches slowly there). ---
+  const [initialized, setInitialized] = useState(false)
   // --- Hotel level fully loaded (units exist); a counter so each load re-fires
   //     consumers even across return-to-lounge → re-travel. ---
   const [levelLoadedSeq, setLevelLoadedSeq] = useState(0)
@@ -112,6 +119,12 @@ export function useUE5Bridge(opts: UE5BridgeOptions = {}) {
     setIsReady(true)
   }, [])
 
+  const handleUe5Init = useCallback(() => {
+    console.log("UE5 init received — experience connected")
+    setInitialized(true)
+    setIsReady(true)
+  }, [])
+
   const handleUnitSelected = useCallback((unit: UnitSelectionMessage) => {
     setIsReady(true)
     setSelectedUnit(unit)
@@ -142,6 +155,7 @@ export function useUE5Bridge(opts: UE5BridgeOptions = {}) {
     onUnitSelected: handleUnitSelected,
     onUnitInventory: handleUnitInventory,
     onLevelLoaded: handleLevelLoaded,
+    onUe5Init: handleUe5Init,
   })
 
   // --- Typed commands ---
@@ -225,6 +239,7 @@ export function useUE5Bridge(opts: UE5BridgeOptions = {}) {
     // State
     isConnected,
     isReady,
+    initialized,
     levelLoadedSeq,
     showFadeOverlay,
     isFadeOpaque,

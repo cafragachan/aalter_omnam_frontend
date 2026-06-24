@@ -55,6 +55,10 @@ type UseUE5WebSocketOptions = {
    *  reliable moment to pull the unit inventory — arrival fires while the map is
    *  still loading. */
   onLevelLoaded?: () => void
+  /** UE5 emits the bare token `ue5Init` from a Blueprint bound to its WebSocket
+   *  OnConnected event — the definitive "the experience is connected" signal.
+   *  Used to gate the avatar boot in vagon mode (where UE5 launches slowly). */
+  onUe5Init?: () => void
   onConnect?: () => void
   onDisconnect?: () => void
   onError?: (error: Event) => void
@@ -76,6 +80,7 @@ export const useUE5WebSocket = (options: UseUE5WebSocketOptions = {}) => {
     onUnitSelected,
     onUnitInventory,
     onLevelLoaded,
+    onUe5Init,
     onConnect,
     onDisconnect,
     onError,
@@ -141,6 +146,12 @@ export const useUE5WebSocket = (options: UseUE5WebSocketOptions = {}) => {
     messages.forEach((payload) => {
       console.log("Message from UE5:", payload)
 
+      if (payload?.type === "ue5Init") {
+        onUe5Init?.()
+        onMessage?.(payload) // keep readiness/logging behavior
+        return
+      }
+
       if (payload?.type === "levelLoaded") {
         onLevelLoaded?.()
         onMessage?.(payload) // keep readiness/logging behavior
@@ -159,7 +170,7 @@ export const useUE5WebSocket = (options: UseUE5WebSocketOptions = {}) => {
 
       onMessage?.(payload)
     })
-  }, [isUnitInventoryMessage, isUnitSelectionMessage, onUnitInventory, onUnitSelected, onLevelLoaded, onMessage])
+  }, [isUnitInventoryMessage, isUnitSelectionMessage, onUnitInventory, onUnitSelected, onLevelLoaded, onUe5Init, onMessage])
 
   // ---------------------------------------------------------------------------
   // Vagon SDK mode — communicate via window.Vagon instead of raw WebSocket
