@@ -45,6 +45,15 @@ const ROOMS_CONTEXT = new Set(["rooms", "inside the unit", "unit exterior"])
 // — start immediately, as before.
 const STREAM_MODE = process.env.NEXT_PUBLIC_STREAM_MODE || "local"
 
+// Lingering-in-the-lounge nudges. The LLM has no sense of wall-clock time, so the
+// "don't get stuck in the gallery" reminder is a deterministic client timer that
+// injects a context note (respond:true) telling Ava to gently offer to move on.
+// Armed only while in the lounge; reset on each guest turn (so it fires during a
+// genuine lull, never over an active conversation); cancelled the moment the guest
+// travels to the hotel. Tunable.
+const LOUNGE_NUDGE_MS = 75_000        // gentle check-in after a quiet stretch
+const LOUNGE_NUDGE_FIRM_MS = 160_000  // a warmer "shall we head over?" if still here
+
 export default function HomePageContentRealtime({ onEnded }: { onEnded?: () => void }) {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   // Latest onEnded in a ref so the session's onFarewellSpoken callback (wired once
@@ -333,6 +342,36 @@ export default function HomePageContentRealtime({ onEnded }: { onEnded?: () => v
       { respond: false },
     )
   }, [currentRoomPlan, rooms])
+
+  // Lingering-in-the-lounge nudges. Only while the guest is still in the lounge
+  // (active && !atHotel). Re-armed on every guest turn (lastGuestTurnTs) so it
+  // only fires during a genuine lull; both timers are cleared on travel (atHotel
+  // flips) and on unmount. See LOUNGE_NUDGE_MS / _FIRM_MS.
+  const lastGuestTurnTs = useMemo(() => {
+    for (let i = transcript.length - 1; i >= 0; i--) {
+      if (transcript[i].who === "user") return transcript[i].timestamp
+    }
+    return 0
+  }, [transcript])
+  useEffect(() => {
+    if (!active || atHotel) return
+    const gentle = window.setTimeout(() => {
+      sessionRef.current?.injectContext(
+        "[context] The guest has been quiet in the virtual lounge for a little while. Gently check in and remind them, in one warm line, that you can take them over to the hotel (or to the rooms) whenever they're ready. Do not pressure them or repeat any gallery invitation.",
+        { respond: true },
+      )
+    }, LOUNGE_NUDGE_MS)
+    const firm = window.setTimeout(() => {
+      sessionRef.current?.injectContext(
+        "[context] The guest is still lingering in the virtual lounge. Warmly suggest heading over to the hotel now so they can see it for themselves — offer to take them. Keep it to one inviting line.",
+        { respond: true },
+      )
+    }, LOUNGE_NUDGE_FIRM_MS)
+    return () => {
+      window.clearTimeout(gentle)
+      window.clearTimeout(firm)
+    }
+  }, [active, atHotel, lastGuestTurnTs])
 
   const start = useCallback(async () => {
     if (!videoRef.current || sessionRef.current) return
