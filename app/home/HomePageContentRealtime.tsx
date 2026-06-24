@@ -54,7 +54,7 @@ const STREAM_MODE = process.env.NEXT_PUBLIC_STREAM_MODE || "local"
 const LOUNGE_NUDGE_MS = 75_000        // gentle check-in after a quiet stretch
 const LOUNGE_NUDGE_FIRM_MS = 160_000  // a warmer "shall we head over?" if still here
 
-export default function HomePageContentRealtime({ onEnded }: { onEnded?: () => void }) {
+export default function HomePageContentRealtime({ onEnded, ue5Ready = false }: { onEnded?: () => void; ue5Ready?: boolean }) {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   // Latest onEnded in a ref so the session's onFarewellSpoken callback (wired once
   // at start) always calls the current prop, not the closure captured on mount.
@@ -232,8 +232,12 @@ export default function HomePageContentRealtime({ onEnded }: { onEnded?: () => v
   // poll the CURRENT value rather than the false captured at session start.
   const ue5ReadyRef = useRef(false)
   useEffect(() => {
-    ue5ReadyRef.current = ue5.isReady
-  }, [ue5.isReady])
+    // Either the page-level readiness signal (the always-mounted listener that
+    // caught UE5's first message before this component mounted) OR the bridge's
+    // own first-message flag. In vagon the prop is already true at mount (the
+    // brain only mounts once UE5 is live), so travel_to_hotel isn't blocked.
+    ue5ReadyRef.current = ue5Ready || ue5.isReady
+  }, [ue5Ready, ue5.isReady])
 
   // PRELOAD on levelLoaded — the RELIABLE trigger: the hotel level finished
   // loading so units exist. (Arrival/startTEST also kicks a pull, but fires while
@@ -441,10 +445,11 @@ export default function HomePageContentRealtime({ onEnded }: { onEnded?: () => v
   const endSessionRef = useRef(writeEndOfSessionSnapshot)
   endSessionRef.current = writeEndOfSessionSnapshot
 
-  // Gate the avatar boot: in vagon mode UE5 launches slowly, so hold the start
-  // until UE5 sends `ue5Init` (bridge.initialized). Local mode starts immediately.
-  // Reactive — flips when ue5.initialized arrives, re-running the gated effect.
-  const canStart = STREAM_MODE !== "vagon" || ue5.initialized
+  // Gate the avatar boot. In vagon the page already gates this component's MOUNT on
+  // UE5 readiness (HomePage's always-mounted listener), so `ue5Ready` is true by the
+  // time we mount — start immediately. The `ue5.initialized` fallback covers the case
+  // where the bridge itself catches `ue5Init` first. Local always starts immediately.
+  const canStart = STREAM_MODE !== "vagon" || ue5Ready || ue5.initialized
 
   // Session lifecycle (mount-only): beforeunload + teardown on unmount. Kept
   // separate from the gated start so the gate flipping doesn't tear down/restart

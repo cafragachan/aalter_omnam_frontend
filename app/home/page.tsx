@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { useAuth } from "@/lib/auth-context"
 import { useUserProfileContext } from "@/lib/context"
+import { useUE5WebSocket } from "@/lib/useUE5WebSocket"
 import HomePageContentRealtime from "./HomePageContentRealtime"
 
 // ---------------------------------------------------------------------------
@@ -603,6 +604,23 @@ export default function HomePage() {
   const isVagonMode = streamMode === "vagon"
   const showLoginOverlay = !introComplete
 
+  // UE5 readiness — mirrors the pre-refactor /home. This listener is mounted at
+  // page load (NOT behind the login/intro overlay), so it's subscribed before the
+  // UE5 stream connects and catches the FIRST message of any type — UE5 fires its
+  // `ue5Init` (and other messages) once, and the bridge inside the realtime brain
+  // mounts too late (post-intro) to catch that one-shot. In vagon mode we then gate
+  // the realtime brain's mount on this signal so the avatar UI never appears before
+  // UE5 is live. Local mode doesn't connect this listener (UE5 is local/instant and
+  // the brain mounts immediately) — avoids a redundant second ws://localhost:7788.
+  const [ue5Ready, setUe5Ready] = useState(false)
+  const markUe5Ready = useCallback(() => setUe5Ready(true), [])
+  useUE5WebSocket({
+    autoConnect: isVagonMode,
+    onMessage: markUe5Ready,
+    onUnitSelected: markUe5Ready,
+    onUnitInventory: markUe5Ready,
+  })
+
   const handleIframeMouseEnter = useCallback(() => {
     iframeRef.current?.focus()
   }, [])
@@ -647,7 +665,9 @@ export default function HomePage() {
       {/* The realtime brain, once intro completes and the guest is authenticated.
           Unmounting on `ended` runs its cleanup effect → session.stop() (HeyGen +
           OpenAI WS + mic torn down) and the end-of-session Firebase snapshot. */}
-      {introComplete && isAuthenticated && !ended && <HomePageContentRealtime onEnded={handleEnded} />}
+      {introComplete && isAuthenticated && !ended && (!isVagonMode || ue5Ready) && (
+        <HomePageContentRealtime onEnded={handleEnded} ue5Ready={ue5Ready} />
+      )}
 
       {/* Farewell send-off — mounted after Ava's goodbye, over the iframe/session
           teardown. */}
