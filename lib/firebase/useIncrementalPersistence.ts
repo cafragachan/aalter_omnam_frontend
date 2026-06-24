@@ -73,6 +73,14 @@ export function useIncrementalPersistence(hooks?: IncrementalPersistenceHooks) {
   const { messages } = useContextFn()
   const { selectedHotel } = useApp()
 
+  // The transcript grows every turn, producing a fresh `messages` array each
+  // render. Reading it through a ref keeps buildSnapshot's identity stable so
+  // the milestone-snapshot effects (steps 2/3/6) fire only on real milestones
+  // instead of once per message — the visibility/end-of-session writes still
+  // capture the latest transcript via this same ref.
+  const messagesRef = useRef(messages)
+  messagesRef.current = messages
+
   // =========================================================================
   // Shared: build a SessionSnapshot from current state
   // =========================================================================
@@ -89,7 +97,7 @@ export function useIncrementalPersistence(hooks?: IncrementalPersistenceHooks) {
         guestIntelligence: gi,
         // Journey stages were removed in D.3; the realtime path has no stage.
         journeyStage: "HOTEL_EXPLORATION",
-        conversationMessages: messages.map((m) => ({
+        conversationMessages: messagesRef.current.map((m) => ({
           sender: m.sender,
           message: m.message,
           timestamp: m.timestamp,
@@ -97,7 +105,7 @@ export function useIncrementalPersistence(hooks?: IncrementalPersistenceHooks) {
         hotel: selectedHotel,
       }
     },
-    [sessionId, profile, guestIntelligence, messages, selectedHotel],
+    [sessionId, profile, guestIntelligence, selectedHotel],
   )
 
   // =========================================================================

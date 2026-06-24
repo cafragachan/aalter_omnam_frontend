@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react"
 import { SendHorizontal } from "lucide-react"
 
-export type ChatMessage = { who: "user" | "ava"; text: string }
+export type ChatMessage = { who: "user" | "ava"; text: string; timestamp: number }
 
 /**
  * Text transcript + composer shown in the avatar pill's slot when the guest

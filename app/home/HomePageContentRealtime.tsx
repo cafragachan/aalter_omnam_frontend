@@ -10,6 +10,7 @@ import { normalizeInventory, selectedUnitIds } from "@/lib/selection"
 import { RoomsPanel } from "@/components/panels/RoomsPanel"
 import { ChromaAvatar } from "@/components/realtime/ChromaAvatar"
 import { ChatPanel, type ChatMessage } from "@/components/realtime/ChatPanel"
+import { MessageSender } from "@/lib/liveavatar/types"
 import { getHotelBySlug, getRoomsByHotelId, type RoomPlan, type RoomPlanEntry } from "@/lib/hotel-data"
 import { useAuth } from "@/lib/auth-context"
 import { useIncrementalPersistence } from "@/lib/firebase/useIncrementalPersistence"
@@ -56,14 +57,6 @@ export default function HomePageContentRealtime() {
   const stateRef = useRef(state)
   stateRef.current = state
 
-  // Persist the session (profile + guest intelligence) to Firebase so returning
-  // guests accumulate data. DI hooks supply an empty transcript (the realtime
-  // transcript isn't in LiveAvatarContext); profile/personality still persist.
-  useIncrementalPersistence({
-    useContext: () => ({ messages: [] }),
-    useProfile: () => ({ userMessages: [] }),
-  })
-
   const [active, setActive] = useState(false)
   const [atHotel, setAtHotel] = useState(false)
   const [showRoomsPanel, setShowRoomsPanel] = useState(false)
@@ -74,6 +67,34 @@ export default function HomePageContentRealtime() {
   const [mode, setMode] = useState<"voice" | "chat">("voice")
   const [micMuted, setMicMuted] = useState(false)
   const [transcript, setTranscript] = useState<ChatMessage[]>([])
+
+  // Single source of truth for the conversation: voice turns + Ava turns arrive
+  // via the session's onTranscript callback; typed turns are appended directly
+  // by onSendChat. The same buffer renders in ChatPanel AND feeds Firebase.
+  const appendTranscript = useCallback((who: "user" | "ava", text: string) => {
+    const t = text.trim()
+    if (!t) return
+    setTranscript((prev) => [...prev, { who, text: t, timestamp: Date.now() }])
+  }, [])
+
+  // Persist the session (profile + guest intelligence + transcript) to Firebase
+  // so returning guests accumulate data and the admin portal can replay the
+  // conversation. The DI hooks map the live transcript into the snapshot shape;
+  // useProfile contributes user turns only (analyze-guest reads these).
+  const { writeEndOfSessionSnapshot } = useIncrementalPersistence({
+    useContext: () => ({
+      messages: transcript.map((m) => ({
+        sender: m.who === "user" ? MessageSender.USER : MessageSender.AVATAR,
+        message: m.text,
+        timestamp: m.timestamp,
+      })),
+    }),
+    useProfile: () => ({
+      userMessages: transcript
+        .filter((m) => m.who === "user")
+        .map((m) => ({ message: m.text, timestamp: m.timestamp })),
+    }),
+  })
 
   const { rooms, hotelName } = useMemo(() => {
     const hotel = getHotelBySlug(PILOT_HOTEL_SLUG)
@@ -312,7 +333,11 @@ export default function HomePageContentRealtime() {
   const start = useCallback(async () => {
     if (!videoRef.current || sessionRef.current) return
     setActive(true)
-    const session = new RealtimeSession(videoRef.current, {}, { greetOnReady: true })
+    const session = new RealtimeSession(
+      videoRef.current,
+      { onTranscript: appendTranscript },
+      { greetOnReady: true },
+    )
     session.setToolHandler(
       createToolDispatcher(ue5, {
         onScene: setScene,
@@ -359,7 +384,13 @@ export default function HomePageContentRealtime() {
     // double welcome), and the persona still drives the intake.
     if (hydration) session.injectContext(hydration, { respond: false })
     await session.start()
-  }, [ue5, dispatch, hydration, userProfile])
+  }, [ue5, dispatch, hydration, userProfile, appendTranscript])
+
+  // Mirror the (changing) end-of-session flush in a ref so the mount-only
+  // lifecycle effect below calls the LATEST one (with the full transcript)
+  // rather than the empty closure captured on first render.
+  const endSessionRef = useRef(writeEndOfSessionSnapshot)
+  endSessionRef.current = writeEndOfSessionSnapshot
 
   // Gate the avatar boot: in vagon mode UE5 launches slowly, so hold the start
   // until UE5 sends `ue5Init` (bridge.initialized). Local mode starts immediately.
@@ -372,11 +403,13 @@ export default function HomePageContentRealtime() {
   // mount→unmount→mount only yields one live session.
   useEffect(() => {
     const onUnload = () => {
+      void endSessionRef.current()
       void sessionRef.current?.stop()
     }
     window.addEventListener("beforeunload", onUnload)
     return () => {
       window.removeEventListener("beforeunload", onUnload)
+      void endSessionRef.current()
       void sessionRef.current?.stop()
       sessionRef.current = null
     }
@@ -413,9 +446,11 @@ export default function HomePageContentRealtime() {
   const onSendChat = useCallback((text: string) => {
     const t = text.trim()
     if (!t || !sessionRef.current) return
-    setTranscript((prev) => [...prev, { who: "user", text: t }])
+    // Typed turns never echo back through onTranscript (text input isn't
+    // audio-transcribed), so append directly — no double-counting.
+    appendTranscript("user", t)
     sessionRef.current.injectContext(t, { respond: true })
-  }, [])
+  }, [appendTranscript])
 
   return (
     <div className="pointer-events-none absolute inset-0 z-20 overflow-hidden" onDragStart={(e) => e.preventDefault()}>
