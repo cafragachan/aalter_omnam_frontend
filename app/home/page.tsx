@@ -625,6 +625,12 @@ export default function HomePage() {
   useUE5WebSocket({
     debugLabel: "page",
     autoConnect: isVagonMode,
+    // PRIMARY readiness signal: the Vagon SDK's own "stream connected" event. It
+    // fires once when the pixel stream comes up and does NOT depend on UE5 pushing
+    // application messages (which our parser may drop, or which UE5 sends over a
+    // separate WebSocket that never reaches the browser in cloud mode). The
+    // message callbacks below remain as a fallback — whichever fires first wins.
+    onConnect: () => markUe5Ready("vagon-connected"),
     onMessage: () => markUe5Ready("onMessage"),
     onUnitSelected: () => markUe5Ready("onUnitSelected"),
     onUnitInventory: () => markUe5Ready("onUnitInventory"),
