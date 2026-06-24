@@ -613,13 +613,31 @@ export default function HomePage() {
   // UE5 is live. Local mode doesn't connect this listener (UE5 is local/instant and
   // the brain mounts immediately) — avoids a redundant second ws://localhost:7788.
   const [ue5Ready, setUe5Ready] = useState(false)
-  const markUe5Ready = useCallback(() => setUe5Ready(true), [])
+  const markUe5Ready = useCallback((src: string) => {
+    console.log(`[UE5-DEBUG][page] readiness signal from "${src}" → ue5Ready=true`)
+    setUe5Ready(true)
+  }, [])
   useUE5WebSocket({
+    debugLabel: "page",
     autoConnect: isVagonMode,
-    onMessage: markUe5Ready,
-    onUnitSelected: markUe5Ready,
-    onUnitInventory: markUe5Ready,
+    onMessage: () => markUe5Ready("onMessage"),
+    onUnitSelected: () => markUe5Ready("onUnitSelected"),
+    onUnitInventory: () => markUe5Ready("onUnitInventory"),
   })
+
+  // Surface the gating decision in the console so we can see, in the deployed
+  // build, whether the realtime brain is being mounted (and why / why not).
+  useEffect(() => {
+    console.log("[UE5-DEBUG][page] state:", {
+      streamMode,
+      isVagonMode,
+      introComplete,
+      isAuthenticated,
+      ended,
+      ue5Ready,
+      willMountBrain: introComplete && isAuthenticated && !ended && (!isVagonMode || ue5Ready),
+    })
+  }, [streamMode, isVagonMode, introComplete, isAuthenticated, ended, ue5Ready])
 
   const handleIframeMouseEnter = useCallback(() => {
     iframeRef.current?.focus()

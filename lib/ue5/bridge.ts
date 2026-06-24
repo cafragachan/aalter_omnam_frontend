@@ -156,6 +156,7 @@ export function useUE5Bridge(opts: UE5BridgeOptions = {}) {
     onUnitInventory: handleUnitInventory,
     onLevelLoaded: handleLevelLoaded,
     onUe5Init: handleUe5Init,
+    debugLabel: "bridge",
   })
 
   // --- Typed commands ---
