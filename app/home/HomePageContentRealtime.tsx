@@ -54,6 +54,12 @@ const STREAM_MODE = process.env.NEXT_PUBLIC_STREAM_MODE || "local"
 const LOUNGE_NUDGE_MS = 75_000        // gentle check-in after a quiet stretch
 const LOUNGE_NUDGE_FIRM_MS = 160_000  // a warmer "shall we head over?" if still here
 
+// Coalesce a burst of in-scene unit taps. Each tap updates the selection
+// immediately, but Ava's spoken reaction is debounced by this window so tapping
+// several units one-by-one yields ONE response about the batch, not one per tap.
+// Taps spaced further apart than this are treated as separate, intentional picks.
+const TAP_COALESCE_MS = 1200
+
 export default function HomePageContentRealtime({ onEnded, ue5Ready = false }: { onEnded?: () => void; ue5Ready?: boolean }) {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   // Latest onEnded in a ref so the session's onFarewellSpoken callback (wired once
@@ -81,21 +87,12 @@ export default function HomePageContentRealtime({ onEnded, ue5Ready = false }: {
   const [micMuted, setMicMuted] = useState(false)
   const [transcript, setTranscript] = useState<ChatMessage[]>([])
 
-  // Interior-entry consent gate. `userTurnSeqRef` counts genuine guest turns;
-  // `focusTurnRef` records the count at the moment a unit was last focused. Bare
-  // view_unit interior is allowed only once the guest has spoken SINCE the focus
-  // (userTurnSeq > focusTurn) — so presenting a unit and stepping inside can't
-  // happen in the same beat. See the dispatcher's view_unit gate.
-  const userTurnSeqRef = useRef(0)
-  const focusTurnRef = useRef(0)
-
   // Single source of truth for the conversation: voice turns + Ava turns arrive
   // via the session's onTranscript callback; typed turns are appended directly
   // by onSendChat. The same buffer renders in ChatPanel AND feeds Firebase.
   const appendTranscript = useCallback((who: "user" | "ava", text: string) => {
     const t = text.trim()
     if (!t) return
-    if (who === "user") userTurnSeqRef.current += 1 // a real guest turn (gates interior entry)
     setTranscript((prev) => [...prev, { who, text: t, timestamp: Date.now() }])
   }, [])
 
@@ -170,22 +167,37 @@ export default function HomePageContentRealtime({ onEnded, ue5Ready = false }: {
   // selection echoes UE5 emits when we set selection/focus programmatically — they
   // are NOT user taps, so ignore them (otherwise a programmatic selectUnits makes
   // Ava narrate a phantom "tap"). Once UE5 sends real taps they'll include `id`.
-  // True once the guest has EXPLICITLY picked a unit this plan — a real tap, or
-  // Ava naming one (view_unit unitId / select_units). The plan's auto-focus does
-  // NOT count, so view_unit can't whisk the guest into a room they never chose.
-  // Reset when a new plan is proposed.
-  const explicitPickRef = useRef(false)
+
+  // Tap coalescing: buffer the tapped names + a debounce timer so a rapid burst
+  // of taps produces a single Ava reaction (see TAP_COALESCE_MS).
+  const tapBufferRef = useRef<string[]>([])
+  const tapTimerRef = useRef<number | null>(null)
 
   const onUnitSelected = useCallback((payload: { id?: number; roomName: string }) => {
     if (typeof payload.id !== "number") {
       // Legacy selection echo (no id) — not a real tap, ignore.
       return
     }
-    explicitPickRef.current = true // a real tap is an explicit pick
-    focusTurnRef.current = userTurnSeqRef.current // tapping focuses; entering is a separate, later turn
-    dispatch({ type: "TAP_UNIT", unitId: payload.id })
-    sessionRef.current?.injectContext(
-      `[context] The guest tapped ${payload.roomName} in the scene.`, { respond: true })
+    dispatch({ type: "TAP_UNIT", unitId: payload.id }) // selection updates immediately
+
+    // Buffer this tap and (re)arm the debounce. Ava reacts ONCE, after the burst
+    // settles — so tapping 3 units in a row doesn't trigger 3 identical replies.
+    tapBufferRef.current.push(payload.roomName)
+    if (tapTimerRef.current) window.clearTimeout(tapTimerRef.current)
+    tapTimerRef.current = window.setTimeout(() => {
+      tapTimerRef.current = null
+      const names = tapBufferRef.current
+      tapBufferRef.current = []
+      if (!names.length) return
+      const summary =
+        names.length === 1
+          ? `the ${names[0]} unit`
+          : `${names.length} units (${Array.from(new Set(names)).join(", ")})`
+      sessionRef.current?.injectContext(
+        `[context] The guest just tapped ${summary} in the scene. React once to the selection as a whole — don't repeat yourself per unit.`,
+        { respond: true },
+      )
+    }, TAP_COALESCE_MS)
   }, [dispatch])
 
   // Inventory is PRELOADED proactively on travel + levelLoaded (see below) so it's
@@ -407,11 +419,13 @@ export default function HomePageContentRealtime({ onEnded, ue5Ready = false }: {
         // Surface the session's own diagnostics to the console. Lines are tagged
         // [OpenAI] / [HeyGen] at the source, so a failure (❌/⚠️) tells you which
         // side broke — instead of a healthy-looking avatar hiding a dead brain.
-        onLog: (line) =>
-          /^(❌|⚠️)/.test(line)
-            ? console.error(`[realtime] ${line}`)
-            : console.log(`[realtime] ${line}`),
-        onStatus: (s) => console.log(`[realtime:status] ${s}`),
+        // Commented off to keep the console quiet; re-enable to debug session/
+        // avatar/brain issues (WS open/close codes, stalls, reconnects, etc.).
+        // onLog: (line) =>
+        //   /^(❌|⚠️)/.test(line)
+        //     ? console.error(`[realtime] ${line}`)
+        //     : console.log(`[realtime] ${line}`),
+        // onStatus: (s) => console.log(`[realtime:status] ${s}`),
       },
       { greetOnReady: true },
     )
@@ -419,13 +433,7 @@ export default function HomePageContentRealtime({ onEnded, ue5Ready = false }: {
       createToolDispatcher(ue5, {
         onScene: setScene,
         saveProfile: (updates) => dispatch({ type: "UPDATE_PROFILE", updates }),
-        setRoomPlan: (plan) => {
-          // A new recommendation resets the explicit-pick gate: the guest hasn't
-          // chosen a specific unit of THIS plan yet (auto-focus doesn't count).
-          explicitPickRef.current = false
-          focusTurnRef.current = userTurnSeqRef.current // plan auto-focus is a fresh presentation
-          dispatch({ type: "SET_ROOM_PLAN", plan })
-        },
+        setRoomPlan: (plan) => dispatch({ type: "SET_ROOM_PLAN", plan }),
         onRoomsPanel: setShowRoomsPanel,
         onArrived: (arrived: boolean) => {
           setAtHotel(arrived)
@@ -443,20 +451,12 @@ export default function HomePageContentRealtime({ onEnded, ue5Ready = false }: {
         isUe5Ready: () => ue5ReadyRef.current,
         notify: (text) => sessionRef.current?.injectContext(text, { respond: true }),
         getInventory: () => stateRef.current.unitInventory,
-        selectUnits: (unitIds) => {
-          explicitPickRef.current = true // Ava naming specific units is an explicit pick
-          focusTurnRef.current = userTurnSeqRef.current // ...but presenting it is not consent to enter
-          dispatch({ type: "AI_SELECT_UNITS", unitIds })
-        },
-        setActiveUnit: (unitId) => {
-          explicitPickRef.current = true // focusing a named unit is an explicit pick
-          focusTurnRef.current = userTurnSeqRef.current // ...but presenting it is not consent to enter
-          dispatch({ type: "SET_ACTIVE_UNIT", unitId })
-        },
-        hasExplicitPick: () => explicitPickRef.current,
-        // Consent to ENTER: the guest must have spoken since the focus was set, so
-        // a select_units→interior (or tap→interior) chain is blocked until they ask.
-        hasUserSpokenSinceFocus: () => userTurnSeqRef.current > focusTurnRef.current,
+        selectUnits: (unitIds) => dispatch({ type: "AI_SELECT_UNITS", unitIds }),
+        setActiveUnit: (unitId) => dispatch({ type: "SET_ACTIVE_UNIT", unitId }),
+        // The focused unit a bare `view_unit interior` enters. A proposed plan's
+        // auto-focus counts: the guest asking to go in IS the consent, and the
+        // persona governs WHEN Ava calls view_unit. Returns null → nothing focused.
+        getActiveUnit: () => stateRef.current.unitSelection.activeUnitId,
         getPlan: () => stateRef.current.currentRoomPlan,
         // Guest confirmed they want to leave → close panels and start the close:
         // mute mic, let Ava speak her farewell, then onFarewellSpoken fires onEnded.

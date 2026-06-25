@@ -49,16 +49,12 @@ export interface DispatcherHooks {
   selectUnits?: (unitIds: number[]) => void
   /** Focus a single unit for interior/exterior view (dispatch SET_ACTIVE_UNIT). */
   setActiveUnit?: (unitId: number) => void
-  /** Whether the guest has EXPLICITLY picked a unit this plan (a real tap, or Ava
-   *  naming one) — as opposed to the plan's auto-focus. Gates interior view so Ava
-   *  can't step into a room the guest never chose. */
-  hasExplicitPick?: () => boolean
-  /** Whether the guest has spoken (a genuine user turn) SINCE the focused unit was
-   *  last set. Presenting/selecting a unit is not permission to enter it — this
-   *  gates bare interior entry so a select_units→interior (or tap→interior) chain
-   *  can't whisk the guest inside in the same beat. The unitId-present path (the
-   *  guest named a specific unit to enter) bypasses this. */
-  hasUserSpokenSinceFocus?: () => boolean
+  /** The currently focused unit id (selection.activeUnitId), or null when no unit
+   *  is focused. A bare `view_unit interior` enters this unit — the auto-focus of a
+   *  proposed plan counts, because the guest asking to go in IS the consent (the
+   *  persona governs WHEN Ava calls the tool; the dispatcher only ensures there is
+   *  actually a unit to enter). Returns null → there is nothing focused to step into. */
+  getActiveUnit?: () => number | null
   /** Current room plan (for open_booking's default room when no id is given). */
   getPlan?: () => CurrentRoomPlan | null
   /** Begin the end-of-experience close (mute mic, speak farewell, then tear the
@@ -419,21 +415,15 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
         if (view !== "interior" && view !== "exterior") {
           return `view must be "interior" or "exterior".`
         }
-        // Interior view requires an EXPLICIT pick — a guest tap or a named unit
-        // (unitId) — NOT the plan's auto-focus. Otherwise Ava could whisk the guest
-        // into a room they never chose. (Checked before any nav so a bare interior
-        // request with nothing picked still gives the right nudge.)
+        // Interior view needs a unit to step into. A bare `view_unit interior`
+        // (no unitId) enters the currently FOCUSED unit — including a plan's
+        // auto-focus: the guest asking to go in is the consent, and the persona
+        // governs WHEN Ava calls this. We only block when there is genuinely
+        // nothing focused to enter. (Undefined hook → don't block: safe default.)
         if (view === "interior" && typeof args.unitId !== "number") {
-          if (!hooks.hasExplicitPick?.()) {
-            return `No unit picked yet — invite the guest to tap one of the available units (or tell me which one), then I'll step inside.`
-          }
-          // A unit is focused, but PRESENTING a unit is not permission to enter it.
-          // Require a real guest turn since the focus was set, so a select_units →
-          // interior chain (or tap → interior) can't whisk them inside in the same
-          // beat. (The unitId path above bypasses this — that's an explicit "enter
-          // THIS unit" request.) Undefined hook → don't block (safe default).
-          if (hooks.hasUserSpokenSinceFocus?.() === false) {
-            return `The unit is presented in the scene (orbit view) — do NOT step inside yet. Invite the guest to explore it and wait for them to say yes before calling view_unit interior. (If they name a specific unit to enter, pass its unitId.)`
+          const focused = hooks.getActiveUnit?.()
+          if (focused == null && hooks.getActiveUnit) {
+            return `No unit is focused yet — invite the guest to tap one of the available units (or tell me which one), then I'll step inside.`
           }
         }
 
@@ -538,7 +528,7 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
           const status = ensureArrival(() => {
             revealRooms()
             hooks.notify?.(
-              `[scene ready] You've arrived at the EDITION Lake Como and the recommended rooms (${summarizeRoomPlan(plan)}) are now marked in the scene. Welcome the guest warmly and invite them to tap a unit to step inside.`,
+              `[scene ready] You've arrived at the EDITION Lake Como and the recommended rooms (${summarizeRoomPlan(plan)}) are now marked in the scene. Welcome the guest warmly, say in a line why this fits, and invite them to step inside whenever they're ready (or tap a different unit to focus it).`,
             )
           })
           if (status === "pending") {
@@ -548,7 +538,7 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
         }
 
         revealRooms()
-        return here(`Proposed plan: ${summarizeRoomPlan(plan)} - $${plan.totalPerNight}/night, sleeps ${plan.capacity}. The matching units are now marked in the scene - invite the guest to tap one of the available units to step inside.`)
+        return here(`Proposed plan: ${summarizeRoomPlan(plan)} - $${plan.totalPerNight}/night, sleeps ${plan.capacity}. The matching units are now marked in the scene (one is focused) - say in a line why it fits, then invite the guest to step inside whenever they're ready (or tap a different unit to focus it). When they say yes, call view_unit interior.`)
       }
 
       case "open_booking": {

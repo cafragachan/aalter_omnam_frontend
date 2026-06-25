@@ -78,6 +78,17 @@ const GREET_DELAY_MS = 200
 // no longer gates the whole utterance — that's what blocked interruption.)
 const SELF_ECHO_GUARD_MS = 300
 
+// Proactive-greeting echo gate. The 300ms onset guard above only covers the
+// START of an utterance, so during the multi-second opening welcome — when
+// browser AEC hasn't converged yet — Ava's own voice echoes into the mic, trips
+// server-VAD, and self-interrupts (cancel → re-greet = the truncated double
+// welcome). For the opening greeting ONLY we drop ALL mic input until the
+// greeting's response.done (+ a short echo-decay tail). Mid-conversation barge-in
+// is untouched. GREETING_GUARD_MAX_MS is a safety release so a greeting that
+// never reports done can't mute the mic forever.
+const GREETING_GUARD_TAIL_MS = 400
+const GREETING_GUARD_MAX_MS = 12000
+
 // Avatar speak watchdog. We push audio into HeyGen via repeatAudio(), then expect
 // an AVATAR_SPEAK_STARTED back. HeyGen can stop rendering while still reporting
 // CONNECTED (idle/duration/credit limits, or a wedged audio queue) — and the SDK
@@ -151,6 +162,11 @@ export class RealtimeSession {
   // One-shot proactive greeting (~3s after avatar + WS are ready).
   private greeted = false
   private greetTimer: ReturnType<typeof setTimeout> | null = null
+  // While the opening greeting is being spoken, ALL mic input is dropped so Ava's
+  // own (un-AEC'd, session-start) voice can't trip VAD and self-interrupt the
+  // welcome. Cleared on the greeting's response.done (+tail); see GREETING_GUARD_*.
+  private greetingInFlight = false
+  private greetingGuardTimer: ReturnType<typeof setTimeout> | null = null
   // Anti-echo: while Ava is speaking (+tail), don't forward mic audio to OpenAI,
   // so her own voice can't re-trigger VAD and make her respond/greet twice.
   private outputActiveUntil = 0
@@ -290,6 +306,7 @@ export class RealtimeSession {
       clearTimeout(this.greetTimer)
       this.greetTimer = null
     }
+    this.endGreetingGuard()
     if (this.closeFallbackTimer) {
       clearTimeout(this.closeFallbackTimer)
       this.closeFallbackTimer = null
@@ -432,11 +449,25 @@ export class RealtimeSession {
     this.greeted = true
     this.greetTimer = setTimeout(() => {
       this.greetTimer = null
+      // Gate the mic for the duration of the welcome so its own audio echo can't
+      // self-interrupt it (see GREETING_GUARD_*). Released on the greeting's
+      // response.done (+tail), or by the safety timer if that never arrives.
+      this.greetingInFlight = true
+      this.greetingGuardTimer = setTimeout(() => this.endGreetingGuard(), GREETING_GUARD_MAX_MS)
       this.injectContext(
-        "[Begin now — give a brief, warm welcome (for a first-time guest, note this is an early demo of the EDITION Lake Como, with more hotels coming), then ask ONLY for their travel dates. Don't ask anything else yet.]",
+        "[Begin now — give a brief, warm, gracious welcome that makes the guest feel they've arrived somewhere special: note this is an early demo of EDITION Lake Como, with more destinations on the way. Then open with ONE light, inviting question — their travel dates are a lovely place to start. Keep it an invitation, never a form. (If the guest instead asks to skip ahead or see a room or the hotel, don't insist on dates — take them there, per your instructions.)]",
         { respond: true },
       )
     }, GREET_DELAY_MS)
+  }
+
+  // Release the opening-greeting mic gate and cancel its safety timer. Idempotent.
+  private endGreetingGuard() {
+    this.greetingInFlight = false
+    if (this.greetingGuardTimer) {
+      clearTimeout(this.greetingGuardTimer)
+      this.greetingGuardTimer = null
+    }
   }
 
   // ---- HeyGen session lifecycle (server-proxied; CORS-safe) -------------
@@ -528,6 +559,8 @@ export class RealtimeSession {
     this.workletNode.port.onmessage = (ev: MessageEvent) => {
       // Mic mute (user toggle / chat mode): drop everything before it leaves.
       if (this.micMuted) return
+      // Opening greeting: drop all mic input so its own echo can't self-interrupt it.
+      if (this.greetingInFlight) return
       // Brief echo guard at each utterance's ONSET only (see SELF_ECHO_GUARD_MS);
       // the rest of Ava's speech flows through so the guest can barge in.
       if (Date.now() < this.outputActiveUntil) return
@@ -562,6 +595,9 @@ export class RealtimeSession {
     this.responseHasFunctionCall = false
     this.pendingCalls.clear()
     this.resetOutBuffer()
+    // A reconnect must not leave a stale greeting gate muting the mic (the
+    // one-shot `greeted` flag means the welcome never re-fires after reconnect).
+    this.endGreetingGuard()
 
     this.status("connecting Realtime…")
     const url = `${OPENAI_WS_BASE}?model=${encodeURIComponent(model)}`
@@ -733,6 +769,11 @@ export class RealtimeSession {
           if (hadSpoken) {
             this.cb.onTranscript?.("ava", this.avaTranscript)
             this.avaTranscript = ""
+          }
+          // The opening greeting just finished — release the mic gate after a short
+          // echo-decay tail so the trailing words can't trip VAD on their way out.
+          if (this.greetingInFlight) {
+            setTimeout(() => this.endGreetingGuard(), GREETING_GUARD_TAIL_MS)
           }
           // End-of-experience: the close was requested by end_experience. The
           // function-call response that triggered it carries NO audio, so we wait
