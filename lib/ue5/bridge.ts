@@ -54,6 +54,15 @@ export type UE5BridgeOptions = {
   onUnitInventory?: (msg: { units: unknown[]; chunk?: number; total?: number }) => void
 }
 
+// TEMP DIAGNOSTIC: trace who fires each scene nav, so out-of-order sends (a deferred
+// area-level gameEstate landing AFTER a specific target like communal/selectUnits) can
+// be pinned to the tool that scheduled it. The session's tool-call log (🛠️) just above
+// names the tool; these frames name the dispatcher call site. Remove once confirmed.
+function diagScene(label: string) {
+  const frames = new Error().stack?.split("\n").slice(2, 5).map((s) => s.trim()).join("  ⟵  ")
+  console.log(`[ue5][diag] ${label}`, frames)
+}
+
 export function useUE5Bridge(opts: UE5BridgeOptions = {}) {
   // Stable ref to the latest `onUnitSelected` callback so `handleUnitSelected`
   // (a useCallback) stays referentially stable even when callers pass a new
@@ -161,18 +170,22 @@ export function useUE5Bridge(opts: UE5BridgeOptions = {}) {
   }, [sendRawMessage])
 
   const navigateToRooms = useCallback(() => {
+    diagScene("gameEstate:rooms")
     sendCommand("gameEstate", "rooms")
   }, [sendCommand])
 
   const navigateToAmenities = useCallback(() => {
+    diagScene("gameEstate:amenities")
     sendCommand("gameEstate", "amenities")
   }, [sendCommand])
 
   const navigateToLocation = useCallback(() => {
+    diagScene("gameEstate:location")
     sendCommand("gameEstate", "location")
   }, [sendCommand])
 
   const resetToDefault = useCallback(() => {
+    diagScene("gameEstate:default")
     sendCommand("gameEstate", "default")
   }, [sendCommand])
 
@@ -199,6 +212,7 @@ export function useUE5Bridge(opts: UE5BridgeOptions = {}) {
   }, [sendCommand])
 
   const navigateToAmenity = useCallback((amenityId: string) => {
+    diagScene(`communal:${amenityId}`)
     sendCommand("communal", amenityId)
   }, [sendCommand])
 

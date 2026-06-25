@@ -88,6 +88,11 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
   let sceneArea: SceneArea = "lounge"
   let sceneView: SceneView = "overview"
   let focusUnitId: number | null = null
+  // The specific amenity a go_to_amenity walk-in is currently entering (its own
+  // gameEstate:amenities + communal are scheduled). Lets a redundant
+  // navigate_to(amenities) in the same model burst step aside instead of scheduling
+  // a generic area-nav that could land after the walk-in and snap to the overview.
+  let pendingAmenityId: string | null = null
   // A compact, authoritative "you are here" appended to nav tool outputs so every
   // result re-grounds the model and drift can't accumulate. (Guidance for Ava —
   // not something to read aloud.)
@@ -238,33 +243,78 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
       }
 
       case "navigate_to": {
-        if (!arrived) return LOUNGE_GATE
         const area = String(args.area ?? "")
-        switch (area) {
-          case "rooms":
-            ue5.navigateToRooms()
-            break
-          case "amenities":
-            ue5.navigateToAmenities()
-            break
-          case "location":
-            ue5.navigateToLocation()
-            break
-          case "default":
-            ue5.resetToDefault()
-            break
-          default:
-            return `"${area}" is not a valid area (use rooms, amenities, location, or default).`
+        if (!["rooms", "amenities", "location", "default"].includes(area)) {
+          return `"${area}" is not a valid area (use rooms, amenities, location, or default).`
         }
-        // Leaving the rooms overview (or moving within the hotel) drops any
-        // interior/exterior camera + unit focus — the guest is no longer inside a
-        // unit, so a later "step back inside" must re-navigate to rooms first.
-        sceneArea = area as SceneArea
-        sceneView = "overview"
-        focusUnitId = null
-        hooks.onRoomsPanel?.(area === "rooms")
-        hooks.onScene?.(area)
-        sceneReadyAt = Date.now() + SCENE_SETTLE_MS
+        // A specific-amenity walk-in (go_to_amenity) already enters the amenities area
+        // itself; a redundant navigate_to(amenities) in the same burst would schedule a
+        // generic gameEstate that can land AFTER the walk-in's communal and snap the
+        // camera back to the overview. Defer to the in-flight walk-in.
+        if (area === "amenities" && pendingAmenityId != null) {
+          return here("Already taking the guest into the amenities space.")
+        }
+        // Send the actual UE5 scene change, gated behind the scene-settle window so
+        // a just-departed travel (UE5 still loading) doesn't drop the command.
+        const sendNav = () =>
+          whenSceneReady(() => {
+            switch (area) {
+              case "rooms": ue5.navigateToRooms(); break
+              case "amenities": ue5.navigateToAmenities(); break
+              case "location": ue5.navigateToLocation(); break
+              case "default": ue5.resetToDefault(); break
+            }
+            // Flip the PAGE scene label ONLY when UE5 actually navigates — this send
+            // can be deferred a full travel-settle (~3.5s) after a just-departed
+            // arrival. The page's selectUnits emit keys off this label (+ its own
+            // rooms-settle), so flipping it early (before UE5 enters rooms) makes the
+            // highlight fire into the OLD scene and then get wiped when the real nav
+            // lands. Aligning the label with the actual send keeps the highlight
+            // strictly AFTER the scene rebuild. (Matches revealRooms in propose_room_plan.)
+            hooks.onScene?.(area)
+          })
+        // Commit the authoritative scene state + HUD. Leaving the rooms overview
+        // drops any interior/exterior camera + unit focus — the guest is no longer
+        // inside a unit, so a later "step back inside" must re-navigate first. The
+        // dispatcher's own sceneArea stays SYNCHRONOUS (so propose_room_plan's
+        // in-place guard sees "rooms" this same turn); only the page label is
+        // deferred above. Runs AFTER sendNav so it doesn't shrink the travel-settle
+        // window sendNav captured.
+        const go = () => {
+          // When THIS nav actually lands (whenSceneReady fires at the current
+          // sceneReadyAt — possibly a full travel-settle out). Capture it before
+          // sendNav so the next scene send is gated AFTER it, not off `now`.
+          const navAt = Math.max(Date.now(), sceneReadyAt)
+          sendNav()
+          sceneArea = area as SceneArea
+          sceneView = "overview"
+          focusUnitId = null
+          hooks.onRoomsPanel?.(area === "rooms")
+          // Gate the NEXT scene-dependent send until AFTER this nav lands + settles.
+          // Using `now` here would shrink the window below this still-pending nav, so
+          // a second scene tool in the same burst would fire BEFORE it (out of order).
+          sceneReadyAt = navAt + SCENE_SETTLE_MS
+        }
+
+        // Self-heal from the lounge: a rushed guest can ask for an amenity / the
+        // surroundings before travelling. Take them to the hotel FIRST (same chain
+        // as travel_to_hotel / propose_room_plan), then run the requested nav —
+        // instead of bouncing a LOUNGE_GATE the model often forgets to retry.
+        if (!arrived) {
+          const where = area === "location" ? "the surrounding area" : area
+          const status = ensureArrival(() => {
+            go()
+            hooks.notify?.(
+              `[scene ready] You've arrived at the EDITION Lake Como and taken the guest to ${where}. Continue naturally from there.`,
+            )
+          })
+          if (status === "pending") {
+            return `Heading to the hotel now — it's still loading, so do NOT say you've arrived. The moment it's ready I'll take the guest to ${where}.`
+          }
+          // Arrived synchronously — fall through and navigate now.
+        }
+
+        go()
         if (area === "location") {
           return here("Now viewing the surrounding area. Call show_points_of_interest with a category (fine dining, landmarks, lakeside towns…) to map nearby places, then describe a couple.")
         }
@@ -296,7 +346,6 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
       }
 
       case "go_to_amenity": {
-        if (!arrived) return LOUNGE_GATE
         const wanted = String(args.amenity ?? "").trim().toLowerCase()
         const match = cat?.amenities.find(
           (a) =>
@@ -312,13 +361,55 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
           }
           return `"${args.amenity}" is not a visitable amenity.`
         }
-        ue5.navigateToAmenity(match.id)
-        // Walking into an amenity leaves the rooms scene — clear interior/focus.
-        sceneArea = "amenity"
-        sceneView = "overview"
-        focusUnitId = null
-        sceneReadyAt = Date.now() + SCENE_SETTLE_MS
-        hooks.onScene?.(match.name)
+        // Walk into the amenity, gated behind the scene-settle so a just-departed
+        // travel doesn't drop the command. Self-contained: enter the amenities AREA
+        // first (gameEstate:amenities), let UE5 load it, THEN walk to the specific
+        // space (communal) — UE5 needs the area scene before the space command, and
+        // this guarantees that order regardless of what else the model fires.
+        const walkIn = () => {
+          const amenityId = match.id
+          // Only (re)enter the area when coming from elsewhere — if already in the
+          // amenities scene, a redundant gameEstate would reload it and snap back to
+          // the overview before we walk in.
+          const enterArea = sceneArea !== "amenities" && sceneArea !== "amenity"
+          // Suppresses a redundant navigate_to(amenities) in this same model burst.
+          pendingAmenityId = amenityId
+          const navAt = Math.max(Date.now(), sceneReadyAt)
+          whenSceneReady(async () => {
+            if (enterArea) {
+              ue5.navigateToAmenities()                                  // enter the area first
+              await new Promise((r) => setTimeout(r, SCENE_SETTLE_MS))   // let UE5 load it
+            }
+            ue5.navigateToAmenity(amenityId)                             // then walk to the space
+            hooks.onScene?.(match.name)                                 // label flips when nav lands
+            pendingAmenityId = null
+          })
+          // Walking into an amenity leaves the rooms scene — clear interior/focus.
+          sceneArea = "amenity"
+          sceneView = "overview"
+          focusUnitId = null
+          // Next scene send waits until AFTER this lands + settles (see go()). When we
+          // also entered the area first, that's two settle hops out.
+          sceneReadyAt = navAt + (enterArea ? SCENE_SETTLE_MS * 2 : SCENE_SETTLE_MS)
+        }
+
+        // Self-heal from the lounge: travel first, then walk in — same chain as
+        // propose_room_plan, so "I'm in a rush, show me the pool" actually lands in
+        // the pool instead of stalling at the welcome.
+        if (!arrived) {
+          const status = ensureArrival(() => {
+            walkIn()
+            hooks.notify?.(
+              `[scene ready] You've arrived at the EDITION Lake Como and walked the guest into ${match.name}. Continue naturally from there.`,
+            )
+          })
+          if (status === "pending") {
+            return `Heading to the hotel now — it's still loading, so do NOT say you've arrived. The moment it's ready I'll walk the guest into ${match.name}.`
+          }
+          // Arrived synchronously — fall through and walk in now.
+        }
+
+        walkIn()
         return here(`Walking the guest into ${match.name}.`)
       }
 
@@ -421,6 +512,14 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
         // manual selectRoom here.
         const revealRooms = () => {
           hooks.onRoomsPanel?.(true)
+          // Already in the rooms experience (overview or inside a unit): do NOT
+          // re-issue gameEstate:rooms. SET_ROOM_PLAN's selection reconcile already
+          // re-highlights in place via the page emit effect; a redundant scene-nav
+          // would rebuild the rooms level and drop the freshly-sent selectUnits
+          // (and reset the orbit camera). Only navigate when coming from elsewhere
+          // — the lounge/default after travel, an amenity, or the surroundings —
+          // where the emit effect waits out ROOMS_SETTLE before highlighting.
+          if (sceneArea === "rooms") return
           whenSceneReady(() => {
             ue5.navigateToRooms()
             sceneArea = "rooms"

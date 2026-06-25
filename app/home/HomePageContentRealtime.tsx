@@ -118,6 +118,16 @@ export default function HomePageContentRealtime({ onEnded, ue5Ready = false }: {
     }),
   })
 
+  // Mirror the (changing) end-of-session flush + the live transcript in refs so
+  // the session callbacks (wired once in start) and the mount-only lifecycle
+  // cleanup read the LATEST values. The cleanup gates on transcriptRef so React
+  // StrictMode's startup mount→unmount→mount can't consume the once-only flush
+  // with an empty transcript — the genuine end (onFarewellSpoken) writes it.
+  const endSessionRef = useRef(writeEndOfSessionSnapshot)
+  endSessionRef.current = writeEndOfSessionSnapshot
+  const transcriptRef = useRef(transcript)
+  transcriptRef.current = transcript
+
   const { rooms, hotelName } = useMemo(() => {
     const hotel = getHotelBySlug(PILOT_HOTEL_SLUG)
     return { rooms: hotel ? getRoomsByHotelId(hotel.id) : [], hotelName: hotel?.name ?? "the hotel" }
@@ -387,7 +397,13 @@ export default function HomePageContentRealtime({ onEnded, ue5Ready = false }: {
       videoRef.current,
       {
         onTranscript: appendTranscript,
-        onFarewellSpoken: () => onEndedRef.current?.(),
+        // Genuine end of the experience. Flush the final snapshot HERE — while the
+        // component is still mounted and the transcript is complete — rather than
+        // leaving it to the unmount cleanup (which dev StrictMode trips empty).
+        onFarewellSpoken: () => {
+          void endSessionRef.current()
+          onEndedRef.current?.()
+        },
         // Surface the session's own diagnostics to the console. Lines are tagged
         // [OpenAI] / [HeyGen] at the source, so a failure (❌/⚠️) tells you which
         // side broke — instead of a healthy-looking avatar hiding a dead brain.
@@ -458,12 +474,6 @@ export default function HomePageContentRealtime({ onEnded, ue5Ready = false }: {
     await session.start()
   }, [ue5, dispatch, hydration, userProfile, appendTranscript])
 
-  // Mirror the (changing) end-of-session flush in a ref so the mount-only
-  // lifecycle effect below calls the LATEST one (with the full transcript)
-  // rather than the empty closure captured on first render.
-  const endSessionRef = useRef(writeEndOfSessionSnapshot)
-  endSessionRef.current = writeEndOfSessionSnapshot
-
   // Gate the avatar boot. In vagon the page already gates this component's MOUNT on
   // UE5 readiness (HomePage's always-mounted listener), so `ue5Ready` is true by the
   // time we mount — start immediately. The `ue5.initialized` fallback covers the case
@@ -475,14 +485,22 @@ export default function HomePageContentRealtime({ onEnded, ue5Ready = false }: {
   // a live session. The cleanup stops the session, so React StrictMode's
   // mount→unmount→mount only yields one live session.
   useEffect(() => {
+    // Only flush the once-only end-of-session snapshot when there's actually a
+    // conversation to save. This guards the safety-net unmount/unload writers
+    // against dev StrictMode's empty startup cleanup consuming the flush before
+    // the real session even begins. The genuine end (onFarewellSpoken) flushes
+    // explicitly; this just catches tab-close / unexpected unmount paths.
+    const flushIfConversed = () => {
+      if (transcriptRef.current.length > 0) void endSessionRef.current()
+    }
     const onUnload = () => {
-      void endSessionRef.current()
+      flushIfConversed()
       void sessionRef.current?.stop()
     }
     window.addEventListener("beforeunload", onUnload)
     return () => {
       window.removeEventListener("beforeunload", onUnload)
-      void endSessionRef.current()
+      flushIfConversed()
       void sessionRef.current?.stop()
       sessionRef.current = null
     }
