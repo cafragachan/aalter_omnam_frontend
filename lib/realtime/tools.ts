@@ -107,7 +107,7 @@ export function buildToolSchemas(slug: string = PILOT_HOTEL_SLUG): RealtimeTool[
       type: "function",
       name: "view_unit",
       description:
-        "Step the guest INTO (interior) or OUT OF (exterior) the room they have selected. Only valid after a room/unit is selected. Pass unitId to focus a specific physical unit first.",
+        "Step the guest INTO (interior) or OUT OF (exterior) the room they have selected. Only valid after a room/unit is selected. Step into the interior ONLY after the guest has explicitly asked to go inside — selecting or presenting a unit is never on its own a request to enter. Pass unitId to focus (and, for interior, enter) a specific physical unit the guest just named.",
       parameters: {
         type: "object",
         properties: {
@@ -190,7 +190,8 @@ export function buildToolSchemas(slug: string = PILOT_HOTEL_SLUG): RealtimeTool[
         "Select/highlight specific physical units by their numeric ids (from the unit inventory). " +
         "Use when the guest names units by floor/view/position, e.g. 'the top-floor lake-view one'. " +
         "Only ever pass AVAILABLE units (the inventory marks each avail/booked) — never select a booked unit. " +
-        "Respects the room plan's per-type quantities (extra picks of a full type replace the oldest).",
+        "Respects the room plan's per-type quantities (extra picks of a full type replace the oldest). " +
+        "This only highlights/focuses the unit in the birds-eye scene — it does NOT enter the interior. Invite the guest in and wait for their yes before calling view_unit interior.",
       parameters: {
         type: "object",
         properties: { unitIds: { type: "array", items: { type: "integer" } } },

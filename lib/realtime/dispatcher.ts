@@ -53,6 +53,12 @@ export interface DispatcherHooks {
    *  naming one) — as opposed to the plan's auto-focus. Gates interior view so Ava
    *  can't step into a room the guest never chose. */
   hasExplicitPick?: () => boolean
+  /** Whether the guest has spoken (a genuine user turn) SINCE the focused unit was
+   *  last set. Presenting/selecting a unit is not permission to enter it — this
+   *  gates bare interior entry so a select_units→interior (or tap→interior) chain
+   *  can't whisk the guest inside in the same beat. The unitId-present path (the
+   *  guest named a specific unit to enter) bypasses this. */
+  hasUserSpokenSinceFocus?: () => boolean
   /** Current room plan (for open_booking's default room when no id is given). */
   getPlan?: () => CurrentRoomPlan | null
   /** Begin the end-of-experience close (mute mic, speak farewell, then tear the
@@ -326,8 +332,18 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
         // (unitId) — NOT the plan's auto-focus. Otherwise Ava could whisk the guest
         // into a room they never chose. (Checked before any nav so a bare interior
         // request with nothing picked still gives the right nudge.)
-        if (view === "interior" && typeof args.unitId !== "number" && !hooks.hasExplicitPick?.()) {
-          return `No unit picked yet — invite the guest to tap one of the available units (or tell me which one), then I'll step inside.`
+        if (view === "interior" && typeof args.unitId !== "number") {
+          if (!hooks.hasExplicitPick?.()) {
+            return `No unit picked yet — invite the guest to tap one of the available units (or tell me which one), then I'll step inside.`
+          }
+          // A unit is focused, but PRESENTING a unit is not permission to enter it.
+          // Require a real guest turn since the focus was set, so a select_units →
+          // interior chain (or tap → interior) can't whisk them inside in the same
+          // beat. (The unitId path above bypasses this — that's an explicit "enter
+          // THIS unit" request.) Undefined hook → don't block (safe default).
+          if (hooks.hasUserSpokenSinceFocus?.() === false) {
+            return `The unit is presented in the scene (orbit view) — do NOT step inside yet. Invite the guest to explore it and wait for them to say yes before calling view_unit interior. (If they name a specific unit to enter, pass its unitId.)`
+          }
         }
 
         // The guest is the source of truth. If we've wandered out of the rooms

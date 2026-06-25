@@ -78,6 +78,15 @@ const GREET_DELAY_MS = 200
 // no longer gates the whole utterance — that's what blocked interruption.)
 const SELF_ECHO_GUARD_MS = 300
 
+// Avatar speak watchdog. We push audio into HeyGen via repeatAudio(), then expect
+// an AVATAR_SPEAK_STARTED back. HeyGen can stop rendering while still reporting
+// CONNECTED (idle/duration/credit limits, or a wedged audio queue) — and the SDK
+// fires NO SESSION_DISCONNECTED for that, so our normal reconnect never trips. If
+// no speak-started lands within this window after we push audio, we treat the
+// avatar as stalled and force a reconnect. Generous vs normal render latency
+// (which follows the pushed chunk by a few hundred ms) to avoid false positives.
+const SPEAK_WATCHDOG_MS = 3000
+
 // End-of-experience: after Ava's farewell response completes, wait this long for
 // HeyGen to finish playing the buffered audio before tearing down (analog of the
 // old 4s STOP_AVATAR delay).
@@ -104,6 +113,16 @@ export class RealtimeSession {
   private turnCounter = 0
   private cur: TurnMetric | null = null
 
+  // Avatar speak liveness. avatarSpeaking tracks whether HeyGen is currently
+  // rendering audio (from AVATAR_SPEAK_STARTED/ENDED); the watchdog catches the
+  // "we pushed audio but the avatar never spoke" stall that fires no disconnect
+  // event. Counts are cumulative instrumentation so a stall log can show e.g.
+  // "pushed 42 chunks, 0 speak_started".
+  private avatarSpeaking = false
+  private speakWatchdogTimer: ReturnType<typeof setTimeout> | null = null
+  private repeatAudioCount = 0
+  private speakStartedCount = 0
+
   // Outgoing-to-HeyGen coalescing buffer (raw PCM bytes; base64-encoded at flush).
   private pcmBytes = ""
   private flushTimer: ReturnType<typeof setTimeout> | null = null
@@ -124,6 +143,11 @@ export class RealtimeSession {
   private keepAliveTimer: ReturnType<typeof setInterval> | null = null
   private stopping = false
   private reconnectAttempts = 0
+  // OpenAI Realtime WS reconnect (mirrors the HeyGen avatar reconnect). An
+  // unexpected socket close — network blip, server-side drop, session timeout —
+  // would otherwise leave the avatar up but the brain permanently dead (the exact
+  // "started but never replied" symptom). Bounded so a hard failure can't spin.
+  private oaReconnectAttempts = 0
   // One-shot proactive greeting (~3s after avatar + WS are ready).
   private greeted = false
   private greetTimer: ReturnType<typeof setTimeout> | null = null
@@ -205,7 +229,9 @@ export class RealtimeSession {
     this.running = true
     this.stopping = false
     this.reconnectAttempts = 0
+    this.oaReconnectAttempts = 0
     this.greeted = false
+    this.avatarSpeaking = false
     this.responseActive = false
     // Start the avatar and the mic/Realtime CONCURRENTLY: the OpenAI WS connects
     // while the HeyGen avatar is still negotiating WebRTC, instead of back-to-back
@@ -216,8 +242,8 @@ export class RealtimeSession {
     const avatarP = this.startAvatar()
     const micP = this.startRealtimeAndMic().catch((err) => {
       if (this.superseded()) return
-      this.log(`⚠️ mic/realtime start failed (avatar stays up): ${(err as Error).message}`)
-      this.status("avatar ready — mic unavailable")
+      this.log(`⚠️ [OpenAI] mic/realtime start failed (avatar stays up): ${(err as Error).message}`)
+      this.status("avatar ready — voice unavailable")
     })
     // Avatar — fatal on failure. stop() may also have fired mid-flight (React
     // StrictMode mount→cleanup→mount): abandon and release what we created.
@@ -225,7 +251,7 @@ export class RealtimeSession {
       await avatarP
     } catch (err) {
       if (this.superseded()) return void (await this.teardown())
-      this.log(`❌ avatar start failed: ${(err as Error).message}`)
+      this.log(`❌ [HeyGen] avatar start failed: ${(err as Error).message}`)
       this.status("error")
       await this.stop()
       return
@@ -258,6 +284,8 @@ export class RealtimeSession {
    */
   private async teardown() {
     this.stopKeepAlive()
+    this.clearSpeakWatchdog()
+    this.avatarSpeaking = false
     if (this.greetTimer) {
       clearTimeout(this.greetTimer)
       this.greetTimer = null
@@ -344,28 +372,39 @@ export class RealtimeSession {
     this.avatar = avatar
 
     avatar.on(SessionEvent.SESSION_STATE_CHANGED, (state: SessionState) => {
-      this.log(`avatar state: ${state}`)
+      this.log(`[HeyGen] avatar state: ${state}`)
     })
     avatar.on(SessionEvent.SESSION_STREAM_READY, () => {
-      this.log("avatar stream ready → attaching")
+      this.log("[HeyGen] avatar stream ready → attaching")
       this.reconnectAttempts = 0 // healthy connection — refresh the retry budget
       try {
         avatar.attach(this.videoEl)
         ;(this.videoEl as HTMLVideoElement).muted = false
         void (this.videoEl as HTMLVideoElement).play().catch(() => {})
       } catch (err) {
-        this.log(`❌ attach failed: ${(err as Error).message}`)
+        this.log(`❌ [HeyGen] attach failed: ${(err as Error).message}`)
       }
     })
     avatar.on(SessionEvent.SESSION_DISCONNECTED, (reason: SessionDisconnectReason) => {
       void this.handleAvatarDisconnect(reason)
     })
+    avatar.on(SessionEvent.SESSION_CONNECTION_QUALITY_CHANGED, (quality) => {
+      this.log(`[HeyGen] connection quality: ${quality}`)
+    })
     avatar.on(AgentEventsEnum.AVATAR_SPEAK_STARTED, () => {
+      // The avatar actually started rendering — it's alive. Clear the stall
+      // watchdog and mark it speaking (so barge-in knows there's something to cut).
+      this.speakStartedCount += 1
+      this.avatarSpeaking = true
+      this.clearSpeakWatchdog()
       this.outputActiveUntil = Date.now() + SELF_ECHO_GUARD_MS // brief onset-only echo guard
       if (this.cur && this.cur.t3 == null) {
         this.cur.t3 = performance.now()
         this.finalizeTurn()
       }
+    })
+    avatar.on(AgentEventsEnum.AVATAR_SPEAK_ENDED, () => {
+      this.avatarSpeaking = false
     })
     // NB: Ava's transcript is emitted once per turn from `response.done`
     // (the OpenAI-side text), NOT from HeyGen AVATAR_TRANSCRIPTION — wiring both
@@ -377,7 +416,7 @@ export class RealtimeSession {
     this.avatarReady = true
     this.startKeepAlive()
     this.maybeGreet()
-    this.log("✅ avatar connected (LITE, BYO audio)")
+    this.log("✅ [HeyGen] avatar connected (LITE, BYO audio)")
   }
 
   // One proactive greeting as soon as BOTH the avatar and the WS are ready, so Ava
@@ -437,12 +476,12 @@ export class RealtimeSession {
     if (this.stopping || !this.running) return
     this.stopKeepAlive()
     if (this.reconnectAttempts >= 2) {
-      this.log(`⚠️ avatar disconnected (${reason}); gave up after ${this.reconnectAttempts} reconnect attempts`)
+      this.log(`⚠️ [HeyGen] avatar disconnected (${reason}); gave up after ${this.reconnectAttempts} reconnect attempts`)
       this.status("avatar disconnected")
       return
     }
     this.reconnectAttempts += 1
-    this.log(`↻ avatar disconnected (${reason}); reconnecting (attempt ${this.reconnectAttempts})…`)
+    this.log(`↻ [HeyGen] avatar disconnected (${reason}); reconnecting (attempt ${this.reconnectAttempts})…`)
     if (this.heygenSessionToken) void this.serverStop(this.heygenSessionToken)
     try {
       await this.avatar?.stop()
@@ -450,21 +489,18 @@ export class RealtimeSession {
     this.avatar = null
     try {
       await this.startAvatar() // re-mint + re-create + re-attach + restart keep-alive
-      this.log("✅ avatar reconnected")
+      this.log("✅ [HeyGen] avatar reconnected")
     } catch (err) {
-      this.log(`❌ reconnect failed: ${(err as Error).message}`)
+      this.log(`❌ [HeyGen] avatar reconnect failed: ${(err as Error).message}`)
     }
   }
 
   // ---- OpenAI Realtime + mic --------------------------------------------
 
   private async startRealtimeAndMic() {
-    this.status("minting Realtime token…")
-    const tokRes = await fetch(this.opts.tokenUrl, { method: "POST" })
-    const tok = await tokRes.json()
-    if (!tokRes.ok) throw new Error(tok.error || "realtime-token failed")
+    const tok = await this.mintRealtimeToken()
     if (this.superseded()) return // stopped mid-startup — don't grab the mic
-    this.log(`🧠 OpenAI model ${tok.model}, VAD ${JSON.stringify(tok.vad)}`)
+    this.log(`🧠 [OpenAI] model ${tok.model}, VAD ${JSON.stringify(tok.vad)}`)
 
     // Mic capture at 24kHz so no resampling is needed.
     this.micStream = await navigator.mediaDevices.getUserMedia({
@@ -503,21 +539,80 @@ export class RealtimeSession {
     }
 
     // Browser-direct Realtime WS; ephemeral key in the subprotocol.
+    this.openRealtimeWs(tok.model, tok.value)
+  }
+
+  /** Mint a fresh OpenAI Realtime ephemeral token. Used at startup and on every
+   *  reconnect (ephemeral keys are short-lived, so we always re-mint). Throws with
+   *  the server's error text so a token/model/quota failure is visible in the log. */
+  private async mintRealtimeToken(): Promise<{ model: string; value: string; vad: unknown }> {
+    this.status("minting Realtime token…")
+    const tokRes = await fetch(this.opts.tokenUrl, { method: "POST" })
+    const tok = await tokRes.json()
+    if (!tokRes.ok) throw new Error(tok.error || "realtime-token failed")
+    return tok as { model: string; value: string; vad: unknown }
+  }
+
+  /** Open (or re-open) the browser-owned OpenAI Realtime WS and wire its lifecycle.
+   *  An unexpected close routes to handleRealtimeDisconnect (reconnect). */
+  private openRealtimeWs(model: string, value: string) {
+    // Fresh session → drop any in-flight response / turn / tool / output state so a
+    // stale flag from the dead socket can't wedge the new one.
+    this.responseActive = false
+    this.responseHasFunctionCall = false
+    this.pendingCalls.clear()
+    this.resetOutBuffer()
+
     this.status("connecting Realtime…")
-    const url = `${OPENAI_WS_BASE}?model=${encodeURIComponent(tok.model)}`
-    const ws = new WebSocket(url, ["realtime", "openai-insecure-api-key." + tok.value])
+    const url = `${OPENAI_WS_BASE}?model=${encodeURIComponent(model)}`
+    const ws = new WebSocket(url, ["realtime", "openai-insecure-api-key." + value])
     this.oaWs = ws
 
     ws.onopen = () => {
-      this.log("✅ Realtime WS open")
+      this.oaReconnectAttempts = 0 // healthy connection — refresh the retry budget
+      this.log("✅ [OpenAI] Realtime WS open")
+      this.status("LIVE — speak to Ava")
       const queued = this.pendingContext
       this.pendingContext = []
       for (const c of queued) this.sendContext(c.text, c.respond)
       this.maybeGreet()
     }
-    ws.onerror = () => this.log("❌ Realtime WS error")
-    ws.onclose = (e) => this.log(`Realtime WS closed (${e.code}${e.reason ? " " + e.reason : ""})`)
+    ws.onerror = () => this.log("❌ [OpenAI] Realtime WS error")
+    ws.onclose = (e) => {
+      this.log(`[OpenAI] Realtime WS closed (${e.code}${e.reason ? " " + e.reason : ""})`)
+      if (this.oaWs === ws) this.oaWs = null // only the live socket triggers reconnect
+      void this.handleRealtimeDisconnect()
+    }
     ws.onmessage = (ev) => this.handleRealtimeEvent(ev.data as string)
+  }
+
+  /** Revive the brain after an UNEXPECTED OpenAI WS close. A deliberate teardown
+   *  (stop()) sets stopping, so we never fight it. The reconnect spins up a brand
+   *  new ephemeral session: the L1 persona/dossier are re-baked into the new token,
+   *  but in-session conversation history is lost — recovery beats permanent silence.
+   *  Bounded retries with a short backoff so a hard failure (bad key, quota) stops
+   *  cleanly and surfaces a status instead of looping. */
+  private async handleRealtimeDisconnect() {
+    if (this.stopping || !this.running) return
+    if (this.oaWs) return // a newer socket already took over
+    if (this.oaReconnectAttempts >= 3) {
+      this.log(`⚠️ [OpenAI] gave up reconnecting after ${this.oaReconnectAttempts} attempts`)
+      this.status("voice brain disconnected — reload to retry")
+      return
+    }
+    this.oaReconnectAttempts += 1
+    this.log(`↻ [OpenAI] reconnecting (attempt ${this.oaReconnectAttempts})…`)
+    this.status("reconnecting Realtime…")
+    try {
+      const tok = await this.mintRealtimeToken()
+      if (this.superseded()) return
+      this.openRealtimeWs(tok.model, tok.value)
+    } catch (err) {
+      this.log(`❌ [OpenAI] reconnect failed: ${(err as Error).message}`)
+      setTimeout(() => {
+        if (!this.superseded()) void this.handleRealtimeDisconnect()
+      }, 2000)
+    }
   }
 
   private handleRealtimeEvent(raw: string) {
@@ -535,10 +630,17 @@ export class RealtimeSession {
         // fronts — (1) interrupt the avatar (clears HeyGen's queued audio), (2)
         // cancel the in-flight OpenAI response so it stops generating, (3) drop our
         // own pending PCM. Without (2) the response kept streaming and Ava resumed.
-        if (this.avatarReady) {
+        // Only interrupt the avatar when it is ACTUALLY speaking. A phantom VAD
+        // turn (server_vad firing on echo/noise with no real speech) would
+        // otherwise call interrupt() every time, clearing HeyGen's audio queue for
+        // nothing and risking a wedged renderer. avatarSpeaking is the avatar-side
+        // analog of the responseActive guard used for response.cancel below.
+        if (this.avatarReady && this.avatarSpeaking) {
           try {
             this.avatar?.interrupt()
           } catch {}
+          this.avatarSpeaking = false
+          this.clearSpeakWatchdog()
         }
         // Don't cancel a response that's executing a tool call — that would drop
         // the action (e.g. view_unit) the guest just asked for. Only cancel
@@ -648,7 +750,7 @@ export class RealtimeSession {
         break
       }
       case "error": {
-        this.log(`❌ Realtime error: ${JSON.stringify(msg.error ?? msg)}`)
+        this.log(`❌ [OpenAI] Realtime error: ${JSON.stringify(msg.error ?? msg)}`)
         break
       }
       default:
@@ -713,15 +815,20 @@ export class RealtimeSession {
     this.firstFlushDone = true
     try {
       // HeyGen repeatAudio() wants BASE64 PCM16@24k — encode the batched bytes.
-      this.avatar?.repeatAudio(btoa(bytes))
-      if (this.cur && this.cur.t2 == null) {
-        this.cur.t2 = performance.now()
-        this.log(
-          `📤 t2 first chunk → HeyGen (+${(this.cur.t2 - (this.cur.t1 ?? this.cur.t0)).toFixed(0)}ms after t1)`,
-        )
+      // Only count/arm when an avatar actually received it.
+      if (this.avatar) {
+        this.avatar.repeatAudio(btoa(bytes))
+        this.repeatAudioCount += 1
+        this.armSpeakWatchdog() // expect an AVATAR_SPEAK_STARTED back, or recover
+        if (this.cur && this.cur.t2 == null) {
+          this.cur.t2 = performance.now()
+          this.log(
+            `📤 t2 first chunk → HeyGen (+${(this.cur.t2 - (this.cur.t1 ?? this.cur.t0)).toFixed(0)}ms after t1)`,
+          )
+        }
       }
     } catch (err) {
-      this.log(`❌ repeatAudio failed: ${(err as Error).message}`)
+      this.log(`❌ [HeyGen] repeatAudio failed: ${(err as Error).message}`)
     }
     if (final) this.firstFlushDone = false
   }
@@ -733,6 +840,44 @@ export class RealtimeSession {
     }
     this.pcmBytes = ""
     this.firstFlushDone = false
+    this.clearSpeakWatchdog() // the pending audio is gone — nothing to wait on
+  }
+
+  // ---- avatar speak watchdog --------------------------------------------
+
+  /** Arm the stall watchdog after pushing audio to HeyGen. No-op if the avatar is
+   *  already confirmed speaking (mid-utterance flushes don't re-arm) or a watchdog
+   *  is already pending. Cleared by AVATAR_SPEAK_STARTED (the healthy path). */
+  private armSpeakWatchdog() {
+    if (this.avatarSpeaking || this.speakWatchdogTimer) return
+    if (!this.avatarReady) return
+    this.speakWatchdogTimer = setTimeout(() => {
+      this.speakWatchdogTimer = null
+      void this.onSpeakStalled()
+    }, SPEAK_WATCHDOG_MS)
+  }
+
+  private clearSpeakWatchdog() {
+    if (this.speakWatchdogTimer) {
+      clearTimeout(this.speakWatchdogTimer)
+      this.speakWatchdogTimer = null
+    }
+  }
+
+  /** Fired when we pushed audio but no AVATAR_SPEAK_STARTED came back in time —
+   *  HeyGen is silently wedged while still "connected". Force the avatar through
+   *  the normal reconnect path (re-mint + re-attach); the OpenAI brain keeps
+   *  running, so the next turn speaks. The in-flight utterance is lost — recovery
+   *  beats permanent silence. Skipped if we're already tearing down/reconnecting. */
+  private async onSpeakStalled() {
+    if (this.stopping || !this.running) return
+    if (!this.avatarReady || !this.avatar) return
+    this.log(
+      `⚠️ [HeyGen] avatar stalled — pushed ${this.repeatAudioCount} chunk(s) but ${this.speakStartedCount} speak_started; forcing reconnect`,
+    )
+    this.status("avatar stalled — reconnecting…")
+    this.avatarSpeaking = false
+    await this.handleAvatarDisconnect(SessionDisconnectReason.UNKNOWN_REASON)
   }
 
   private finalizeTurn() {
