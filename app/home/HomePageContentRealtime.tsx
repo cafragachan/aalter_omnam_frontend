@@ -22,14 +22,6 @@ import { Mic, MicOff, MessageSquare } from "lucide-react"
 // guests are recognised and greeted. Flag-gated; old brain stays the default.
 // (Firebase write-persistence of the realtime transcript is D.1c.)
 
-function safeJson(v: unknown): string {
-  try {
-    return JSON.stringify(v)
-  } catch {
-    return ""
-  }
-}
-
 // The first unit highlight after (re)entering the rooms scene waits this long so
 // UE5 has time to spawn the room actors — sending selectUnits into a still-loading
 // scene gets dropped (it has nothing to color yet). Later edits emit immediately.
@@ -68,7 +60,7 @@ export default function HomePageContentRealtime({ onEnded, ue5Ready = false }: {
   onEndedRef.current = onEnded
   const sessionRef = useRef<RealtimeSession | null>(null)
   const { state, dispatch } = useOmnamStore()
-  const { userProfile, returningUserData } = useAuth()
+  const { userProfile } = useAuth()
   const currentRoomPlan = state.currentRoomPlan
 
   // Live mirror so the tool dispatcher (created once at start) reads the CURRENT
@@ -151,16 +143,14 @@ export default function HomePageContentRealtime({ onEnded, ue5Ready = false }: {
   }, [currentRoomPlan, rooms])
 
   // Returning-guest hydration injected at session start (queued until WS opens).
+  // Deliberately NAME-ONLY for now: we do NOT carry over room composition, party
+  // size, stay length, or any other prior-trip preferences — those must be asked
+  // fresh every session so Ava never assumes this trip from a past one.
   const hydration = useMemo(() => {
     const name = userProfile?.firstName?.trim()
-    const prefs = returningUserData?.preferences
-    if (!name && !prefs) return ""
-    const parts: string[] = []
-    if (name) parts.push(`Name: ${name}.`)
-    if (userProfile?.nationality) parts.push(`Nationality: ${userProfile.nationality}.`)
-    if (prefs) parts.push(`Soft hints from past visits (confirm, don't assume): ${safeJson(prefs)}.`)
-    return `[returning guest — background only] ${parts.join(" ")} When you greet them (once), use their name. Still ask for THIS trip's dates, party, and room needs before travelling — never assume them.`
-  }, [userProfile, returningUserData])
+    if (!name) return ""
+    return `[returning guest — background only] Name: ${name}. When you greet them (once), use their name. Still ask for THIS trip's dates, party, and room needs before travelling — never assume them.`
+  }, [userProfile])
 
   // UE5 tap → drive the reducer (focus + select-if-new) AND tell Ava. A REAL tap
   // carries a numeric `id` (new UE5 contract). Messages WITHOUT an id are legacy

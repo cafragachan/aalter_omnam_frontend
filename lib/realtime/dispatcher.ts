@@ -72,6 +72,18 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
   let arrived = false
   const LOUNGE_GATE = "The guest is still in the virtual lounge — call travel_to_hotel first."
 
+  // Just-in-time nudge for the OPTIONAL virtual-lounge gallery beat. The persona's
+  // lounge invitation is one soft line buried among many "keep moving" rules, so
+  // the model reliably skips it. Instead of trusting it to remember, we surface it
+  // at the single moment it's meant to happen: the guest has shared the first
+  // details (dates AND who's travelling) but is still in the lounge — right before
+  // they'd be whisked to the hotel. Appended ONCE to save_profile's output so it
+  // shapes that very turn's spoken reply. Still only an OFFER — a rushing guest is
+  // taken straight to the hotel per the persona.
+  let sawStayDates = false
+  let sawTravelParty = false
+  let loungeBeatNudged = false
+
   // --- Authoritative scene state (the dispatcher's source of truth for where
   //     UE5 actually is). The model only "remembers" where it is from its own
   //     narration, which drifts; this is what we reconcile against so a stale
@@ -235,6 +247,18 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
         hooks.saveProfile?.(updates)
         const summary = summarizeProfile(updates)
         hooks.onScene?.(`noted: ${summary}`)
+
+        // Track the two "first details" the lounge beat waits on.
+        if (updates.startDate || updates.endDate) sawStayDates = true
+        if (updates.guestComposition) sawTravelParty = true
+
+        // Fire the lounge-gallery nudge ONCE, only while still in the lounge and
+        // not already en route, the moment both first details are known.
+        if (!arrived && !travelPending && !loungeBeatNudged && sawStayDates && sawTravelParty) {
+          loungeBeatNudged = true
+          return `Remembered: ${summary}. The guest is still in the virtual lounge and you now know their dates and who's travelling — this is the natural moment, just before you'd travel, to offer ONE warm, unforced line inviting them to take in the lounge gallery first (a space that will one day host rotating exhibitions). Keep it a graceful, optional prelude, never a step to complete, and don't push it. If they'd rather head straight over, or seem to be moving quickly, simply call travel_to_hotel instead.`
+        }
+
         return `Remembered: ${summary}.`
       }
 
