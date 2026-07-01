@@ -12,6 +12,7 @@ import {
   validatePlanCapacity,
   validateUnitSelection,
 } from "@/lib/agent-runtime/tool-core"
+import type { RealtimeSkillId } from "@/lib/realtime/skills"
 import { makeDebugEvent, type DebugEvent } from "./types"
 
 export type DebugToolDispatcherHooks = {
@@ -24,6 +25,7 @@ export type DebugToolDispatcherHooks = {
   setActiveUnit?: (unitId: number) => void
   hasExplicitPick?: () => boolean
   getPlan?: () => CurrentRoomPlan | null
+  injectSkill?: (id: RealtimeSkillId, reason?: string, opts?: { respond?: boolean; force?: boolean }) => void
 }
 
 export function createDebugToolDispatcher(hooks: DebugToolDispatcherHooks = {}) {
@@ -48,16 +50,21 @@ export function createDebugToolDispatcher(hooks: DebugToolDispatcherHooks = {}) 
       }
 
       case "travel_to_hotel": {
+        hooks.injectSkill?.("scene_navigation", "The debug guest is travelling from the lounge to the hotel.")
+        hooks.injectSkill?.("lounge", "The debug guest is leaving or may leave the virtual lounge.")
         arrived = true
         return "Debug mode: marked the guest as arrived at EDITION Lake Como. Offer rooms, amenities, or the surrounding area; recommend rooms only when the guest asks."
       }
 
       case "return_to_lounge": {
+        hooks.injectSkill?.("scene_navigation", "The debug guest asked to return to the lounge.")
+        hooks.injectSkill?.("lounge", "The virtual lounge is active again.")
         arrived = false
         return "Debug mode: marked the guest as returned to the virtual lounge."
       }
 
       case "navigate_to": {
+        hooks.injectSkill?.("scene_navigation", "The debug guest is moving to another area.")
         if (!arrived) return "Debug mode: guest is still in the lounge. Call travel_to_hotel first."
         const area = String(args.area ?? "")
         if (!["rooms", "amenities", "location", "default"].includes(area)) {
@@ -67,11 +74,13 @@ export function createDebugToolDispatcher(hooks: DebugToolDispatcherHooks = {}) 
       }
 
       case "go_to_amenity": {
+        hooks.injectSkill?.("scene_navigation", "The debug guest is walking to a specific amenity.")
         if (!arrived) return "Debug mode: guest is still in the lounge. Call travel_to_hotel first."
         return `Debug mode: would walk the guest to ${String(args.amenity ?? "that amenity")}.`
       }
 
       case "show_points_of_interest": {
+        hooks.injectSkill?.("scene_navigation", "The debug guest is exploring the surrounding area.")
         if (!arrived) return "Debug mode: guest is still in the lounge. Call travel_to_hotel first."
         return `Debug mode: would map nearby ${String(args.category ?? "points of interest")}.`
       }
@@ -81,6 +90,7 @@ export function createDebugToolDispatcher(hooks: DebugToolDispatcherHooks = {}) 
       }
 
       case "propose_room_plan": {
+        hooks.injectSkill?.("room_recommendation", "Ava is recommending or changing a room plan in debug mode.")
         const plan = buildRoomPlan(args.rooms)
         if (!plan) return "None of those room ids exist. Pick from the catalog."
         const capacityError = validatePlanCapacity(plan, hooks.getPartySize?.())
@@ -93,6 +103,7 @@ export function createDebugToolDispatcher(hooks: DebugToolDispatcherHooks = {}) 
       }
 
       case "select_units": {
+        hooks.injectSkill?.("unit_selection", "The debug guest is choosing specific physical units.")
         if (!arrived) return "Debug mode: guest is still in the lounge. Call travel_to_hotel first."
         const inventory = hooks.getInventory?.() ?? []
         if (!inventory.length) return "Debug mode: no unit inventory is loaded, so physical unit selection cannot be validated."
@@ -104,6 +115,7 @@ export function createDebugToolDispatcher(hooks: DebugToolDispatcherHooks = {}) 
       }
 
       case "view_unit": {
+        hooks.injectSkill?.("unit_selection", "The debug guest is viewing or entering a physical unit.")
         if (!arrived) return "Debug mode: guest is still in the lounge. Call travel_to_hotel first."
         const view = String(args.view ?? "")
         if (view !== "interior" && view !== "exterior") return `view must be "interior" or "exterior".`
@@ -119,6 +131,7 @@ export function createDebugToolDispatcher(hooks: DebugToolDispatcherHooks = {}) 
       }
 
       case "open_booking": {
+        hooks.injectSkill?.("booking", "The debug guest is moving toward booking.")
         const room = bookingRoomFromPlan(args, getPlan(), lastPlanFirstRoomId)
         return room ? `Debug mode: would open booking page for ${room.name}: ${room.book_url ?? "no URL"}.` : "I'm not sure which room to book. Let's settle on one first."
       }

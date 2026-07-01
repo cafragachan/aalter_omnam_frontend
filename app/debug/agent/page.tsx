@@ -321,6 +321,7 @@ export default function DebugAgentPage() {
           const n = (gc?.adults ?? 0) + (gc?.children ?? 0)
           return n > 0 ? n : undefined
         },
+        injectSkill: (id, reason, opts) => sessionRef.current?.injectSkill(id, reason, opts),
       }),
     )
     sessionRef.current = session

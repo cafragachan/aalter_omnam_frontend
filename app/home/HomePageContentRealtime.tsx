@@ -375,12 +375,14 @@ export default function HomePageContentRealtime({ onEnded, ue5Ready = false }: {
   useEffect(() => {
     if (!active || atHotel) return
     const gentle = window.setTimeout(() => {
+      sessionRef.current?.injectSkill("lounge", "The guest has lingered quietly in the virtual lounge.")
       sessionRef.current?.injectContext(
         "[context] The guest has been quiet in the virtual lounge for a little while. Gently check in and remind them, in one warm line, that you can take them over to the hotel (or to the rooms) whenever they're ready. Do not pressure them or repeat any gallery invitation.",
         { respond: true },
       )
     }, LOUNGE_NUDGE_MS)
     const firm = window.setTimeout(() => {
+      sessionRef.current?.injectSkill("lounge", "The guest is still in the virtual lounge after a longer lull.")
       sessionRef.current?.injectContext(
         "[context] The guest is still lingering in the virtual lounge. Warmly suggest heading over to the hotel now so they can see it for themselves — offer to take them. Keep it to one inviting line.",
         { respond: true },
@@ -448,6 +450,7 @@ export default function HomePageContentRealtime({ onEnded, ue5Ready = false }: {
         // persona governs WHEN Ava calls view_unit. Returns null → nothing focused.
         getActiveUnit: () => stateRef.current.unitSelection.activeUnitId,
         getPlan: () => stateRef.current.currentRoomPlan,
+        injectSkill: (id, reason, opts) => sessionRef.current?.injectSkill(id, reason, opts),
         // Guest confirmed they want to leave → close panels and start the close:
         // mute mic, let Ava speak her farewell, then onFarewellSpoken fires onEnded.
         onEndExperience: () => {
@@ -460,7 +463,10 @@ export default function HomePageContentRealtime({ onEnded, ue5Ready = false }: {
     // Queue hydration before the WS opens; flushed on open. respond:false — Ava
     // greets ONCE on the guest's first turn (proactive auto-greet caused a
     // double welcome), and the persona still drives the intake.
-    if (hydration) session.injectContext(hydration, { respond: false })
+    if (hydration) {
+      session.injectSkill("returning_guest", "Known returning-guest context is being supplied at session start.")
+      session.injectContext(hydration, { respond: false })
+    }
     await session.start()
   }, [ue5, dispatch, hydration, userProfile, appendTranscript])
 
@@ -530,6 +536,9 @@ export default function HomePageContentRealtime({ onEnded, ue5Ready = false }: {
     // Typed turns never echo back through onTranscript (text input isn't
     // audio-transcribed), so append directly — no double-counting.
     appendTranscript("user", t)
+    if (/\b(how|where|move|walk|control|click|drag|stuck|lost|can't move|cannot move|not working)\b/i.test(t)) {
+      sessionRef.current.injectSkill("movement_help", "The typed guest message may be asking how to move or recover.")
+    }
     sessionRef.current.injectContext(t, { respond: true })
   }, [appendTranscript])
 

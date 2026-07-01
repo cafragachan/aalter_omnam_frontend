@@ -24,6 +24,7 @@ import {
   SessionDisconnectReason,
   AgentEventsEnum,
 } from "@heygen/liveavatar-web-sdk"
+import { formatRealtimeSkill, type RealtimeSkillId } from "./skills"
 
 export interface TurnMetric {
   turn: number
@@ -146,6 +147,7 @@ export class RealtimeSession {
   // Context items injected before the WS is open are queued and flushed on open
   // (so returning-guest hydration at session start isn't dropped).
   private pendingContext: { text: string; respond: boolean }[] = []
+  private injectedSkills = new Set<RealtimeSkillId>()
 
   // HeyGen session lifecycle. The avatar idle-times-out (and the browser can't
   // keep-alive/stop it — CORS), so we ping keep-alive + stop via server proxies
@@ -358,6 +360,17 @@ export class RealtimeSession {
     }
   }
 
+  /**
+   * Inject detailed behavior guidance only when the current moment needs it.
+   * Skills are deduped per RealtimeSession so Ava keeps one continuous persona
+   * instead of receiving repeated mode-like reminders.
+   */
+  injectSkill(id: RealtimeSkillId, reason?: string, opts: { respond?: boolean; force?: boolean } = {}) {
+    if (!opts.force && this.injectedSkills.has(id)) return
+    this.injectedSkills.add(id)
+    this.injectContext(formatRealtimeSkill(id, reason), { respond: !!opts.respond })
+  }
+
   private sendContext(text: string, respond: boolean) {
     if (!this.oaWs || this.oaWs.readyState !== WebSocket.OPEN) return
     this.oaWs.send(
@@ -455,7 +468,7 @@ export class RealtimeSession {
       this.greetingInFlight = true
       this.greetingGuardTimer = setTimeout(() => this.endGreetingGuard(), GREETING_GUARD_MAX_MS)
       this.injectContext(
-        "[Begin now — give a brief, warm, gracious welcome that makes the guest feel they've arrived somewhere special: note this is an early demo of EDITION Lake Como, with more destinations on the way. Then open with ONE light, inviting question — their travel dates are a lovely place to start. Keep it an invitation, never a form. (If the guest instead asks to skip ahead or see a room or the hotel, don't insist on dates — take them there, per your instructions.)]",
+        "[Begin now - give a brief, warm, gracious welcome that makes the guest feel they've arrived somewhere special: note this is an early demo of EDITION Lake Como, with more destinations on the way. Add one short sentence that this virtual lounge will host exhibitions and other fun experiences in the future. Then open with ONE light, inviting question - their travel dates are a lovely place to start. Keep it an invitation, never a form. (If the guest instead asks to skip ahead or see a room or the hotel, don't insist on dates - take them there, per your instructions.)]",
         { respond: true },
       )
     }, GREET_DELAY_MS)

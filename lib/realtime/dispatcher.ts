@@ -18,6 +18,7 @@ import {
   validatePlanCapacity,
   validateUnitSelection,
 } from "@/lib/agent-runtime/tool-core"
+import type { RealtimeSkillId } from "./skills"
 import { PILOT_HOTEL_SLUG } from "./context"
 
 type Ue5Bridge = ReturnType<typeof useUE5Bridge>
@@ -61,6 +62,7 @@ export interface DispatcherHooks {
    *  session + UE5 stream down and show the send-off overlay). Only invoked after
    *  the guest has confirmed — see the end_experience confirm gate below. */
   onEndExperience?: () => void
+  injectSkill?: (id: RealtimeSkillId, reason?: string, opts?: { respond?: boolean; force?: boolean }) => void
 }
 
 export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}) {
@@ -205,6 +207,8 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
   ): Promise<string> {
     switch (name) {
       case "travel_to_hotel": {
+        hooks.injectSkill?.("scene_navigation", "The guest is travelling from the lounge to the hotel.")
+        hooks.injectSkill?.("lounge", "The guest is leaving or may leave the virtual lounge.")
         const status = ensureArrival(() => {
           hooks.notify?.(
             "[scene ready] The 3D experience just finished loading and you've now arrived at the EDITION Lake Como. Welcome them warmly and briefly offer what they can explore — the rooms, the amenities, or the surrounding area — and let them choose. Don't recommend rooms unless they ask (or already asked).",
@@ -217,6 +221,8 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
       }
 
       case "return_to_lounge": {
+        hooks.injectSkill?.("scene_navigation", "The guest asked to return to the lounge.")
+        hooks.injectSkill?.("lounge", "The virtual lounge is active again.")
         ue5.sendCommand("virtualLounge", "virtualLounge")
         arrived = false
         sceneArea = "lounge"
@@ -230,6 +236,7 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
       }
 
       case "end_experience": {
+        hooks.injectSkill?.("ending", "The guest signalled they may want to end the experience.")
         // Two-step confirm gate — deterministic, never tears down on a single
         // call. The guest must explicitly confirm: only confirmed===true ends.
         // (If the guest declines, Ava simply never calls it again with true.)
@@ -255,6 +262,7 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
         // Fire the lounge-gallery nudge ONCE, only while still in the lounge and
         // not already en route, the moment both first details are known.
         if (!arrived && !travelPending && !loungeBeatNudged && sawStayDates && sawTravelParty) {
+          hooks.injectSkill?.("lounge", "The guest has shared first trip details while still in the virtual lounge.")
           loungeBeatNudged = true
           return `Remembered: ${summary}. The guest is still in the virtual lounge and you now know their dates and who's travelling — this is the natural moment, just before you'd travel, to offer ONE warm, unforced line inviting them to take in the lounge gallery first (a space that will one day host rotating exhibitions). Keep it a graceful, optional prelude, never a step to complete, and don't push it. If they'd rather head straight over, or seem to be moving quickly, simply call travel_to_hotel instead.`
         }
@@ -263,6 +271,7 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
       }
 
       case "navigate_to": {
+        hooks.injectSkill?.("scene_navigation", "The guest is moving to another area of the 3D experience.")
         const area = String(args.area ?? "")
         if (!["rooms", "amenities", "location", "default"].includes(area)) {
           return `"${area}" is not a valid area (use rooms, amenities, location, or default).`
@@ -342,6 +351,7 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
       }
 
       case "show_points_of_interest": {
+        hooks.injectSkill?.("scene_navigation", "The guest is exploring the surrounding area.")
         const category = String(args.category ?? "").trim()
         if (!category) return "Tell me what kind of places to show (e.g. fine dining, landmarks)."
         try {
@@ -366,6 +376,7 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
       }
 
       case "go_to_amenity": {
+        hooks.injectSkill?.("scene_navigation", "The guest is walking to a specific amenity.")
         const wanted = String(args.amenity ?? "").trim().toLowerCase()
         const match = cat?.amenities.find(
           (a) =>
@@ -434,6 +445,7 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
       }
 
       case "view_unit": {
+        hooks.injectSkill?.("unit_selection", "The guest is viewing or entering a physical unit.")
         if (!arrived) return LOUNGE_GATE
         const view = String(args.view ?? "")
         if (view !== "interior" && view !== "exterior") {
@@ -493,6 +505,7 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
       }
 
       case "select_units": {
+        hooks.injectSkill?.("unit_selection", "The guest is choosing specific physical units.")
         if (!arrived) return LOUNGE_GATE
         const selection = validateUnitSelection(args, hooks.getInventory?.() ?? [], hooks.getPlan?.() ?? null)
         if (!selection.ok) return selection.message
@@ -511,6 +524,7 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
       }
 
       case "propose_room_plan": {
+        hooks.injectSkill?.("room_recommendation", "Ava is recommending or changing a room plan.")
         const plan = buildRoomPlan(args.rooms)
         if (!plan) return "None of those room ids exist. Pick from the catalog."
         // Deterministic capacity guardrail — never propose a plan too small.
@@ -566,6 +580,7 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
       }
 
       case "open_booking": {
+        hooks.injectSkill?.("booking", "The guest is moving toward booking.")
         const room = bookingRoomFromPlan(args, hooks.getPlan?.() ?? null, lastPlanFirstRoomId)
         if (!room) return "I'm not sure which room to book — let's settle on one first."
         if (!room.book_url) return `${room.name} doesn't have a booking link yet.`

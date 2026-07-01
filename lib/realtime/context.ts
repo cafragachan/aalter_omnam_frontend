@@ -1,15 +1,15 @@
 // Context builders for the realtime brain.
 //
-// L1 (this file's buildL1Instruction): persona + a DISTILLED, semantic-only
-// property dossier. Built ONCE and baked into the realtime ephemeral token —
-// it is the only "large" payload and it is paid a single time per session,
-// not rebuilt every turn (the old /api/orchestrate mega-prompt is gone).
+// L1 (buildL1Instruction): compact persona + distilled property dossier. Built
+// once and baked into the realtime ephemeral token, so the session starts with
+// stable identity and facts without carrying every detailed workflow rule.
 //
 // L3 (formatSceneDelta): a tiny one-liner injected as a conversation item when
-// the scene changes, so Ava always knows where the guest is. (~15 tokens.)
+// the scene changes, so Ava always knows where the guest is.
 
 import { getHotelCatalog, type HotelCatalog } from "@/lib/hotel-data"
 import { CONCIERGE_PERSONA } from "./persona"
+import { realtimeSkillIndex } from "./skills"
 
 // Only active hotel for now (decision #5). When multi-hotel lands, switch to
 // retrieval-on-demand rather than embedding more dossiers here.
@@ -22,7 +22,10 @@ export function buildL1Instruction(slug: string = PILOT_HOTEL_SLUG): string {
   return [
     CONCIERGE_PERSONA,
     "",
-    `Today's date is ${today}. When the guest gives dates without a year (e.g. "August 15–20"), assume the nearest UPCOMING occurrence — if that month/day is still ahead this year, use this year; if it has already passed, use next year. NEVER ask the guest which year.`,
+    "Detailed operating guidance may be supplied later as just-in-time Ava guidance for the current moment. These are reminders inside the same persona, not separate modes:",
+    realtimeSkillIndex(),
+    "",
+    `Today's date is ${today}. When the guest gives dates without a year (for example, "August 15-20"), assume the nearest upcoming occurrence. If that month/day is still ahead this year, use this year; if it has already passed, use next year. Never ask the guest which year.`,
     "",
     "=== PROPERTY DOSSIER (your single source of truth) ===",
     renderHotel(cat),
@@ -43,7 +46,7 @@ export function buildL1Instruction(slug: string = PILOT_HOTEL_SLUG): string {
 }
 
 function renderHotel(cat: HotelCatalog): string {
-  const parts = [`${cat.hotelName} — ${cat.hotelLocation}.`]
+  const parts = [`${cat.hotelName} - ${cat.hotelLocation}.`]
   if (cat.hotelTagline) parts.push(cat.hotelTagline)
   if (cat.hotelDescription) parts.push(cat.hotelDescription)
   if (cat.hotelHighlights?.length) parts.push(`Highlights: ${cat.hotelHighlights.join("; ")}.`)
@@ -55,7 +58,7 @@ function renderRoom(r: HotelCatalog["rooms"][number]): string {
   if (r.roomType) bits.push(r.roomType)
   if (r.view?.length) bits.push(`${r.view.join(" / ")} view`)
   if (r.features?.length) bits.push(r.features.slice(0, 2).join(", "))
-  const tail = bits.length ? ` — ${bits.join("; ")}` : ""
+  const tail = bits.length ? ` - ${bits.join("; ")}` : ""
   return `- ${r.name} (id ${r.id}): sleeps ${r.occupancy}, $${r.price}/night${tail}.`
 }
 
@@ -70,7 +73,7 @@ function renderDescribedOnly(a: HotelCatalog["amenitiesDescribedOnly"][number]):
   return `- ${a.name}: ${desc}`.trim()
 }
 
-/** L3 — situational delta injected when the scene changes. */
+/** L3 - situational delta injected when the scene changes. */
 export function formatSceneDelta(scene: string): string {
   return `[context] The guest is now viewing: ${scene}.`
 }

@@ -348,6 +348,7 @@ export default function AgentSimulationPage() {
             const n = (gc?.adults ?? 0) + (gc?.children ?? 0)
             return n > 0 ? n : undefined
           },
+          injectSkill: (id, reason, opts) => session.injectSkill(id, reason, opts),
         }),
       )
 

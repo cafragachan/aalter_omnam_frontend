@@ -1,6 +1,7 @@
 "use client"
 
 import type { ToolHandler } from "@/lib/realtime/session"
+import { formatRealtimeSkill, type RealtimeSkillId } from "@/lib/realtime/skills"
 
 const OPENAI_WS_BASE = "wss://api.openai.com/v1/realtime"
 
@@ -27,6 +28,7 @@ export class TextRealtimeSession {
   private pendingReply: PendingReply | null = null
   private activeResponse = false
   private pendingResponseCreate = false
+  private injectedSkills = new Set<RealtimeSkillId>()
 
   constructor(cb: TextRealtimeCallbacks = {}, tokenUrl = "/api/realtime-token") {
     this.cb = cb
@@ -87,6 +89,12 @@ export class TextRealtimeSession {
       }),
     )
     if (respond) this.createResponseWhenIdle()
+  }
+
+  injectSkill(id: RealtimeSkillId, reason?: string, opts: { respond?: boolean; force?: boolean } = {}) {
+    if (!opts.force && this.injectedSkills.has(id)) return
+    this.injectedSkills.add(id)
+    this.injectContext(formatRealtimeSkill(id, reason), { respond: !!opts.respond })
   }
 
   async sendUserText(text: string, timeoutMs = 30000): Promise<string> {
