@@ -468,7 +468,7 @@ export class RealtimeSession {
       this.greetingInFlight = true
       this.greetingGuardTimer = setTimeout(() => this.endGreetingGuard(), GREETING_GUARD_MAX_MS)
       this.injectContext(
-        "[Begin now - give a brief, warm, gracious welcome that makes the guest feel they've arrived somewhere special: note this is an early demo of EDITION Lake Como, with more destinations on the way. Add one short sentence that this virtual lounge will host exhibitions and other fun experiences in the future. Then open with ONE light, inviting question - their travel dates are a lovely place to start. Keep it an invitation, never a form. (If the guest instead asks to skip ahead or see a room or the hotel, don't insist on dates - take them there, per your instructions.)]",
+        "[Begin now - give a brief, warm, gracious welcome that makes the guest feel they've arrived somewhere special: note this is an early demo of EDITION Lake Como, with more destinations on the way. Then say: feel free to explore the virtual lounge; in future it will host exhibitions, galleries, and other experiences. End by inviting them to tell you when they are ready to begin the hotel experience. Then stop and wait for the guest to decide whether to stay in the lounge or go to the hotel. Do not ask for travel dates yet. If the guest asks to skip ahead or see a room or the hotel, take them there, per your instructions.]",
         { respond: true },
       )
     }, GREET_DELAY_MS)
