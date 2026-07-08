@@ -72,6 +72,125 @@ export type UE5WebSocketState = {
 
 const STREAM_MODE = process.env.NEXT_PUBLIC_STREAM_MODE || "local"
 
+// Parse a raw transport payload (Blob / string / object, possibly an array or a
+// bare token) into normalized UE5 messages. Pure — shared by both transports so
+// it can run ONCE at each single entry point (see the Vagon registry below).
+const normalizeIncomingMessage = async (data: unknown): Promise<UE5IncomingMessage[]> => {
+  let messageData = data
+
+  // Handle Blob data
+  if (data instanceof Blob) {
+    messageData = await data.text()
+  }
+
+  if (typeof messageData === "string") {
+    const trimmed = messageData.trim()
+    if (!trimmed) return []
+
+    try {
+      const parsed = JSON.parse(trimmed)
+      return Array.isArray(parsed) ? parsed : [parsed]
+    } catch {
+      // UE5 sometimes sends a BARE token (e.g. "levelLoaded") instead of a JSON
+      // object. Treat a simple non-JSON string as a typed signal message so
+      // handlers (levelLoaded, etc.) can still react to it.
+      if (trimmed[0] !== "{" && trimmed[0] !== "[") {
+        return [{ type: trimmed }]
+      }
+      console.warn("Failed to parse UE5 message as JSON:", { data: messageData })
+      return []
+    }
+  }
+
+  if (typeof messageData === "object" && messageData !== null) {
+    return [messageData as UE5IncomingMessage]
+  }
+
+  return []
+}
+
+// Log each incoming payload ONCE, at the single per-transport entry point (the
+// Vagon registry's shared listener, or the local ws.onmessage) — NOT inside the
+// per-hook router, which runs once per subscriber and would double-log.
+const logIncomingPayloads = (messages: UE5IncomingMessage[]) => {
+  messages.forEach((payload) => console.log("Message from UE5:", payload))
+}
+
+// ---------------------------------------------------------------------------
+// Vagon listener registry (module-level singleton)
+// ---------------------------------------------------------------------------
+// `window.Vagon` is a singleton the whole app shares, and its `on*(cb)` methods
+// are ADDITIVE with no removal API. Registering them per hook instance meant
+// every UE5 message fanned out once per mounted useUE5WebSocket (double-
+// handling — the page-level readiness listener AND the bridge both fired), and
+// each remount/HMR leaked another listener that could never be detached.
+//
+// Instead we install the underlying SDK listeners EXACTLY ONCE and fan every
+// event out to a Set of subscribers. Each hook subscribes its own callbacks and
+// gets a real unsubscribe (removes itself from the Set) for effect cleanup.
+// ---------------------------------------------------------------------------
+
+type VagonSubscriber = {
+  onPayloads?: (messages: UE5IncomingMessage[]) => void
+  onConnected?: () => void
+  onDisconnected?: () => void
+}
+
+const vagonSubscribers = new Set<VagonSubscriber>()
+let vagonListenersInstalled = false
+let vagonInstallTimer: ReturnType<typeof setTimeout> | null = null
+
+const isVagonSdkReady = (): boolean => {
+  const v = typeof window !== "undefined" ? window.Vagon : undefined
+  return !!v && typeof v.onConnected === "function" && typeof v.sendApplicationMessage === "function"
+}
+
+const isVagonConnected = (): boolean => {
+  const v = typeof window !== "undefined" ? window.Vagon : undefined
+  return !!v && typeof v.isConnected === "function" && v.isConnected()
+}
+
+// Install the singleton SDK listeners once the SDK is ready; retry until then.
+// Never uninstalled (the SDK offers no removal), but installed at most once —
+// subscribers come and go without ever touching the underlying registration.
+const ensureVagonListeners = () => {
+  if (vagonListenersInstalled) return
+  if (!isVagonSdkReady()) {
+    if (vagonInstallTimer === null) {
+      console.warn("Vagon SDK not fully initialised yet, retrying in 1s...")
+      vagonInstallTimer = setTimeout(() => {
+        vagonInstallTimer = null
+        ensureVagonListeners()
+      }, 1000)
+    }
+    return
+  }
+  vagonListenersInstalled = true
+  const vagon = window.Vagon!
+  console.log("Using Vagon SDK for UE5 communication")
+  vagon.onConnected(() => vagonSubscribers.forEach((s) => s.onConnected?.()))
+  vagon.onDisconnected(() => vagonSubscribers.forEach((s) => s.onDisconnected?.()))
+  // Normalize + log ONCE here, then fan the payloads out to every subscriber's
+  // router — so N mounted hooks no longer parse and log each message N times.
+  vagon.onApplicationMessage(async (evt) => {
+    const messages = await normalizeIncomingMessage(evt.message)
+    logIncomingPayloads(messages)
+    vagonSubscribers.forEach((s) => s.onPayloads?.(messages))
+  })
+}
+
+const subscribeVagon = (sub: VagonSubscriber): (() => void) => {
+  vagonSubscribers.add(sub)
+  ensureVagonListeners()
+  // The SDK's onConnected fires only on the connect TRANSITION; a subscriber
+  // that joins after the stream is already live (e.g. the brain mounting after
+  // the page-level listener) would otherwise miss it — fire immediately.
+  if (isVagonConnected()) sub.onConnected?.()
+  return () => {
+    vagonSubscribers.delete(sub)
+  }
+}
+
 export const useUE5WebSocket = (options: UseUE5WebSocketOptions = {}) => {
   const {
     url = "ws://localhost:7788",
@@ -93,40 +212,6 @@ export const useUE5WebSocket = (options: UseUE5WebSocketOptions = {}) => {
     error: null,
   })
 
-  const normalizeIncomingMessage = useCallback(async (data: unknown): Promise<UE5IncomingMessage[]> => {
-    let messageData = data
-
-    // Handle Blob data
-    if (data instanceof Blob) {
-      messageData = await data.text()
-    }
-
-    if (typeof messageData === "string") {
-      const trimmed = messageData.trim()
-      if (!trimmed) return []
-
-      try {
-        const parsed = JSON.parse(trimmed)
-        return Array.isArray(parsed) ? parsed : [parsed]
-      } catch {
-        // UE5 sometimes sends a BARE token (e.g. "levelLoaded") instead of a JSON
-        // object. Treat a simple non-JSON string as a typed signal message so
-        // handlers (levelLoaded, etc.) can still react to it.
-        if (trimmed[0] !== "{" && trimmed[0] !== "[") {
-          return [{ type: trimmed }]
-        }
-        console.warn("Failed to parse UE5 message as JSON:", { data: messageData })
-        return []
-      }
-    }
-
-    if (typeof messageData === "object" && messageData !== null) {
-      return [messageData as UE5IncomingMessage]
-    }
-
-    return []
-  }, [])
-
   const isUnitSelectionMessage = useCallback((value: unknown): value is UnitSelectionMessage => {
     if (!value || typeof value !== "object") return false
     const payload = value as Record<string, unknown>
@@ -144,8 +229,6 @@ export const useUE5WebSocket = (options: UseUE5WebSocketOptions = {}) => {
   // ---------------------------------------------------------------------------
   const handleIncomingPayloads = useCallback((messages: UE5IncomingMessage[]) => {
     messages.forEach((payload) => {
-      console.log("Message from UE5:", payload)
-
       if (payload?.type === "ue5Init") {
         onUe5Init?.()
         onMessage?.(payload) // keep readiness/logging behavior
@@ -180,50 +263,32 @@ export const useUE5WebSocket = (options: UseUE5WebSocketOptions = {}) => {
   // might not yet be functions. We guard every call and retry until ready.
   // ---------------------------------------------------------------------------
 
-  const isVagonReady = useCallback((): boolean => {
-    const v = typeof window !== "undefined" ? window.Vagon : undefined
-    return !!v && typeof v.onConnected === "function" && typeof v.sendApplicationMessage === "function"
-  }, [])
-
-  const connectVagon = useCallback(() => {
-    if (!isVagonReady()) {
-      console.warn("Vagon SDK not fully initialised yet, retrying in 1s...")
-      const retryTimeout = setTimeout(() => connectVagon(), 1000)
-      return () => clearTimeout(retryTimeout)
-    }
-
-    const vagon = window.Vagon!
-    console.log("Using Vagon SDK for UE5 communication")
-
-    // Listen for connection events
-    vagon.onConnected(() => {
-      console.log("Vagon: connected to UE5 stream")
-      setState({ isConnected: true, isConnecting: false, error: null })
-      onConnect?.()
+  // Subscribe this hook instance to the shared Vagon registry. Returns an
+  // unsubscribe for effect cleanup (removes only THIS hook's callbacks — the
+  // underlying SDK listeners stay installed once, shared by every subscriber).
+  const connectVagon = useCallback((): (() => void) => {
+    const unsubscribe = subscribeVagon({
+      onConnected: () => {
+        console.log("Vagon: connected to UE5 stream")
+        setState({ isConnected: true, isConnecting: false, error: null })
+        onConnect?.()
+      },
+      onDisconnected: () => {
+        console.log("Vagon: disconnected from UE5 stream")
+        setState({ isConnected: false, isConnecting: false, error: null })
+        onDisconnect?.()
+      },
+      onPayloads: handleIncomingPayloads,
     })
 
-    vagon.onDisconnected(() => {
-      console.log("Vagon: disconnected from UE5 stream")
-      setState({ isConnected: false, isConnecting: false, error: null })
-      onDisconnect?.()
-    })
-
-    // Listen for incoming messages from UE5
-    vagon.onApplicationMessage(async (evt) => {
-      const messages = await normalizeIncomingMessage(evt.message)
-      handleIncomingPayloads(messages)
-    })
-
-    // Check if already connected (guard in case isConnected is not yet available)
-    if (typeof vagon.isConnected === "function" && vagon.isConnected()) {
-      setState({ isConnected: true, isConnecting: false, error: null })
-      onConnect?.()
-    } else {
+    // subscribeVagon fires onConnected synchronously if the stream is already
+    // live; otherwise reflect "connecting" until the SDK's onConnected arrives.
+    if (!isVagonConnected()) {
       setState((prev) => ({ ...prev, isConnecting: true }))
     }
 
-    return undefined
-  }, [isVagonReady, onConnect, onDisconnect, normalizeIncomingMessage, handleIncomingPayloads])
+    return unsubscribe
+  }, [onConnect, onDisconnect, handleIncomingPayloads])
 
   // ---------------------------------------------------------------------------
   // Direct WebSocket mode — local development
@@ -247,6 +312,7 @@ export const useUE5WebSocket = (options: UseUE5WebSocketOptions = {}) => {
 
       ws.onmessage = async (event) => {
         const messages = await normalizeIncomingMessage(event.data)
+        logIncomingPayloads(messages)
         handleIncomingPayloads(messages)
       }
 
@@ -269,14 +335,14 @@ export const useUE5WebSocket = (options: UseUE5WebSocketOptions = {}) => {
         error: (error as Error).message,
       })
     }
-  }, [url, onConnect, onDisconnect, onError, normalizeIncomingMessage, handleIncomingPayloads])
+  }, [url, onConnect, onDisconnect, onError, handleIncomingPayloads])
 
-  const connect = useCallback(() => {
+  const connect = useCallback((): (() => void) | undefined => {
     if (STREAM_MODE === "vagon") {
-      connectVagon()
-    } else {
-      connectWebSocket()
+      return connectVagon()
     }
+    connectWebSocket()
+    return undefined
   }, [connectVagon, connectWebSocket])
 
   const disconnect = useCallback(() => {
@@ -347,13 +413,13 @@ export const useUE5WebSocket = (options: UseUE5WebSocketOptions = {}) => {
     return sendMessage("unitView", view)
   }, [sendMessage])
 
-  // Auto-connect on mount
+  // Auto-connect on mount. In vagon mode connect() returns an unsubscribe that
+  // removes this hook from the shared registry (no listener leak on remount).
   useEffect(() => {
-    if (autoConnect) {
-      connect()
-    }
-
+    if (!autoConnect) return
+    const cleanup = connect()
     return () => {
+      cleanup?.()
       disconnect()
     }
   }, [autoConnect, connect, disconnect])

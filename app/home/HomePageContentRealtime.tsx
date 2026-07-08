@@ -8,10 +8,12 @@ import { useUE5Bridge } from "@/lib/ue5/bridge"
 import { useOmnamStore } from "@/lib/omnam-store"
 import { normalizeInventory, selectedUnitIds } from "@/lib/selection"
 import { RoomsPanel } from "@/components/panels/RoomsPanel"
+import { UnitDetailPanel } from "@/components/panels/UnitDetailPanel"
 import { ChromaAvatar } from "@/components/realtime/ChromaAvatar"
 import { ChatPanel, type ChatMessage } from "@/components/realtime/ChatPanel"
 import { MessageSender } from "@/lib/liveavatar/types"
-import { getHotelBySlug, getRoomsByHotelId, type RoomPlan, type RoomPlanEntry } from "@/lib/hotel-data"
+import { getHotelBySlug, getRoomsByHotelId, type Room, type RoomPlan, type RoomPlanEntry } from "@/lib/hotel-data"
+import type { UnitSelectionMessage } from "@/lib/useUE5WebSocket"
 import { useAuth } from "@/lib/auth-context"
 import { useIncrementalPersistence } from "@/lib/firebase/useIncrementalPersistence"
 import { SunToggle } from "@/components/SunToggle"
@@ -542,10 +544,55 @@ export default function HomePageContentRealtime({ onEnded, ue5Ready = false }: {
     sessionRef.current.injectContext(t, { respond: true })
   }, [appendTranscript])
 
+  // --- Unit detail panel ---------------------------------------------------
+  // When the guest steps inside a unit, swap the rooms grid for a focused detail
+  // card of THAT unit. The authoritative "which unit" is the store's focused unit
+  // (activeUnitId) — set by both in-scene taps AND voice-driven view_unit —
+  // resolved to its inventory entry + catalog room. Falls back to the last raw
+  // UE5 tap message pre-inventory. The card's `description` comes from the UE5 tap
+  // when it matches the focused unit (the catalog Room carries no description).
+  const activeUnitId = state.unitSelection.activeUnitId
+  const { unitDetailUnit, unitDetailRoom } = useMemo<{
+    unitDetailUnit: UnitSelectionMessage | null
+    unitDetailRoom: Room | null
+  }>(() => {
+    const invEntry = activeUnitId != null ? unitInventory.find((u) => u.id === activeUnitId) : undefined
+    if (invEntry) {
+      const room = rooms.find((r) => r.id === invEntry.roomTypeId) ?? null
+      return {
+        unitDetailUnit: {
+          type: "unit",
+          id: invEntry.id,
+          roomName: room?.name ?? invEntry.name,
+          description: ue5.selectedUnit?.id === invEntry.id ? ue5.selectedUnit.description : undefined,
+          price: String(invEntry.price),
+          level: String(invEntry.level),
+        },
+        unitDetailRoom: room,
+      }
+    }
+    // Pre-inventory fallback: drive straight off the raw UE5 tap, matched by name.
+    const tap = ue5.selectedUnit
+    if (tap) {
+      const name = tap.roomName.trim().toLowerCase()
+      return { unitDetailUnit: tap, unitDetailRoom: rooms.find((r) => r.name.trim().toLowerCase() === name) ?? null }
+    }
+    return { unitDetailUnit: null, unitDetailRoom: null }
+  }, [activeUnitId, unitInventory, rooms, ue5.selectedUnit])
+
+  // The interior/exterior views focus a single unit — show its detail card and
+  // hide the rooms grid. Returning to the rooms overview (to adjust room options)
+  // flips the scene back, which removes the card and restores the panel. Only
+  // suppress the rooms panel when there's actually a unit to show (never blank).
+  const exploringUnit = scene === "inside the unit" || scene === "unit exterior"
+  const showUnitDetail = exploringUnit && unitDetailUnit != null
+
   return (
     <div className="pointer-events-none absolute inset-0 z-20 overflow-hidden" onDragStart={(e) => e.preventDefault()}>
-      {/* Rooms panel — right side */}
-      {showRoomsPanel && (
+      {/* Rooms panel — right side. Hidden while the guest is exploring a single
+          unit's interior/exterior (the UnitDetailPanel takes its place); it
+          returns the moment they step back to the rooms overview. */}
+      {showRoomsPanel && !showUnitDetail && (
         <div className="pointer-events-auto fixed right-4 top-4 bottom-[calc(4rem+2vh)] z-20" style={{ width: 375 }}>
           <RoomsPanel
             visible={showRoomsPanel}
@@ -559,6 +606,11 @@ export default function HomePageContentRealtime({ onEnded, ue5Ready = false }: {
           />
         </div>
       )}
+
+      {/* Unit detail panel — the focused unit's card, shown in place of the rooms
+          grid while the guest is inside/around a specific unit (self-positions on
+          the right). Removed automatically when they leave the unit view. */}
+      {showUnitDetail && <UnitDetailPanel unit={unitDetailUnit} room={unitDetailRoom} />}
 
       {/* Avatar control panel — bottom-left glass pill. The subtree stays mounted
           so the session can attach to the avatar video, but it's hidden (off-screen,

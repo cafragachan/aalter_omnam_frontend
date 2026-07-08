@@ -540,14 +540,16 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
         // manual selectRoom here.
         const revealRooms = () => {
           hooks.onRoomsPanel?.(true)
-          // Already in the rooms experience (overview or inside a unit): do NOT
-          // re-issue gameEstate:rooms. SET_ROOM_PLAN's selection reconcile already
-          // re-highlights in place via the page emit effect; a redundant scene-nav
-          // would rebuild the rooms level and drop the freshly-sent selectUnits
-          // (and reset the orbit camera). Only navigate when coming from elsewhere
-          // — the lounge/default after travel, an amenity, or the surroundings —
-          // where the emit effect waits out ROOMS_SETTLE before highlighting.
-          if (sceneArea === "rooms") return
+          // Already in the rooms OVERVIEW: do NOT re-issue gameEstate:rooms.
+          // SET_ROOM_PLAN's selection reconcile already re-highlights in place via
+          // the page emit effect; a redundant scene-nav would rebuild the rooms
+          // level and drop the freshly-sent selectUnits (and reset the orbit
+          // camera). Only navigate when coming from elsewhere — the lounge/default
+          // after travel, an amenity, the surroundings, OR from inside a unit's
+          // interior/exterior: there we MUST pull the camera back to the overview
+          // so the newly-marked units are visible (and the page swaps the unit
+          // detail card back for the rooms panel when the scene flips off the unit).
+          if (sceneArea === "rooms" && sceneView === "overview") return
           whenSceneReady(() => {
             ue5.navigateToRooms()
             sceneArea = "rooms"

@@ -41,6 +41,7 @@ import { rooms as ALL_ROOMS } from "@/lib/hotel-data"
 import {
   EMPTY_SELECTION, type UnitInventoryEntry, type UnitSelectionState, type CapacityMap,
   reconcileToPlan, tapUnit, deselectUnit, setActiveUnit, inventoryById, computeSelectionTotals,
+  selectedUnitIds,
 } from "@/lib/selection"
 
 // ---------------------------------------------------------------------------
@@ -398,9 +399,21 @@ function omnamRootReducer(
 
     // Shared tail: reconcile selection to the new plan, then (when inventory is
     // present) override the catalog totals with per-unit pricing.
-    const nextSelection = reconcileToPlan(
+    const prevSelectedIds = new Set(selectedUnitIds(state.unitSelection))
+    let nextSelection = reconcileToPlan(
       state.unitSelection, capacitiesOf(nextPlan), state.unitInventory,
     )
+    // Adding a room auto-fills a NEW unit into the selection. reconcileToPlan
+    // otherwise preserves the previously focused unit — but focus should follow
+    // the guest's action to the newly selected unit. So when this edit grew an
+    // EXISTING selection, re-focus the newest added unit (the last one added).
+    // (Skip when there was no prior selection — fresh plans keep first-focus.)
+    if (prevSelectedIds.size > 0) {
+      const addedIds = selectedUnitIds(nextSelection).filter((id) => !prevSelectedIds.has(id))
+      if (addedIds.length) {
+        nextSelection = setActiveUnit(nextSelection, addedIds[addedIds.length - 1])
+      }
+    }
     const planWithTotals =
       nextPlan && state.unitInventory.length
         ? { ...nextPlan, ...computeSelectionTotals(nextPlan.rooms, nextSelection, inventoryById(state.unitInventory)) }
