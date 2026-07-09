@@ -415,10 +415,13 @@ export function createToolDispatcher(ue5: Ue5Bridge, hooks: DispatcherHooks = {}
             hooks.onScene?.(match.name)                                 // label flips when nav lands
             pendingAmenityId = null
           })
-          // Walking into an amenity leaves the rooms scene — clear interior/focus.
+          // Walking into an amenity leaves the rooms scene — clear interior/focus
+          // and drop the rooms panel (it's only for exploring room options; it must
+          // not float over an amenity space). navigate_to does the same via go().
           sceneArea = "amenity"
           sceneView = "overview"
           focusUnitId = null
+          hooks.onRoomsPanel?.(false)
           // Next scene send waits until AFTER this lands + settles (see go()). When we
           // also entered the area first, that's two settle hops out.
           sceneReadyAt = navAt + (enterArea ? SCENE_SETTLE_MS * 2 : SCENE_SETTLE_MS)

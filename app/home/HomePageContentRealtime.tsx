@@ -596,7 +596,7 @@ export default function HomePageContentRealtime({ onEnded, ue5Ready = false }: {
           empty black thumbnail from showing while the UE5 stream is still loading. */}
       <div className={`absolute inset-x-0 bottom-0 flex flex-col px-6 pb-10 ${active ? "" : "invisible pointer-events-none"}`}>
         <div className="mt-auto">
-          <div className="pointer-events-auto inline-flex items-stretch rounded-[20px] border border-white/25 bg-gradient-to-br from-white/20 via-white/10 to-white/5 shadow-[0_20px_60px_-28px_rgba(0,0,0,0.85)] backdrop-blur-2xl">
+          <div className="pointer-events-auto inline-flex items-stretch rounded-[20px] border border-white/20 bg-black/40 shadow-[0_20px_60px_-28px_rgba(0,0,0,0.85)] backdrop-blur-2xl">
             {/* Avatar thumbnail (chroma-keyed onto black). ALWAYS mounted so the
                 HeyGen session stays attached — in chat mode it's pinned off-screen
                 rather than unmounted (unmounting would tear the session down and

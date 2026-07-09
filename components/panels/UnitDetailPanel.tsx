@@ -76,7 +76,7 @@ export function UnitDetailPanel({ unit, room }: UnitDetailPanelProps) {
 
   return (
     <div className="fixed right-4 top-1/2 z-20 -translate-y-1/2">
-      <GlassPanel className="pointer-events-auto w-[340px] space-y-3 border border-white/15 bg-white/12 px-4 py-3.5 text-white shadow-2xl shadow-black/40 backdrop-blur-2xl">
+      <GlassPanel className="pointer-events-auto w-[340px] space-y-3 border border-white/20 bg-black/40 bg-none px-4 py-3.5 text-white shadow-2xl shadow-black/40 backdrop-blur-2xl">
         <div className="flex items-center justify-between">
           <div className="text-[9px] font-semibold uppercase tracking-[0.2em] text-white/70">Unit Selected</div>
           <div className="rounded-full border border-white/20 bg-white/10 px-1.5 py-0.5 text-[9px] text-white/80">
