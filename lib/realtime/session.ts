@@ -59,6 +59,8 @@ export interface RealtimeOptions {
   greetOnReady?: boolean
 }
 
+type ContextInjectionOptions = { respond?: boolean; interrupt?: boolean }
+
 /**
  * A tool-call handler. Receives the function name + parsed args, executes the
  * action (e.g. a UE5 navigation), and returns a short string result that is sent
@@ -140,13 +142,16 @@ export class RealtimeSession {
   private flushTimer: ReturnType<typeof setTimeout> | null = null
   private firstFlushDone = false
   private avaTranscript = ""
+  private suppressCurrentAvaTranscript = false
 
   // Tool calling (Phase A.2). callId → accumulated state.
   private toolHandler: ToolHandler | null = null
   private pendingCalls = new Map<string, { name: string; args: string }>()
   // Context items injected before the WS is open are queued and flushed on open
   // (so returning-guest hydration at session start isn't dropped).
-  private pendingContext: { text: string; respond: boolean }[] = []
+  private pendingContext: { text: string; respond: boolean; interrupt: boolean }[] = []
+  private pendingInterruptContext: string | null = null
+  private interruptAwaitingResponseDone = false
   private injectedSkills = new Set<RealtimeSkillId>()
 
   // HeyGen session lifecycle. The avatar idle-times-out (and the browser can't
@@ -345,6 +350,8 @@ export class RealtimeSession {
     this.avatar = null
     this.heygenSessionToken = null
     this.pendingCalls.clear()
+    this.pendingInterruptContext = null
+    this.interruptAwaitingResponseDone = false
   }
 
   /**
@@ -352,11 +359,11 @@ export class RealtimeSession {
    * change). `respond: true` makes Ava react out loud immediately (proactive
    * narration); otherwise it just updates her awareness for the next turn.
    */
-  injectContext(text: string, opts: { respond?: boolean } = {}) {
+  injectContext(text: string, opts: ContextInjectionOptions = {}) {
     if (this.oaWs && this.oaWs.readyState === WebSocket.OPEN) {
-      this.sendContext(text, !!opts.respond)
+      this.sendContext(text, !!opts.respond, !!opts.interrupt)
     } else {
-      this.pendingContext.push({ text, respond: !!opts.respond })
+      this.pendingContext.push({ text, respond: !!opts.respond, interrupt: !!opts.interrupt })
     }
   }
 
@@ -371,8 +378,18 @@ export class RealtimeSession {
     this.injectContext(formatRealtimeSkill(id, reason), { respond: !!opts.respond })
   }
 
-  private sendContext(text: string, respond: boolean) {
+  private sendContext(text: string, respond: boolean, interrupt = false) {
     if (!this.oaWs || this.oaWs.readyState !== WebSocket.OPEN) return
+    if (respond && interrupt) {
+      this.pendingInterruptContext = text
+      const waitingForCurrentResponse = this.interruptAva({ forceAvatar: true })
+      if (waitingForCurrentResponse || this.interruptAwaitingResponseDone) {
+        this.interruptAwaitingResponseDone = true
+        return
+      }
+      this.flushPendingInterruptContext()
+      return
+    }
     this.oaWs.send(
       JSON.stringify({
         type: "conversation.item.create",
@@ -382,10 +399,46 @@ export class RealtimeSession {
     if (respond) this.oaWs.send(JSON.stringify({ type: "response.create" }))
   }
 
+  private interruptAva({ forceAvatar = false }: { forceAvatar?: boolean } = {}): boolean {
+    if (this.avatarReady && (forceAvatar || this.avatarSpeaking)) {
+      try {
+        this.avatar?.interrupt()
+      } catch {}
+      this.avatarSpeaking = false
+    }
+    this.resetOutBuffer()
+    this.avaTranscript = ""
+    this.suppressCurrentAvaTranscript = true
+    if (!this.oaWs || this.oaWs.readyState !== WebSocket.OPEN || !this.responseActive) {
+      return false
+    }
+    if (this.responseHasFunctionCall) {
+      return true
+    }
+    this.oaWs.send(JSON.stringify({ type: "response.cancel" }))
+    this.responseActive = false
+    return true
+  }
+
+  private flushPendingInterruptContext() {
+    if (!this.oaWs || this.oaWs.readyState !== WebSocket.OPEN) return
+    const text = this.pendingInterruptContext
+    this.pendingInterruptContext = null
+    this.interruptAwaitingResponseDone = false
+    if (!text) return
+    this.oaWs.send(
+      JSON.stringify({
+        type: "conversation.item.create",
+        item: { type: "message", role: "user", content: [{ type: "input_text", text }] },
+      }),
+    )
+    this.oaWs.send(JSON.stringify({ type: "response.create" }))
+  }
+
   // ---- HeyGen LITE avatar -----------------------------------------------
 
   private async startAvatar() {
-    this.status("minting HeyGen LITE session…")
+    this.status("minting HeyGen LITE session")
     const res = await fetch(this.opts.heygenUrl, { method: "POST" })
     const json = await res.json()
     if (!res.ok) throw new Error(json.error || "heygen-lite-session failed")
@@ -440,7 +493,7 @@ export class RealtimeSession {
     // (the OpenAI-side text), NOT from HeyGen AVATAR_TRANSCRIPTION — wiring both
     // would double every avatar bubble in the chat transcript.
 
-    this.status("connecting avatar…")
+    this.status("connecting avatar")
     await avatar.start()
     if (this.superseded()) return // stop() raced us — teardown() will drop this avatar
     this.avatarReady = true
@@ -525,7 +578,7 @@ export class RealtimeSession {
       return
     }
     this.reconnectAttempts += 1
-    this.log(`↻ [HeyGen] avatar disconnected (${reason}); reconnecting (attempt ${this.reconnectAttempts})…`)
+    this.log(`[HeyGen] avatar disconnected (${reason}); reconnecting (attempt ${this.reconnectAttempts})`)
     if (this.heygenSessionToken) void this.serverStop(this.heygenSessionToken)
     try {
       await this.avatar?.stop()
@@ -592,7 +645,7 @@ export class RealtimeSession {
    *  reconnect (ephemeral keys are short-lived, so we always re-mint). Throws with
    *  the server's error text so a token/model/quota failure is visible in the log. */
   private async mintRealtimeToken(): Promise<{ model: string; value: string; vad: unknown }> {
-    this.status("minting Realtime token…")
+    this.status("minting Realtime token")
     const tokRes = await fetch(this.opts.tokenUrl, { method: "POST" })
     const tok = await tokRes.json()
     if (!tokRes.ok) throw new Error(tok.error || "realtime-token failed")
@@ -612,7 +665,7 @@ export class RealtimeSession {
     // one-shot `greeted` flag means the welcome never re-fires after reconnect).
     this.endGreetingGuard()
 
-    this.status("connecting Realtime…")
+    this.status("connecting Realtime")
     const url = `${OPENAI_WS_BASE}?model=${encodeURIComponent(model)}`
     const ws = new WebSocket(url, ["realtime", "openai-insecure-api-key." + value])
     this.oaWs = ws
@@ -623,7 +676,7 @@ export class RealtimeSession {
       this.status("LIVE — speak to Ava")
       const queued = this.pendingContext
       this.pendingContext = []
-      for (const c of queued) this.sendContext(c.text, c.respond)
+      for (const c of queued) this.sendContext(c.text, c.respond, c.interrupt)
       this.maybeGreet()
     }
     ws.onerror = () => this.log("❌ [OpenAI] Realtime WS error")
@@ -650,8 +703,8 @@ export class RealtimeSession {
       return
     }
     this.oaReconnectAttempts += 1
-    this.log(`↻ [OpenAI] reconnecting (attempt ${this.oaReconnectAttempts})…`)
-    this.status("reconnecting Realtime…")
+    this.log(`[OpenAI] reconnecting (attempt ${this.oaReconnectAttempts})`)
+    this.status("reconnecting Realtime")
     try {
       const tok = await this.mintRealtimeToken()
       if (this.superseded()) return
@@ -675,35 +728,7 @@ export class RealtimeSession {
 
     switch (type) {
       case "input_audio_buffer.speech_started": {
-        // Barge-in: the guest started talking over Ava. Stop her on all three
-        // fronts — (1) interrupt the avatar (clears HeyGen's queued audio), (2)
-        // cancel the in-flight OpenAI response so it stops generating, (3) drop our
-        // own pending PCM. Without (2) the response kept streaming and Ava resumed.
-        // Only interrupt the avatar when it is ACTUALLY speaking. A phantom VAD
-        // turn (server_vad firing on echo/noise with no real speech) would
-        // otherwise call interrupt() every time, clearing HeyGen's audio queue for
-        // nothing and risking a wedged renderer. avatarSpeaking is the avatar-side
-        // analog of the responseActive guard used for response.cancel below.
-        if (this.avatarReady && this.avatarSpeaking) {
-          try {
-            this.avatar?.interrupt()
-          } catch {}
-          this.avatarSpeaking = false
-          this.clearSpeakWatchdog()
-        }
-        // Don't cancel a response that's executing a tool call — that would drop
-        // the action (e.g. view_unit) the guest just asked for. Only cancel
-        // speech responses.
-        if (
-          this.responseActive &&
-          !this.responseHasFunctionCall &&
-          this.oaWs &&
-          this.oaWs.readyState === WebSocket.OPEN
-        ) {
-          this.oaWs.send(JSON.stringify({ type: "response.cancel" }))
-          this.responseActive = false
-        }
-        this.resetOutBuffer()
+        this.interruptAva()
         break
       }
       case "input_audio_buffer.speech_stopped": {
@@ -720,7 +745,7 @@ export class RealtimeSession {
           e2eMs: null,
         }
         this.avaTranscript = ""
-        this.log(`🎤 turn ${this.turnCounter}: speech_stopped (t0)`)
+        this.log(`turn ${this.turnCounter}: speech_stopped (t0)`)
         break
       }
       case "response.output_audio.delta":
@@ -767,6 +792,7 @@ export class RealtimeSession {
       case "response.created": {
         this.responseActive = true // a response started (may be cancelled by barge-in)
         this.responseHasFunctionCall = false // until an output item says otherwise
+        this.suppressCurrentAvaTranscript = false
         break
       }
       case "response.output_audio.done":
@@ -778,11 +804,13 @@ export class RealtimeSession {
         }
         this.flushOut(true)
         if (type === "response.done") {
-          const hadSpoken = !!this.avaTranscript
+          const hadSpoken = !!this.avaTranscript && !this.suppressCurrentAvaTranscript
           if (hadSpoken) {
             this.cb.onTranscript?.("ava", this.avaTranscript)
             this.avaTranscript = ""
           }
+          this.avaTranscript = ""
+          this.suppressCurrentAvaTranscript = false
           // The opening greeting just finished — release the mic gate after a short
           // echo-decay tail so the trailing words can't trip VAD on their way out.
           if (this.greetingInFlight) {
@@ -799,6 +827,9 @@ export class RealtimeSession {
               this.closeFallbackTimer = null
             }
             setTimeout(() => this.cb.onFarewellSpoken?.(), FAREWELL_TAIL_MS)
+          }
+          if (this.interruptAwaitingResponseDone) {
+            this.flushPendingInterruptContext()
           }
         }
         break
@@ -929,7 +960,7 @@ export class RealtimeSession {
     this.log(
       `⚠️ [HeyGen] avatar stalled — pushed ${this.repeatAudioCount} chunk(s) but ${this.speakStartedCount} speak_started; forcing reconnect`,
     )
-    this.status("avatar stalled — reconnecting…")
+    this.status("avatar stalled, reconnecting")
     this.avatarSpeaking = false
     await this.handleAvatarDisconnect(SessionDisconnectReason.UNKNOWN_REASON)
   }

@@ -17,7 +17,7 @@ import type { UnitSelectionMessage } from "@/lib/useUE5WebSocket"
 import { useAuth } from "@/lib/auth-context"
 import { useIncrementalPersistence } from "@/lib/firebase/useIncrementalPersistence"
 import { SunToggle } from "@/components/SunToggle"
-import { Mic, MicOff, MessageSquare } from "lucide-react"
+import { Mic, MicOff, MessageSquare, Volume2, VolumeX } from "lucide-react"
 
 // D.1b — the realtime brain mounted inside /home's shell (auth + login overlay +
 // UE5 iframe live in HomePage). Reuses the real OmnamStore + auth, so returning
@@ -48,12 +48,6 @@ const STREAM_MODE = process.env.NEXT_PUBLIC_STREAM_MODE || "local"
 const LOUNGE_NUDGE_MS = 75_000        // gentle check-in after a quiet stretch
 const LOUNGE_NUDGE_FIRM_MS = 160_000  // a warmer "shall we head over?" if still here
 
-// Coalesce a burst of in-scene unit taps. Each tap updates the selection
-// immediately, but Ava's spoken reaction is debounced by this window so tapping
-// several units one-by-one yields ONE response about the batch, not one per tap.
-// Taps spaced further apart than this are treated as separate, intentional picks.
-const TAP_COALESCE_MS = 1200
-
 export default function HomePageContentRealtime({ onEnded, ue5Ready = false }: { onEnded?: () => void; ue5Ready?: boolean }) {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   // Latest onEnded in a ref so the session's onFarewellSpoken callback (wired once
@@ -79,6 +73,7 @@ export default function HomePageContentRealtime({ onEnded, ue5Ready = false }: {
   // shared by both modes so the conversation is continuous across toggles.
   const [mode, setMode] = useState<"voice" | "chat">("voice")
   const [micMuted, setMicMuted] = useState(false)
+  const [avaMuted, setAvaMuted] = useState(false)
   const [transcript, setTranscript] = useState<ChatMessage[]>([])
 
   // Single source of truth for the conversation: voice turns + Ava turns arrive
@@ -160,11 +155,6 @@ export default function HomePageContentRealtime({ onEnded, ue5Ready = false }: {
   // are NOT user taps, so ignore them (otherwise a programmatic selectUnits makes
   // Ava narrate a phantom "tap"). Once UE5 sends real taps they'll include `id`.
 
-  // Tap coalescing: buffer the tapped names + a debounce timer so a rapid burst
-  // of taps produces a single Ava reaction (see TAP_COALESCE_MS).
-  const tapBufferRef = useRef<string[]>([])
-  const tapTimerRef = useRef<number | null>(null)
-
   const onUnitSelected = useCallback((payload: { id?: number; roomName: string }) => {
     if (typeof payload.id !== "number") {
       // Legacy selection echo (no id) — not a real tap, ignore.
@@ -172,24 +162,10 @@ export default function HomePageContentRealtime({ onEnded, ue5Ready = false }: {
     }
     dispatch({ type: "TAP_UNIT", unitId: payload.id }) // selection updates immediately
 
-    // Buffer this tap and (re)arm the debounce. Ava reacts ONCE, after the burst
-    // settles — so tapping 3 units in a row doesn't trigger 3 identical replies.
-    tapBufferRef.current.push(payload.roomName)
-    if (tapTimerRef.current) window.clearTimeout(tapTimerRef.current)
-    tapTimerRef.current = window.setTimeout(() => {
-      tapTimerRef.current = null
-      const names = tapBufferRef.current
-      tapBufferRef.current = []
-      if (!names.length) return
-      const summary =
-        names.length === 1
-          ? `the ${names[0]} unit`
-          : `${names.length} units (${Array.from(new Set(names)).join(", ")})`
-      sessionRef.current?.injectContext(
-        `[context] The guest just tapped ${summary} in the scene. React once to the selection as a whole — don't repeat yourself per unit.`,
-        { respond: true },
-      )
-    }, TAP_COALESCE_MS)
+    sessionRef.current?.injectContext(
+      `[context] The guest just tapped the ${payload.roomName} unit in the scene. React to this latest selection only.`,
+      { respond: true, interrupt: true },
+    )
   }, [dispatch])
 
   // Inventory is PRELOADED proactively on travel + levelLoaded (see below) so it's
@@ -527,10 +503,11 @@ export default function HomePageContentRealtime({ onEnded, ue5Ready = false }: {
   // Chat is text-only: silence Ava's audio while in chat mode (the transcript
   // still fills from the response text). Voice mode plays her aloud.
   useEffect(() => {
-    if (videoRef.current) videoRef.current.muted = mode === "chat"
-  }, [mode, active])
+    if (videoRef.current) videoRef.current.muted = mode === "chat" || avaMuted
+  }, [mode, avaMuted, active])
 
   const toggleMic = useCallback(() => setMicMuted((m) => !m), [])
+  const toggleAvaMute = useCallback(() => setAvaMuted((m) => !m), [])
   const toggleMode = useCallback(() => setMode((m) => (m === "chat" ? "voice" : "chat")), [])
   const onSendChat = useCallback((text: string) => {
     const t = text.trim()
@@ -541,7 +518,7 @@ export default function HomePageContentRealtime({ onEnded, ue5Ready = false }: {
     if (/\b(how|where|move|walk|control|click|drag|stuck|lost|can't move|cannot move|not working)\b/i.test(t)) {
       sessionRef.current.injectSkill("movement_help", "The typed guest message may be asking how to move or recover.")
     }
-    sessionRef.current.injectContext(t, { respond: true })
+    sessionRef.current.injectContext(t, { respond: true, interrupt: true })
   }, [appendTranscript])
 
   // --- Unit detail panel ---------------------------------------------------
@@ -653,6 +630,15 @@ export default function HomePageContentRealtime({ onEnded, ue5Ready = false }: {
                   className="flex h-10 w-10 items-center justify-center rounded-full border border-white/15 bg-white/10 shadow-lg backdrop-blur-md transition-colors hover:bg-white/20"
                 >
                   {micMuted ? <MicOff className="h-5 w-5 text-red-400" /> : <Mic className="h-5 w-5 text-white" />}
+                </button>
+              )}
+              {active && mode === "voice" && (
+                <button
+                  onClick={toggleAvaMute}
+                  title={avaMuted ? "Unmute Ava" : "Mute Ava"}
+                  className="flex h-10 w-10 items-center justify-center rounded-full border border-white/15 bg-white/10 shadow-lg backdrop-blur-md transition-colors hover:bg-white/20"
+                >
+                  {avaMuted ? <VolumeX className="h-5 w-5 text-red-400" /> : <Volume2 className="h-5 w-5 text-white" />}
                 </button>
               )}
               {/* Voice ↔ chat toggle. */}
