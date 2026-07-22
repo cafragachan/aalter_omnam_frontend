@@ -86,57 +86,6 @@ persona, the property dossier, and the live scene context. The guiding principle
 - **L3 (per scene change, tiny)** — a one-line `[context] The guest is now viewing: …`
   injected as a conversation item (~15 tokens). See `formatSceneDelta`.
 
-## Key Directory Structure
-
-```
-app/
-├── home/
-│   ├── page.tsx                 # Thin shell: auth → UE5 iframe → LoginOverlay → intro
-│   └── HomePageContentRealtime.tsx  # The realtime experience (avatar pill, RoomsPanel,
-│                                    #   buttons, auto-start, UE5-ready gating)
-├── admin/                       # Admin dashboard (session logs / guest data)
-├── layout.tsx                   # Root: AuthProvider > OmnamStoreProvider > GuestIntelligenceProvider
-└── api/
-    ├── realtime-token/          # POST → OpenAI Realtime ephemeral key + baked L1 + tools
-    ├── heygen-lite-session/     # POST → HeyGen LITE session token (BYO audio)
-    ├── heygen-keepalive/        # POST → server-proxied keep-alive ping (CORS-safe)
-    ├── heygen-stop/             # POST → server-proxied session stop (CORS-safe)
-    ├── locate-interest-points/  # POST → LLM proposes POIs + Google Places geolocates
-    ├── analyze-guest/           # POST → end-of-session personality / travel-driver extraction
-    └── log-latency/             # POST/GET → per-session latency logs (Vercel Blob)
-
-lib/
-├── realtime/                    # THE BRAIN
-│   ├── session.ts               # RealtimeSession: OpenAI WS + HeyGen LITE + mic + tool calls
-│   ├── dispatcher.ts            # tool calls → useUE5Bridge (gates: UE5-ready, settle, capacity)
-│   ├── tools.ts                 # function-calling schemas (built from the live catalog)
-│   ├── persona.ts               # CONCIERGE_PERSONA (L1 persona text)
-│   └── context.ts               # buildL1Instruction (persona + dossier), formatSceneDelta
-├── ue5/
-│   └── bridge.ts                # useUE5Bridge(): typed UE5 commands, isReady, fade, unit state
-├── useUE5WebSocket.ts           # Transport: Vagon SDK (cloud) or ws://localhost:7788 (local)
-├── omnam-store.tsx              # OmnamStore reducer: profile + app + currentRoomPlan
-├── auth-context.tsx             # Firebase auth (user identity, returning-guest data)
-├── guest-intelligence.tsx       # Behavioural tracking
-├── firebase.ts                  # Firebase init (auth, database, storage)
-├── firebase/                    # useIncrementalPersistence, user/session services, types
-├── hotel-data.ts                # Catalog API (getHotelCatalog/getHotelBySlug/getRoomsByHotelId)
-├── hotels/lake-como.ts          # The active hotel's data (EDITION Lake Como)
-├── liveavatar/types.ts          # LiveAvatarSessionMessage / MessageSender (persistence types)
-├── context.tsx                  # UserProfileContext — compat shim over OmnamStore
-├── store.tsx                    # AppContext — compat shim over OmnamStore
-├── debug.ts                     # Latency instrumentation → /api/log-latency
-└── utils.ts                     # cn()
-
-components/
-├── realtime/ChromaAvatar.tsx    # Green-screen chroma-key (hidden <video> + canvas)
-├── panels/RoomsPanel.tsx        # Interactive room cards (Select / qty / remove → EDIT_ROOM_PLAN)
-├── HotelRoomCard.tsx
-├── SunToggle.tsx                # daylight/sunset/night → UE5 (shown only at the hotel)
-├── glass-panel.tsx
-└── ui/                          # shadcn/ui subset
-```
-
 ## Critical Architectural Decisions
 
 ### 1. One organic brain — no journey state machine
